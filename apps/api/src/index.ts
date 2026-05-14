@@ -3,7 +3,8 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import * as Sentry from '@sentry/cloudflare';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
-import type { Env, HonoEnv } from './bindings.js';
+import type { Env, HonoEnv } from './bindings';
+import { authRoutes } from './routes/auth';
 
 const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
@@ -44,6 +45,14 @@ app.onError((err, c) => {
 app.get('/health', (c) =>
   c.json({ status: 'ok', environment: c.env.ENVIRONMENT, ts: Date.now() }),
 );
+
+app.route('/api/v1/auth', authRoutes);
+
+app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
+  type: 'http',
+  scheme: 'bearer',
+  description: 'JWT access token or API key (csk_...)',
+});
 
 app.doc('/openapi.json', {
   openapi: '3.1.0',
