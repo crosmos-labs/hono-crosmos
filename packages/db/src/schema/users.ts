@@ -1,8 +1,6 @@
-import { sql } from 'drizzle-orm';
 import {
   boolean,
   index,
-  integer,
   pgTable,
   serial,
   timestamp,
@@ -11,12 +9,13 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import { generateUuidV7 } from './_shared.js';
 
 export const users = pgTable(
   'users',
   {
     id: serial('id').primaryKey(),
-    uuid: uuid('uuid').notNull().unique().default(sql`uuidv7()`),
+    uuid: uuid('uuid').notNull().unique().$defaultFn(generateUuidV7),
     email: varchar('email', { length: 255 }).notNull().unique(),
     name: varchar('name', { length: 255 }).notNull(),
     oauthProvider: varchar('oauth_provider', { length: 50 }),
