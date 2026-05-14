@@ -8,6 +8,7 @@ import { authRoutes } from './routes/auth';
 import { oauthConsumerRoutes } from './routes/oauth-consumer';
 import { oauthServerRedirectApp, oauthServerRoutes } from './routes/oauth-server';
 import { orgRoutes } from './routes/orgs';
+import { spaceRoutes } from './routes/spaces';
 
 const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
@@ -52,6 +53,7 @@ app.get('/health', (c) =>
 app.route('/api/v1/auth', authRoutes);
 app.route('/api/v1/auth/oauth', oauthConsumerRoutes);
 app.route('/api/v1/orgs', orgRoutes);
+app.route('/api/v1/spaces', spaceRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);
 
