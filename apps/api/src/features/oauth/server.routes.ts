@@ -1,14 +1,14 @@
-import { InvalidTokenError } from '@crosmos/auth';
+import { InvalidTokenError } from '../auth/jwt';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { Hono } from 'hono';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
 import {
   buildGoogleAuthorizationUrl,
   exchangeGoogleCode,
   OAuthError,
-} from '../services/google-oauth';
-import { getOrCreateOauthUser } from '../services/onboarding';
+} from './google';
+import { getOrCreateOauthUser } from './onboarding';
 import {
   createAuthorizationCode,
   createFlowState,
@@ -20,7 +20,7 @@ import {
   OAuthServerError,
   registerClient,
   type FlowStateClaims,
-} from '../services/oauth-server';
+} from './server';
 
 export const oauthServerRoutes = new OpenAPIHono<HonoEnv>();
 

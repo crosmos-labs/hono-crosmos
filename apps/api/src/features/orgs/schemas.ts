@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import { IsoDateTimeSchema, OrgRoleSchema, PlanSchema, UuidSchema } from './common.js';
+import { IsoDateTimeSchema, OrgRoleSchema, PlanSchema, UuidSchema } from '../../lib/zod-common';
 
 export const SlugSchema = z
   .string()

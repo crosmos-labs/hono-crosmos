@@ -1,5 +1,5 @@
 import type { Database, Organization } from '@crosmos/db';
-import { getOrganizationByIdOrThrow } from './organizations';
+import { getOrganizationByIdOrThrow } from './service';
 
 // Mirrors app/services/entitlements/plans.py and schema.py exactly.
 // -1 means "unlimited".

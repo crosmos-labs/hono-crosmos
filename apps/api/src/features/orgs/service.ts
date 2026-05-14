@@ -5,7 +5,7 @@ import {
   type OrganizationMember,
 } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
-import { tokenHex } from '@crosmos/auth';
+import { tokenHex } from '../../lib/crypto';
 import { and, count, desc, eq, inArray, ne } from 'drizzle-orm';
 
 export class SlugCollisionError extends Error {

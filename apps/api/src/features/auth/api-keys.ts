@@ -1,6 +1,6 @@
 import { apiKeys, users, type ApiKey, type User } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
-import { generateApiKey, hashApiKey } from '@crosmos/auth';
+import { generateApiKey, hashApiKey } from './key-format';
 import { and, desc, eq } from 'drizzle-orm';
 
 export interface CreatedApiKey {

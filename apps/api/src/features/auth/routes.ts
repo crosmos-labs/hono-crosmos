@@ -1,22 +1,32 @@
-import { createTokenPair, decodeRefreshTokenClaims, InvalidTokenError } from '@crosmos/auth';
-import { ApiKeyCreatedSchema, ApiKeyListResponseSchema, ApiKeyValidateResponseSchema, CreateApiKeySchema, LogoutRequestSchema, RefreshRequestSchema, TokenPairSchema, UpdateUserSchema, UserSchema } from '@crosmos/types';
+import { createTokenPair, decodeRefreshTokenClaims, InvalidTokenError } from './jwt';
+import {
+  ApiKeyCreatedSchema,
+  ApiKeyListResponseSchema,
+  ApiKeyValidateResponseSchema,
+  CreateApiKeySchema,
+  LogoutRequestSchema,
+  RefreshRequestSchema,
+  TokenPairSchema,
+  UpdateUserSchema,
+  UserSchema,
+} from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
-import { invalidateApiKeyCacheByHash, requireAuth, requireOrg } from '../middleware/auth';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
+import { invalidateApiKeyCacheByHash, requireAuth, requireOrg } from './middleware';
 import {
   createApiKey,
   getApiKeyByUuid,
   listApiKeysForUser,
   revokeApiKey,
-} from '../services/api-keys';
-import { getEarliestMembershipForUser } from '../services/memberships';
+} from './api-keys';
+import { getEarliestMembershipForUser } from '../orgs/memberships';
 import {
   isRefreshTokenRevoked,
   revokeRefreshToken,
-} from '../services/refresh-tokens';
-import { getUserById, updateUserName } from '../services/users';
+} from './refresh-tokens';
+import { getUserById, updateUserName } from './users';
 
 export const authRoutes = new OpenAPIHono<HonoEnv>();
 

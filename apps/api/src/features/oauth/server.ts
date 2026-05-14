@@ -1,13 +1,12 @@
 import {
+  ACCESS_TOKEN_TTL_SECONDS,
   createTokenPair,
   decodeRefreshTokenClaims,
-  ACCESS_TOKEN_TTL_SECONDS,
   InvalidTokenError,
-  sha256Hex,
   signFlowState,
-  tokenUrlSafe,
   verifyFlowState,
-} from '@crosmos/auth';
+} from '../auth/jwt';
+import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
 import {
   authorizationCodes,
   oauthClients,
@@ -16,9 +15,9 @@ import {
 } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
 import { and, eq } from 'drizzle-orm';
-import { getEarliestMembershipForUser } from './memberships';
-import { isRefreshTokenRevoked } from './refresh-tokens';
-import { getUserById } from './users';
+import { getEarliestMembershipForUser } from '../orgs/memberships';
+import { isRefreshTokenRevoked } from '../auth/refresh-tokens';
+import { getUserById } from '../auth/users';
 
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const FLOW_STATE_TTL_SECONDS = 10 * 60; // 10 minutes

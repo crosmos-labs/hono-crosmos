@@ -3,26 +3,23 @@ import {
   QuotaExceededBodySchema,
   SpaceListResponseSchema,
   SpaceSchema,
-} from '@crosmos/types';
+} from './schemas';
 import type { MemorySpace } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
-import { requireAuth } from '../middleware/auth';
-import { requirePrincipal, requireRole } from '../middleware/principal';
-import {
-  checkCountQuota,
-  QuotaExceededError,
-} from '../services/entitlements';
-import { getOrganizationByIdOrThrow } from '../services/organizations';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
+import { requireAuth } from '../auth/middleware';
+import { requirePrincipal, requireRole } from '../auth/principal';
+import { checkCountQuota, QuotaExceededError } from '../orgs/entitlements';
+import { getOrganizationByIdOrThrow } from '../orgs/service';
 import {
   countSpaces,
   createSpace,
   deleteSpace,
   getSpaceByUuid,
   listSpaces,
-} from '../services/spaces';
+} from './service';
 
 export const spaceRoutes = new OpenAPIHono<HonoEnv>();
 

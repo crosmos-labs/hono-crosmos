@@ -4,18 +4,15 @@ import {
   OrganizationSchema,
   OrganizationSummarySchema,
   UpdateOrganizationSchema,
-} from '@crosmos/types';
+} from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
-import { requireAuth } from '../middleware/auth';
-import { requirePrincipal, requireRole } from '../middleware/principal';
-import {
-  getEntitlements,
-  getMonthlyUsage,
-} from '../services/entitlements';
-import { getMembership } from '../services/memberships';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
+import { requireAuth } from '../auth/middleware';
+import { requirePrincipal, requireRole } from '../auth/principal';
+import { getEntitlements, getMonthlyUsage } from './entitlements';
+import { getMembership } from './memberships';
 import {
   countMembers,
   getOrganizationByIdOrThrow,
@@ -25,7 +22,7 @@ import {
   resolveOrgIdFromUuid,
   SlugCollisionError,
   updateOrganization,
-} from '../services/organizations';
+} from './service';
 
 export const orgRoutes = new OpenAPIHono<HonoEnv>();
 

@@ -1,29 +1,29 @@
 import {
   createTokenPair,
-  signFlowState,
-  tokenUrlSafe,
-  verifyFlowState,
   InvalidTokenError,
-} from '@crosmos/auth';
+  signFlowState,
+  verifyFlowState,
+} from '../auth/jwt';
+import { tokenUrlSafe } from '../../lib/crypto';
 import {
   OAuthAuthorizeQuerySchema,
   OAuthAuthorizeResponseSchema,
   OAuthCallbackRequestSchema,
   OAuthCallbackResponseSchema,
   OAuthProvidersSchema,
-} from '@crosmos/types';
+} from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
-import { sendWelcomeEmail } from '../services/email';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
+import { getEmailSender } from '../../integrations/email';
 import {
   buildGoogleAuthorizationUrl,
   exchangeGoogleCode,
   OAuthError,
-} from '../services/google-oauth';
-import { getEarliestMembershipForUser } from '../services/memberships';
-import { getOrCreateOauthUser } from '../services/onboarding';
+} from './google';
+import { getEarliestMembershipForUser } from '../orgs/memberships';
+import { getOrCreateOauthUser } from './onboarding';
 
 export const oauthConsumerRoutes = new OpenAPIHono<HonoEnv>();
 
@@ -191,10 +191,12 @@ oauthConsumerRoutes.openapi(
       activeOrgId,
     });
 
-    // 6. Fire welcome email for new users (non-blocking)
-    if (result.isNewUser && c.env.RESEND_API_KEY) {
+    // 6. Fire welcome email for new users (non-blocking).
+    // The adapter is a NoopEmailSender in environments without RESEND_API_KEY.
+    if (result.isNewUser) {
+      const email = getEmailSender(c.env);
       c.executionCtx.waitUntil(
-        sendWelcomeEmail(c.env.RESEND_API_KEY, {
+        email.sendWelcome({
           to: result.user.email,
           name: result.user.name,
         }),

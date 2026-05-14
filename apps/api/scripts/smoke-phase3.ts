@@ -3,7 +3,7 @@
 // Sets up: owner user (also member of a second org), a 'member'-role user,
 // then exercises list/get/patch/entitlements + RBAC + slug collision.
 import { readFileSync } from 'node:fs';
-import { createTokenPair } from '@crosmos/auth';
+import { createTokenPair } from '../src/features/auth/jwt';
 import postgres from 'postgres';
 
 const ENV: Record<string, string> = {};

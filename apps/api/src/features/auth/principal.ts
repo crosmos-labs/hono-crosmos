@@ -1,9 +1,9 @@
 import type { Context, Next } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
-import { getMembership } from '../services/memberships';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
+import { getMembership } from '../orgs/memberships';
 
 /**
  * Mirrors Python's `get_current_principal`: assumes `requireAuth` has already

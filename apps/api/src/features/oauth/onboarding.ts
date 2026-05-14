@@ -1,9 +1,9 @@
 import type { Database, MemorySpace, Organization, User } from '@crosmos/db';
-import { getUserByEmail, getUserByOauth, createUser } from './users';
+import { getUserByEmail, getUserByOauth, createUser } from '../auth/users';
 import { users } from '@crosmos/db';
 import { eq } from 'drizzle-orm';
-import { createPersonalOrg } from './organizations';
-import { createDefaultSpace } from './spaces';
+import { createPersonalOrg } from '../orgs/service';
+import { createDefaultSpace } from '../spaces/service';
 
 export interface OauthSignupResult {
   user: User;

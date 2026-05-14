@@ -1,19 +1,15 @@
-import {
-  decodeAccessTokenClaims,
-  hashApiKey,
-  InvalidTokenError,
-  isApiKey,
-} from '@crosmos/auth';
+import { decodeAccessTokenClaims, InvalidTokenError } from './jwt';
+import { hashApiKey, isApiKey } from './key-format';
 import type { Context } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../bindings';
-import { getDb } from '../db';
+import type { HonoEnv } from '../../bindings';
+import { getDb } from '../../db';
 import {
   resolveApiKeyByHash,
   touchApiKeyLastUsed,
-} from '../services/api-keys';
-import { getUserById } from '../services/users';
+} from './api-keys';
+import { getUserById } from './users';
 
 type AuthContext = Context<HonoEnv>;
 

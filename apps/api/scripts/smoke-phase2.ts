@@ -4,7 +4,7 @@
 // 2. Mint a JWT (carrying active_org_id) using the shared @crosmos/auth lib.
 // 3. Hit /me, create an API key, list, validate via API key, revoke.
 import { readFileSync } from 'node:fs';
-import { createTokenPair } from '@crosmos/auth';
+import { createTokenPair } from '../src/features/auth/jwt';
 import postgres from 'postgres';
 
 const ENV: Record<string, string> = {};

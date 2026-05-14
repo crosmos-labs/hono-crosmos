@@ -9,8 +9,8 @@
 import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { createDb } from '@crosmos/db';
-import { createAuthorizationCode } from '../src/services/oauth-server';
-import { sha256Hex, tokenUrlSafe } from '@crosmos/auth';
+import { createAuthorizationCode } from '../src/features/oauth/server';
+import { sha256Hex, tokenUrlSafe } from '../src/lib/crypto';
 
 const ENV: Record<string, string> = {};
 for (const line of readFileSync(

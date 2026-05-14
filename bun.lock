@@ -15,9 +15,7 @@
       "name": "@crosmos/api",
       "version": "0.0.0",
       "dependencies": {
-        "@crosmos/auth": "workspace:*",
         "@crosmos/db": "workspace:*",
-        "@crosmos/types": "workspace:*",
         "@hono/swagger-ui": "^0.5.0",
         "@hono/zod-openapi": "^0.18.3",
         "@sentry/cloudflare": "^8.47.0",
@@ -31,17 +29,6 @@
         "@cloudflare/workers-types": "^4.20241224.0",
         "typescript": "^5.6.3",
         "wrangler": "^3.95.0",
-      },
-    },
-    "packages/auth": {
-      "name": "@crosmos/auth",
-      "version": "0.0.0",
-      "dependencies": {
-        "jose": "^5.9.6",
-      },
-      "devDependencies": {
-        "@cloudflare/workers-types": "^4.20241224.0",
-        "typescript": "^5.6.3",
       },
     },
     "packages/db": {
@@ -61,10 +48,6 @@
     "packages/types": {
       "name": "@crosmos/types",
       "version": "0.0.0",
-      "dependencies": {
-        "@hono/zod-openapi": "^0.18.3",
-        "zod": "^3.23.8",
-      },
       "devDependencies": {
         "typescript": "^5.6.3",
       },
@@ -90,8 +73,6 @@
     "@cloudflare/workers-types": ["@cloudflare/workers-types@4.20260511.1", "", {}, "sha512-FA+si7cOq9i/gtCHhIc0XJL0l1F/ApF+m00752Aj7WZFJrj3ZulT2T8/+rT3BabMT0QEnqFEGIqCgrmqhgEfMg=="],
 
     "@crosmos/api": ["@crosmos/api@workspace:apps/api"],
-
-    "@crosmos/auth": ["@crosmos/auth@workspace:packages/auth"],
 
     "@crosmos/db": ["@crosmos/db@workspace:packages/db"],
 

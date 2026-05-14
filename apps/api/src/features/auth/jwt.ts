@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify, errors as joseErrors } from 'jose';
-import { tokenUrlSafe } from './random.js';
+import { tokenUrlSafe } from '../../lib/crypto';
 
 export const JWT_ALG = 'HS256';
 export const ACCESS_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days

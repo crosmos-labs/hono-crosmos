@@ -1,4 +1,4 @@
-import { sha256Hex, tokenHex } from './random.js';
+import { sha256Hex, tokenHex } from '../../lib/crypto';
 
 export const API_KEY_PREFIX = 'csk_';
 export const API_KEY_PREFIX_LENGTH = 12;

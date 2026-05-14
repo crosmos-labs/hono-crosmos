@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import { IsoDateTimeSchema, UuidSchema } from './common.js';
+import { IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
 
 export const UserSchema = z
   .object({
@@ -26,11 +26,6 @@ export const TokenPairSchema = z
     active_org_id: UuidSchema.nullable(),
   })
   .openapi('TokenPair');
-
-export const OAuthCallbackResponseSchema = TokenPairSchema.extend({
-  is_new_user: z.boolean(),
-  default_space_id: UuidSchema.nullable(),
-}).openapi('OAuthCallbackResponse');
 
 export const RefreshRequestSchema = z
   .object({ refresh_token: z.string() })
@@ -75,27 +70,3 @@ export const ApiKeyListResponseSchema = z
 export const ApiKeyValidateResponseSchema = z
   .object({ valid: z.boolean(), key_prefix: z.string() })
   .openapi('ApiKeyValidateResponse');
-
-// OAuth consumer
-export const OAuthProvidersSchema = z
-  .object({ providers: z.array(z.string()) })
-  .openapi('OAuthProviders');
-
-export const OAuthAuthorizeQuerySchema = z.object({
-  redirect_uri: z.string().url(),
-});
-
-export const OAuthAuthorizeResponseSchema = z
-  .object({
-    authorization_url: z.string().url(),
-    state: z.string(),
-  })
-  .openapi('OAuthAuthorizeResponse');
-
-export const OAuthCallbackRequestSchema = z
-  .object({
-    code: z.string(),
-    state: z.string(),
-    redirect_uri: z.string().url(),
-  })
-  .openapi('OAuthCallbackRequest');

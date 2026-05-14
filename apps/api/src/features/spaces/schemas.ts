@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import { IsoDateTimeSchema, UuidSchema } from './common.js';
+import { IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
 
 export const CreateSpaceSchema = z
   .object({

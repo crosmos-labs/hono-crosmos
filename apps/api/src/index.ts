@@ -4,11 +4,14 @@ import * as Sentry from '@sentry/cloudflare';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import type { Env, HonoEnv } from './bindings';
-import { authRoutes } from './routes/auth';
-import { oauthConsumerRoutes } from './routes/oauth-consumer';
-import { oauthServerRedirectApp, oauthServerRoutes } from './routes/oauth-server';
-import { orgRoutes } from './routes/orgs';
-import { spaceRoutes } from './routes/spaces';
+import { authRoutes } from './features/auth/routes';
+import { oauthConsumerRoutes } from './features/oauth/consumer.routes';
+import {
+  oauthServerRedirectApp,
+  oauthServerRoutes,
+} from './features/oauth/server.routes';
+import { orgRoutes } from './features/orgs/routes';
+import { spaceRoutes } from './features/spaces/routes';
 
 const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
