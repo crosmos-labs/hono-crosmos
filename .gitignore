@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.turbo/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.log
+.DS_Store
+
+# Drizzle
+packages/db/migrations/meta/

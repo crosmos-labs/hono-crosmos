@@ -1,0 +1,24 @@
+{
+  "name": "crosmos-workers",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "deploy": "turbo deploy",
+    "typecheck": "turbo typecheck",
+    "db:generate": "bun --filter @crosmos/db generate",
+    "db:migrate": "bun --filter @crosmos/db migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.95.0",
+    "@cloudflare/workers-types": "^4.20241224.0"
+  },
+  "packageManager": "bun@1.3.5"
+}
