@@ -5,6 +5,8 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import type { Env, HonoEnv } from './bindings';
 import { authRoutes } from './routes/auth';
+import { oauthConsumerRoutes } from './routes/oauth-consumer';
+import { oauthServerRedirectApp, oauthServerRoutes } from './routes/oauth-server';
 
 const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
@@ -47,6 +49,9 @@ app.get('/health', (c) =>
 );
 
 app.route('/api/v1/auth', authRoutes);
+app.route('/api/v1/auth/oauth', oauthConsumerRoutes);
+app.route('/', oauthServerRoutes);
+app.route('/', oauthServerRedirectApp);
 
 app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
   type: 'http',
