@@ -28,16 +28,31 @@ export const OrganizationListResponseSchema = z
   })
   .openapi('OrganizationListResponse');
 
+// `OrgResponse` in Python — same as the detail summary minus member_count/your_role.
 export const OrganizationSchema = OrganizationSummarySchema.omit({
   member_count: true,
   your_role: true,
 }).openapi('Organization');
 
+// Mirrors UpdateOrgRequest validators in Python:
+//   - name: trimmed, 1..255
+//   - slug: 1..64, pattern ^[a-z0-9][a-z0-9-]*[a-z0-9]$
+//   - billing_email: validated email or null to clear (we accept null; service
+//     treats undefined as "leave alone")
+export const SlugCollisionErrorSchema = z
+  .object({
+    detail: z.object({
+      error: z.literal('slug_taken'),
+      message: z.string(),
+    }),
+  })
+  .openapi('SlugCollisionError');
+
 export const UpdateOrganizationSchema = z
   .object({
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().trim().min(1).max(255).optional(),
     slug: SlugSchema.optional(),
-    billing_email: z.string().email().optional(),
+    billing_email: z.string().email().nullable().optional(),
   })
   .openapi('UpdateOrganizationRequest');
 
