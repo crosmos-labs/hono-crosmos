@@ -103,7 +103,11 @@ export async function createFlowState(
   jwtSecret: string,
   claims: FlowStateClaims,
 ): Promise<string> {
-  return signFlowState(jwtSecret, claims, FLOW_STATE_TTL_SECONDS);
+  return signFlowState(
+    jwtSecret,
+    claims as unknown as Record<string, unknown>,
+    FLOW_STATE_TTL_SECONDS,
+  );
 }
 
 export async function decodeFlowState(

@@ -81,14 +81,15 @@ oauthConsumerRoutes.openapi(
       throw new HTTPException(400, { message: `Unsupported provider: ${provider}` });
     }
 
-    const state = await signFlowState<ConsumerState>(
+    const stateClaims: ConsumerState = {
+      v: 1,
+      provider,
+      redirect_uri,
+      nonce: tokenUrlSafe(12),
+    };
+    const state = await signFlowState(
       c.env.JWT_SECRET,
-      {
-        v: 1,
-        provider,
-        redirect_uri,
-        nonce: tokenUrlSafe(12),
-      },
+      stateClaims as unknown as Record<string, unknown>,
       STATE_TTL_SECONDS,
     );
 
