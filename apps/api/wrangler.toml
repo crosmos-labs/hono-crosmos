@@ -1,0 +1,49 @@
+name = "crosmos-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-23"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+[dev]
+port = 8787
+
+# Hyperdrive: NeonDB connection pooling
+# Replace `id` after running: wrangler hyperdrive create crosmos-db --connection-string=...
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "REPLACE_WITH_HYPERDRIVE_ID"
+
+# KV: API key cache + rate limit counters
+# Replace `id` after running: wrangler kv namespace create API_KEY_CACHE
+[[kv_namespaces]]
+binding = "API_KEY_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+# Queue producer: ingestion jobs (consumer lives in apps/ingestion)
+[[queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs"
+
+[vars]
+ENVIRONMENT = "development"
+OAUTH_SERVER_BASE_URL = "http://localhost:8787"
+APP_BASE_URL = "http://localhost:3000"
+
+[env.production]
+[env.production.vars]
+ENVIRONMENT = "production"
+OAUTH_SERVER_BASE_URL = "https://api.crosmos.ai"
+APP_BASE_URL = "https://app.crosmos.ai"
+
+[[env.production.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "REPLACE_WITH_PROD_HYPERDRIVE_ID"
+
+[[env.production.kv_namespaces]]
+binding = "API_KEY_CACHE"
+id = "REPLACE_WITH_PROD_KV_ID"
+
+[[env.production.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs"

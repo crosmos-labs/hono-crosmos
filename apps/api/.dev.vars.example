@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local dev. NEVER commit .dev.vars.
+JWT_SECRET=change-me-min-32-chars-for-hs256-signing
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+RESEND_API_KEY=re_xxx
+SENTRY_DSN=
+POLAR_WEBHOOK_SECRET=
+
+# Used by drizzle-kit locally for migrations. Direct NeonDB connection (NOT Hyperdrive).
+DATABASE_URL=postgresql://user:pass@your-neon-host/crosmos
