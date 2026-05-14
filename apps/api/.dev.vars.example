@@ -6,5 +6,6 @@ RESEND_API_KEY=re_xxx
 SENTRY_DSN=
 POLAR_WEBHOOK_SECRET=
 
-# Used by drizzle-kit locally for migrations. Direct NeonDB connection (NOT Hyperdrive).
-DATABASE_URL=postgresql://user:pass@your-neon-host/crosmos
+# Used by drizzle-kit for migrations. Local dev points at docker-compose Postgres;
+# in prod, set this to the direct NeonDB URL when running migrations from your laptop/CI.
+DATABASE_URL=postgresql://crosmos:crosmos@localhost:5433/crosmos

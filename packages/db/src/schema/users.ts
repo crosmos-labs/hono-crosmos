@@ -9,7 +9,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { generateUuidV7 } from './_shared.js';
+import { generateUuidV7 } from './_shared';
 
 export const users = pgTable(
   'users',

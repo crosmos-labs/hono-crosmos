@@ -9,9 +9,9 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { organizations } from './organizations.js';
-import { generateUuidV7 } from './_shared.js';
-import { users } from './users.js';
+import { organizations } from './organizations';
+import { generateUuidV7 } from './_shared';
+import { users } from './users';
 
 export const apiKeys = pgTable(
   'api_keys',

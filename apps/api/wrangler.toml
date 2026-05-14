@@ -12,13 +12,15 @@ port = 8787
 # Replace `id` after running: wrangler hyperdrive create crosmos-db --connection-string=...
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-id = "REPLACE_WITH_HYPERDRIVE_ID"
+id = "f5a4b0b3c894450f9ad332221a92ff5a"
+# Local-only: wrangler dev connects here. Prod uses the configured upstream (NeonDB).
+localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
 # KV: API key cache + rate limit counters
 # Replace `id` after running: wrangler kv namespace create API_KEY_CACHE
 [[kv_namespaces]]
 binding = "API_KEY_CACHE"
-id = "REPLACE_WITH_KV_ID"
+id = "526c4c65675d478b827a2b0566bba1b6"
 
 # Queue producer: ingestion jobs (consumer lives in apps/ingestion)
 [[queues.producers]]

@@ -12,9 +12,9 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { orgRoleType, planType, subscriptionStatusType } from './enums.js';
-import { generateUuidV7 } from './_shared.js';
-import { users } from './users.js';
+import { orgRoleType, planType, subscriptionStatusType } from './enums';
+import { generateUuidV7 } from './_shared';
+import { users } from './users';
 
 export const organizations = pgTable(
   'organizations',

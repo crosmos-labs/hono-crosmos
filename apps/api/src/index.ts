@@ -63,11 +63,14 @@ const handler = {
 };
 
 export default Sentry.withSentry(
-  (env: Env) => ({
-    dsn: env.SENTRY_DSN,
-    environment: env.ENVIRONMENT,
-    tracesSampleRate: env.ENVIRONMENT === 'production' ? 0.1 : 1.0,
-    enabled: Boolean(env.SENTRY_DSN),
-  }),
+  (env) => {
+    const e = env as Env | undefined;
+    return {
+      dsn: e?.SENTRY_DSN ?? '',
+      environment: e?.ENVIRONMENT ?? 'development',
+      tracesSampleRate: e?.ENVIRONMENT === 'production' ? 0.1 : 1.0,
+      enabled: Boolean(e?.SENTRY_DSN),
+    };
+  },
   handler,
 );

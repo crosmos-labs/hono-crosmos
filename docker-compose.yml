@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: crosmos-dev-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crosmos
+      POSTGRES_PASSWORD: crosmos
+      POSTGRES_DB: crosmos
+    ports:
+      - "5433:5432"
+    volumes:
+      - crosmos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crosmos -d crosmos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  crosmos_pgdata:
