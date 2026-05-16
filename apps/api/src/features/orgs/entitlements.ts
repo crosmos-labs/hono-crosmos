@@ -1,4 +1,6 @@
+import { dailyUsage } from '@crosmos/db';
 import type { Database, Organization } from '@crosmos/db';
+import { and, eq, gte, sql, sum } from 'drizzle-orm';
 import { getOrganizationByIdOrThrow } from './service';
 
 // Mirrors app/services/entitlements/plans.py and schema.py exactly.
@@ -79,22 +81,60 @@ export async function getEntitlements(
 }
 
 /**
- * Returns total monthly usage for a given metric.
- *
- * Mirrors `get_monthly_usage` in `app/services/entitlements/service.py` but
- * the `daily_usage` table is not yet migrated to Drizzle (it lives in the
- * ingestion/usage path which is Phase 4 in the migration doc). For now this
- * returns 0, matching Python's fallback when the key is unknown.
- *
- * TODO: when daily_usage lands, sum DailyUsage.tokens_ingested / search_queries
- * for the current month.
+ * Returns total usage for a given metric across the current calendar month
+ * (UTC), summed across all users and spaces in the org. Mirrors
+ * `get_monthly_usage` in Python — reads the same `daily_usage` table.
  */
 export async function getMonthlyUsage(
-  _db: Database,
-  _orgId: number,
-  _key: 'monthly_tokens_ingested' | 'monthly_search_queries',
+  db: Database,
+  orgId: number,
+  key: 'monthly_tokens_ingested' | 'monthly_search_queries',
 ): Promise<number> {
-  return 0;
+  const column =
+    key === 'monthly_tokens_ingested'
+      ? dailyUsage.tokensIngested
+      : dailyUsage.searchQueries;
+
+  const rows = await db
+    .select({ total: sum(column) })
+    .from(dailyUsage)
+    .where(
+      and(
+        eq(dailyUsage.orgId, orgId),
+        // First of this month at UTC midnight. `sum` returns null when no
+        // rows match, which we coalesce to 0 below.
+        gte(dailyUsage.date, sql`date_trunc('month', current_date)`),
+      ),
+    );
+
+  const raw = rows[0]?.total;
+  if (raw === null || raw === undefined) return 0;
+  return Number(raw);
+}
+
+/**
+ * Token-quota gate. Reads `monthly_tokens_ingested` / `monthly_search_queries`
+ * from entitlements (`-1` = unlimited, skipped) and compares to summed usage.
+ * Throws `QuotaExceededError` when used + increment > limit. Mirrors
+ * `check_quota` in `app/services/entitlements/guard.py`.
+ *
+ * `increment = 0` is the producer-side gate at `POST /sources`: it rejects
+ * pre-emptively when the cap has already been hit, without claiming tokens.
+ */
+export async function checkQuota(
+  db: Database,
+  orgId: number,
+  key: 'monthly_tokens_ingested' | 'monthly_search_queries',
+  increment: number = 0,
+): Promise<void> {
+  const ent = await getEntitlements(db, orgId);
+  const raw = ent[key];
+  const limit = typeof raw === 'number' ? raw : -1;
+  if (limit === -1) return;
+  const used = await getMonthlyUsage(db, orgId, key);
+  if (used + increment > limit) {
+    throw new QuotaExceededError(key, limit, used);
+  }
 }
 
 export class QuotaExceededError extends Error {
