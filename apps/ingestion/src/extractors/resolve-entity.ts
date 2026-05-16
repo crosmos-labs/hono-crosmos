@@ -1,0 +1,218 @@
+/**
+ * 3-stage entity resolution cascade. Mirrors
+ * `app/engine/extractors/resolve_entity.py` and `dedup_helpers.py`.
+ *
+ * Stage A — embedding pre-filter: pgvector cosine distance ≤ 0.50, top 50 per
+ *           extracted entity, unioned into one candidate pool.
+ * Stage B — deterministic rapidfuzz matching: token_sort_ratio with
+ *           RESOLVE_THRESHOLD (90) → auto-merge, CANDIDATE_THRESHOLD (60) →
+ *           informational (falls through to Stage C).
+ * Stage C — get_or_create_entity: INSERT ... ON CONFLICT (space_id,
+ *           lower(name)) DO NOTHING, fallback SELECT.
+ *
+ * Concurrency-safety: the unique index `uq_entity_space_name` makes Stage C
+ * race-safe across parallel ingesters.
+ *
+ * See docs/ingestion_migration/entity-resolution.md.
+ */
+import {
+  entities,
+  type Database,
+  type Entity,
+} from '@crosmos/db';
+import { type TenantScope } from '@crosmos/types';
+import { and, cosineDistance, eq, isNotNull, sql } from 'drizzle-orm';
+import {
+  CANDIDATE_POOL_LIMIT,
+  CANDIDATE_POOL_THRESHOLD,
+  CANDIDATE_THRESHOLD,
+  CANDIDATE_LIMIT,
+  MIN_FUZZY_LENGTH,
+  RESOLVE_THRESHOLD,
+} from '../constants';
+import type { Embedder } from '../integrations/embeddings';
+import { fuzzyExtract, tokenSortRatio } from './fuzzy';
+import type { NormalizedEntity } from './types';
+
+export interface ResolvedEntity {
+  extracted: NormalizedEntity;
+  entityId: number;
+  isNew: boolean;
+}
+
+interface CandidateRow {
+  id: number;
+  name: string;
+}
+
+function casefold(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Stage A: pull a wide candidate pool from the existing graph using cosine
+ * distance over embeddings. Scoped by org+space. Returns the dedup'd pool —
+ * one row per entity_id even if multiple extracted names matched it.
+ */
+async function fetchCandidatePool(
+  db: Database,
+  scope: TenantScope,
+  embeddings: number[][],
+): Promise<CandidateRow[]> {
+  const seen = new Map<number, CandidateRow>();
+  for (const emb of embeddings) {
+    const distance = cosineDistance(entities.embedding, emb);
+    const rows = await db
+      .select({ id: entities.id, name: entities.name })
+      .from(entities)
+      .where(
+        and(
+          eq(entities.orgId, scope.orgId),
+          eq(entities.spaceId, scope.spaceId),
+          isNotNull(entities.embedding),
+          sql`${distance} <= ${CANDIDATE_POOL_THRESHOLD}`,
+        ),
+      )
+      .orderBy(distance)
+      .limit(CANDIDATE_POOL_LIMIT);
+    for (const r of rows) {
+      if (!seen.has(r.id)) seen.set(r.id, { id: r.id, name: r.name });
+    }
+  }
+  return Array.from(seen.values());
+}
+
+/**
+ * Stage B: deterministic fuzzy match against the candidate pool. Returns the
+ * resolved entity id if a high-confidence match is found, else null. Medium-
+ * confidence candidates are *not* auto-merged (the LLM dedup pass has been
+ * removed in Python) — they fall through to Stage C.
+ */
+function fuzzyResolve(
+  name: string,
+  pool: CandidateRow[],
+): { entityId: number } | null {
+  const folded = casefold(name);
+
+  // 1. Exact casefold match (rarely two — if duplicates exist, fall through)
+  const exact = pool.filter((c) => casefold(c.name) === folded);
+  if (exact.length === 1) return { entityId: exact[0]!.id };
+  if (exact.length > 1) return null;
+
+  // 2. Length floor — refuse to fuzzy-match super-short names
+  if (folded.length < MIN_FUZZY_LENGTH) return null;
+
+  // 3. process.extract with token_sort_ratio
+  const matches = fuzzyExtract<CandidateRow>(
+    name,
+    pool,
+    (c) => c.name,
+    { limit: CANDIDATE_LIMIT, scoreCutoff: CANDIDATE_THRESHOLD },
+  );
+  if (matches.length === 0) return null;
+  const best = matches[0]!;
+  if (best.score >= RESOLVE_THRESHOLD) return { entityId: best.choice.id };
+  return null;
+}
+
+/**
+ * Stage C: race-safe upsert by (space_id, lower(name)). Returns the resulting
+ * row and whether it was just inserted.
+ */
+async function getOrCreateEntity(
+  db: Database,
+  scope: TenantScope,
+  name: string,
+  entityType: string,
+  embedding: number[] | null,
+): Promise<{ entityId: number; isNew: boolean }> {
+  const inserted = await db
+    .insert(entities)
+    .values({
+      orgId: scope.orgId,
+      spaceId: scope.spaceId,
+      name,
+      entityType,
+      embedding,
+    })
+    .onConflictDoNothing({
+      target: [entities.spaceId, sql`lower(${entities.name})`],
+    })
+    .returning({ id: entities.id });
+  if (inserted.length > 0) return { entityId: inserted[0]!.id, isNew: true };
+
+  // Conflict — fetch the existing row (case-insensitive name match within scope)
+  const existing = await db
+    .select({ id: entities.id })
+    .from(entities)
+    .where(
+      and(
+        eq(entities.orgId, scope.orgId),
+        eq(entities.spaceId, scope.spaceId),
+        sql`lower(${entities.name}) = ${name.toLowerCase()}`,
+      ),
+    )
+    .limit(1);
+  if (existing.length === 0) {
+    // Unreachable: the unique index is on (space_id, lower(name)).
+    throw new Error(
+      `Entity upsert conflicted but no row found for name=${name} in space=${scope.spaceId}`,
+    );
+  }
+  return { entityId: existing[0]!.id, isNew: false };
+}
+
+/**
+ * Resolve a batch of extracted entities to DB rows. One embedding round-trip
+ * for the whole batch.
+ */
+export async function resolveEntities(
+  db: Database,
+  scope: TenantScope,
+  extracted: NormalizedEntity[],
+  embedder: Embedder,
+): Promise<ResolvedEntity[]> {
+  if (extracted.length === 0) return [];
+
+  const names = extracted.map((e) => e.name);
+  const { vectors } = await embedder.embedBatch(names, { mode: 'document' });
+  const pool = await fetchCandidatePool(db, scope, vectors);
+
+  const out: ResolvedEntity[] = [];
+  for (let i = 0; i < extracted.length; i++) {
+    const e = extracted[i]!;
+    const emb = vectors[i] ?? null;
+
+    const fuzzy = pool.length > 0 ? fuzzyResolve(e.name, pool) : null;
+    if (fuzzy) {
+      out.push({ extracted: e, entityId: fuzzy.entityId, isNew: false });
+      continue;
+    }
+    const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, emb);
+    out.push({
+      extracted: e,
+      entityId: upserted.entityId,
+      isNew: upserted.isNew,
+    });
+  }
+  return out;
+}
+
+/**
+ * Build the name→id map used by edge construction. Keyed by
+ * `name.trim().casefold()` — the ONLY mapping edge construction uses.
+ */
+export function buildNameToIdMap(resolved: ResolvedEntity[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const r of resolved) map.set(casefold(r.extracted.name), r.entityId);
+  return map;
+}
+
+// Re-exported so the entity collection step can use the same key shape.
+export { casefold };
+
+// keep tree-shaken `tokenSortRatio` referenced if needed by external callers
+export { tokenSortRatio };
+
+// keep Entity import alive for downstream consumers
+export type { Entity };
