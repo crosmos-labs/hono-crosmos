@@ -1,0 +1,46 @@
+name = "crosmos-ingestion"
+main = "src/index.ts"
+compatibility_date = "2024-12-23"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+[dev]
+port = 8788
+
+# Hyperdrive: shared NeonDB connection pooling (same DB as the API worker)
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "f5a4b0b3c894450f9ad332221a92ff5a"
+localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
+
+# Queue consumer: one ingestion job per invocation. A job may carry many
+# source_ids, but each job is its own queue message — see
+# docs/ingestion_migration/decisions.md §4 for the rationale.
+[[queues.consumers]]
+queue = "ingestion-jobs"
+max_batch_size = 1
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "ingestion-jobs-dlq"
+
+[vars]
+ENVIRONMENT = "development"
+# Default LLM provider for ingestion. Switch to "openai" to call OpenAI directly.
+LLM_PROVIDER = "openrouter"
+
+[env.production]
+[env.production.vars]
+ENVIRONMENT = "production"
+LLM_PROVIDER = "openrouter"
+
+[[env.production.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "334924fce954497fbcc866b74395bca1"
+
+[[env.production.queues.consumers]]
+queue = "ingestion-jobs"
+max_batch_size = 1
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "ingestion-jobs-dlq"

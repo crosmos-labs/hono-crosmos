@@ -1,0 +1,15 @@
+# Copy to .dev.vars for local dev. NEVER commit .dev.vars.
+
+# LLM providers — at least one is required. The active one is selected by
+# LLM_PROVIDER in wrangler.toml (defaults to "openrouter"). Keys for the
+# inactive provider are ignored at runtime.
+OPENROUTER_API_KEY=sk-or-v1-xxx
+OPENAI_API_KEY=sk-xxx
+
+# Embeddings (OpenAI, text-embedding-3-small, 1536 dims).
+# Reuses OPENAI_API_KEY above — no separate key needed.
+
+# Reranker (ZeroEntropy, zerank-2).
+ZEROENTROPY_API_KEY=ze-xxx
+
+SENTRY_DSN=
