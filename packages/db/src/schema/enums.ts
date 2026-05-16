@@ -16,3 +16,26 @@ export const subscriptionStatusType = pgEnum('subscription_status_type', [
   'canceled',
   'revoked',
 ]);
+
+export const memoryType = pgEnum('memory_type', [
+  'viewpoint',
+  'semantic',
+  'episode',
+  'inference',
+]);
+
+export const sourceExtractionStatus = pgEnum('source_extraction_status', [
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+]);
+
+export const ingestionJobStatus = pgEnum('ingestion_job_status', [
+  'pending',
+  'processing',
+  'completed',
+  'partial',
+  'failed',
+  'cancelled',
+]);
