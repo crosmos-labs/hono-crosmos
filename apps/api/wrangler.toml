@@ -35,16 +35,20 @@ APP_BASE_URL = "http://localhost:3000"
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"
-OAUTH_SERVER_BASE_URL = "https://api.crosmos.ai"
-APP_BASE_URL = "https://app.crosmos.ai"
+OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
+APP_BASE_URL = "https://hono.crosmos.dev"
+
+[[env.production.routes]]
+pattern = "hono.crosmos.dev"
+custom_domain = true
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "REPLACE_WITH_PROD_HYPERDRIVE_ID"
+id = "334924fce954497fbcc866b74395bca1"
 
 [[env.production.kv_namespaces]]
 binding = "API_KEY_CACHE"
-id = "REPLACE_WITH_PROD_KV_ID"
+id = "25fed42f4fb242acb470f7578a60b854"
 
 [[env.production.queues.producers]]
 binding = "INGESTION_QUEUE"

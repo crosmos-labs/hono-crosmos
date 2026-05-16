@@ -1,7 +1,7 @@
 import type { EmailSender } from './port';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
-const FROM_ADDRESS = 'Crosmos <hello@crosmos.ai>';
+const FROM_ADDRESS = 'Crosmos <hello@crosmos.dev>';
 
 export class ResendEmailSender implements EmailSender {
   constructor(private readonly apiKey: string) {}
