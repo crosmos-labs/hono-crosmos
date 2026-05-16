@@ -5,12 +5,15 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import type { Env, HonoEnv } from './bindings';
 import { authRoutes } from './features/auth/routes';
+import { conversationRoutes } from './features/conversations/routes';
+import { jobRoutes } from './features/jobs/routes';
 import { oauthConsumerRoutes } from './features/oauth/consumer.routes';
 import {
   oauthServerRedirectApp,
   oauthServerRoutes,
 } from './features/oauth/server.routes';
 import { orgRoutes } from './features/orgs/routes';
+import { sourceRoutes } from './features/sources/routes';
 import { spaceRoutes } from './features/spaces/routes';
 
 const app = new OpenAPIHono<HonoEnv>({
@@ -57,6 +60,9 @@ app.route('/api/v1/auth', authRoutes);
 app.route('/api/v1/auth/oauth', oauthConsumerRoutes);
 app.route('/api/v1/orgs', orgRoutes);
 app.route('/api/v1/spaces', spaceRoutes);
+app.route('/api/v1/sources', sourceRoutes);
+app.route('/api/v1/conversations', conversationRoutes);
+app.route('/api/v1/jobs', jobRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);
 
