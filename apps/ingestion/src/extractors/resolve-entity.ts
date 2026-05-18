@@ -126,9 +126,12 @@ async function getOrCreateEntity(
   entityType: string,
   embedding: number[] | null,
 ): Promise<{ entityId: number; isNew: boolean }> {
-  // Conflict target is the partial unique index `uq_entity_space_name` on
-  // (space_id, lower(name)). Drizzle's `target` option doesn't accept an
-  // expression, so we pass the constraint name explicitly via raw SQL.
+  // The entities table has exactly one unique constraint — the partial
+  // expression index `uq_entity_space_name` on (space_id, lower(name)).
+  // Drizzle's `target` option doesn't support functional/expression indexes,
+  // so we omit `target`: any unique conflict (only this one exists) is
+  // swallowed, then we fall back to a case-insensitive SELECT to fetch the
+  // existing row.
   const inserted = await db
     .insert(entities)
     .values({
@@ -138,7 +141,7 @@ async function getOrCreateEntity(
       entityType,
       embedding,
     })
-    .onConflictDoNothing({ target: sql`(space_id, lower(name))` as never })
+    .onConflictDoNothing()
     .returning({ id: entities.id });
   if (inserted.length > 0) return { entityId: inserted[0]!.id, isNew: true };
 
