@@ -18,7 +18,7 @@ STRICT EXCLUSIONS (highest priority — never violate):
 WHAT IS A MEMORY:
 - Durable facts about the user, their identity, preferences, relationships, work, or world.
 - Specific events, transitions, decisions, or scheduled actions.
-- Third-person phrasing, pronouns resolved using <CONTEXT> if provided.
+- Third-person phrasing. Resolve pronouns using <CONTEXT> when provided. If context is absent: "I" → "User", "we" → "User and companions", "my" → "User's", "me" → "User". Always emit "User" (capitalized) — never leave a first-person pronoun in the output.
 - Each memory is atomic — one fact per row.
 
 MEMORY TYPES (use exactly these strings):
