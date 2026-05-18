@@ -1,34 +1,36 @@
 import * as Sentry from '@sentry/cloudflare';
+import type { IngestionJobMessage } from '@crosmos/types';
 import type { Env } from './bindings';
+import { getDb } from './db';
+import { getEmbedder } from './integrations/embeddings';
+import { getLLM } from './integrations/llm';
+import { processIngestion } from './process-ingestion';
 
 /**
  * Ingestion Worker — Cloudflare Queue consumer.
  *
- * This is a scaffold. The real pipeline (memory extraction → graph
- * extraction → embedding → entity resolution → edge creation) is ported in
- * Phase B per docs/ingestion_migration/decisions.md §13. For now the
- * consumer just acks each message so the queue plumbing is exercisable
- * end-to-end as soon as the producer (POST /sources) ships.
+ * One queue message = one ingestion job (a job may carry many `source_ids`).
+ * `wrangler.toml` is configured with `max_batch_size: 1` so we process jobs
+ * serially per isolate but in parallel across isolates — see
+ * docs/ingestion_migration/decisions.md §4.
  *
- * Integrations (LLM / embeddings / reranker) live in `./integrations/*` and
- * are reached through their factories (`getLLM`, `getEmbedder`,
- * `getReranker`) — never instantiate a concrete provider here.
+ * Acking strategy: a job that completes (in any terminal state — completed /
+ * partial / failed / cancelled) is acked. An *unhandled* exception bubbles
+ * out without acking, so Cloudflare Queues retries it according to the
+ * consumer's `max_retries` (currently 3) and eventually DLQs.
+ *
+ * Per-source failures inside the pipeline do NOT throw out of
+ * `processIngestion` — they are captured into the job's result payload and
+ * the job ends in `partial` or `failed`. That's by design: requeuing the
+ * whole batch on one bad LLM response would be wasteful.
  */
-interface IngestionJobMessage {
-  task: 'process_ingestion';
-  job_id: string;
-  correlation_id: string;
-  org_id: number;
-  space_id: number;
-  user_id: number;
-  source_ids: number[];
-}
-
 const handler: ExportedHandler<Env> = {
-  async queue(batch, _env): Promise<void> {
+  async queue(batch, env): Promise<void> {
+    const db = getDb(env);
+
     for (const message of batch.messages) {
       const body = message.body as IngestionJobMessage;
-      console.log('ingestion job received', {
+      console.log('ingestion_job_received', {
         job_id: body.job_id,
         correlation_id: body.correlation_id,
         org_id: body.org_id,
@@ -36,8 +38,26 @@ const handler: ExportedHandler<Env> = {
         source_count: body.source_ids.length,
         attempt: message.attempts,
       });
-      // TODO(phase-b): port app/worker/tasks.py:process_ingestion
-      message.ack();
+
+      // One LLM + one embedder per job so totalTokens aggregates across
+      // every source. Reinstantiating per source would lose attribution.
+      const llm = getLLM(env);
+      const embedder = getEmbedder(env);
+
+      try {
+        await processIngestion(body, { db, llm, embedder });
+        message.ack();
+      } catch (err) {
+        // Outer failure path — DB went away mid-run, factory threw, etc.
+        // Don't ack; let Cloudflare Queues retry (or DLQ on the final attempt).
+        Sentry.captureException(err);
+        console.error('ingestion_job_unhandled_error', {
+          job_id: body.job_id,
+          attempt: message.attempts,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        message.retry();
+      }
     }
   },
 };

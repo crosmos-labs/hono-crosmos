@@ -22,10 +22,12 @@ localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 binding = "API_KEY_CACHE"
 id = "526c4c65675d478b827a2b0566bba1b6"
 
-# Queue producer: ingestion jobs (consumer lives in apps/ingestion)
+# Queue producer: ingestion jobs (consumer lives in apps/ingestion).
+# Dev and prod each have their own queue so the two ingestion workers don't
+# fight over the single-consumer slot Cloudflare Queues enforces.
 [[queues.producers]]
 binding = "INGESTION_QUEUE"
-queue = "ingestion-jobs"
+queue = "ingestion-jobs-dev"
 
 [vars]
 ENVIRONMENT = "development"
