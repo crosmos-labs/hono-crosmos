@@ -38,12 +38,12 @@ const VALID_SPEAKER_ROLES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Generic low-signal patterns. Matches Python's `GENERIC_CONTENT_PATTERNS`.
- * Anchored with `^` / `$` to catch whole-message junk only.
+ * Generic low-signal patterns. Mirrors Python's `GENERIC_CONTENT_PATTERNS`
+ * verbatim. Anchored with `^` / `$` to catch whole-message junk only.
  */
 const GENERIC_CONTENT_PATTERNS: RegExp[] = [
-  /^(okay|ok|thanks|thank you|sure|yes|yeah|no|nope|got it|sounds good)\.?$/i,
-  /^user (asked|said|mentioned) that\.?$/i,
+  /^\s*(okay|ok|thanks|thank you|sure|sounds good|got it)\s*\.?$/i,
+  /^\s*user\s+(asked|said|mentioned)\s+that\s*$/i,
 ];
 
 export class DropCounter {
@@ -78,6 +78,16 @@ function parseIsoDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Mirrors Python's `normalize_score`. Returns the score if it is a finite
+ * number in [0, 1], otherwise null.
+ */
+function normalizeScore(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 1) return null;
+  return value;
 }
 
 function wordCount(s: string): number {
@@ -144,8 +154,8 @@ function normalizeRelation(
     drops.bump('self_relation');
     return null;
   }
-  const confidence = typeof raw.confidence === 'number' ? raw.confidence : NaN;
-  if (!Number.isFinite(confidence) || confidence < MIN_RELATION_CONFIDENCE) {
+  const confidence = normalizeScore(raw.confidence);
+  if (confidence === null || confidence < MIN_RELATION_CONFIDENCE) {
     drops.bump('low_confidence_relation');
     return null;
   }
@@ -191,9 +201,8 @@ function normalizeFact(
     speakerRole = raw.speaker_role as SpeakerRole;
   }
 
-  const importanceScore =
-    typeof raw.importance_score === 'number' ? raw.importance_score : NaN;
-  if (!Number.isFinite(importanceScore) || importanceScore < MIN_IMPORTANCE_SCORE) {
+  const importanceScore = normalizeScore(raw.importance_score);
+  if (importanceScore === null || importanceScore < MIN_IMPORTANCE_SCORE) {
     drops.bump('low_importance_score');
     return null;
   }

@@ -7,48 +7,104 @@
  * docs/ingestion_migration/pipeline.md §Stage 2.
  */
 
-export const MEMORY_SYSTEM_PROMPT = `You extract atomic, durable memories from raw content for a long-term memory system used by AI agents.
+export const MEMORY_SYSTEM_PROMPT = `Extract contextual memories from content. A memory must be useful for future personalization or task continuation.
 
-STRICT EXCLUSIONS (highest priority — never violate):
-- Only extract facts STATED BY THE USER. Assistant recommendations, suggestions, or model output are NOT memories.
-- Do not record meta-statements like "User asked X", "User's name is not recorded", "User wants to discuss Y". Those are not memories.
-- Questions are not memories.
-- Greetings, acknowledgements, fillers ("ok", "thanks", "got it") are not memories.
+## STRICT EXCLUSIONS (HIGHEST PRIORITY)
 
-WHAT IS A MEMORY:
-- Durable facts about the user, their identity, preferences, relationships, work, or world.
-- Specific events, transitions, decisions, or scheduled actions.
-- Third-person phrasing. Resolve pronouns using <CONTEXT> when provided. If context is absent: "I" → "User", "we" → "User and companions", "my" → "User's", "me" → "User". Always emit "User" (capitalized) — never leave a first-person pronoun in the output.
-- Each memory is atomic — one fact per row.
+NEVER extract:
+- Conversation descriptions: "User asked...", "Assistant responded...", "User was told..."
+- Assistant actions: "I'll save this", "I've added it", "I will remember this"
+- Any description of the interaction itself
+- Absence of information: "User's name is not known", "not recorded", "no information available"
+- Questions the user asked (only extract what the user STATED, not asked)
 
-MEMORY TYPES (use exactly these strings):
-- "semantic"  — ongoing facts, identity, stable attributes.
-- "episode"   — specific events, transitions, scheduled actions.
-- "viewpoint" — preferences, feelings, opinions.
+If the content does not contain a direct factual statement from the USER, return {"memories":[]}.
 
-STATE-CHANGE RULE: when content describes a transition (changed jobs, moved, broke up, started using X), emit BOTH:
-- a "semantic" memory describing the new ongoing state, AND
-- an "episode" memory describing the transition itself.
+## RULES
+1. Only extract facts stated by the USER, regardless of subject. "Rachit eats pizza" → extract. Do NOT extract what the ASSISTANT says — advice, recommendations, explanations, tips, world knowledge, product comparisons. "Blockchain is a decentralized ledger" → skip. "User is advised to organize their closet" → skip. "Acadia National Park is recommended for families" → skip.
+2. Each memory must be a direct factual statement. Do NOT summarize the conversation, do NOT extract assistant responses or actions.
+3. Third person. Resolve pronouns using context. If context is absent: "I" → USER, "we" → USER and companions, "my" → USER's.
+4. Separate topics into separate memories (work, preferences, events).
+5. Do not atomize — keep related facts together, but preserve EVERY specific name and detail verbatim within the combined memory.
+6. Skip greetings, filler, procedural chatter.
+7. Deduplication: exact semantic overlap with existing_memories → skip. Same fact with NEW dates/details → extract. Same topic, different context → extract.
+8. Preserve ALL specific names verbatim: brands, stores, venues, products, people, quantities, amounts, destinations, locations. NEVER drop or generalize.
+9. When user expresses preferences about a specific thing (hotel features, activity types, cuisine), extract the preference WITH the specific details — NOT a vague summary.
 
-IMPORTANCE SCORING (0.0–1.0):
-- 0.3 = minor preference or detail.
-- 0.6 = important context.
-- 0.9 = identity-defining fact or major life transition.
-Pick a value on this scale; do not invent your own bands.
+## STATE CHANGES
+If text implies a new current state, emit BOTH:
+- semantic memory for current state
+- episode memory for transition
 
-SPEAKER_ROLE:
-- One of: "user", "assistant", "system", "tool", or null.
-- For chat ingestion, this is typically "user" — only assistant/system/tool when the source itself is that role's content AND it's a fact the user has effectively asserted (rare).
+## MEMORY TYPES
+- semantic: ongoing states, identity, durable facts
+- episode: events, transitions, scheduled actions
+- viewpoint: preferences, feelings, opinions
 
-TEMPORAL RULE (critical):
-- Whenever the content contains any temporal reference (yesterday, last week, on April 14, etc.), CONVERT it to an absolute ISO 8601 datetime using "Current reference time" provided in the user message.
-- EMBED the resolved absolute date INTO the memory content text. Example: rewrite "yesterday" as "on April 14, 2023".
-- Set event_time to the resolved ISO 8601 datetime.
-- If reference time is null AND the date is relative, preserve the original phrase in content and set event_time: null.
+## SCORING
+0.3 = minor preference or detail: "User likes ramen"
+0.6 = important context: "User works as a software engineer"
+0.9 = identity-defining or major transition: "User started a PhD", "User moved to Boulder"
 
-OUTPUT:
-- Return STRICT JSON matching the provided schema. No prose, no markdown fences.
-- If nothing memory-worthy is in <CONTENT>, return {"memories": []}.`;
+## TEMPORAL
+- ALWAYS extract event_time when ANY temporal reference exists (dates, "last Saturday", "three weeks ago", "yesterday").
+- Convert relative dates to absolute ISO8601 using reference_time.
+- Embed resolved absolute date INTO content text (replace "yesterday" with "on April 14, 2023").
+- If reference_time is null and date is relative, preserve the original phrase and set event_time to null.
+- null for ongoing facts without a specific date.
+
+## ASSISTANT CONTENT FILTER
+- Assistant recommendations are NOT memories: "User is advised to..." → SKIP
+- Generic knowledge is NOT a memory: "Blockchain provides decentralization..." → SKIP
+- Product/brand comparisons by assistant are NOT memories: "Madewell and Kate Spade are known for..." → SKIP
+- Assistant explaining concepts is NOT a memory: "CAAT refers to the use of technology..." → SKIP
+- Absence of information is NOT a memory: "User's name is not recorded" → SKIP
+- User accepting/deciding IS a memory: "I'll go with the ocean view room" → EXTRACT
+- User revealing intent IS a memory: "I'm thinking of organizing my closet this weekend" → EXTRACT
+- User stating a fact about themselves IS a memory: "I've been making my bed every morning for two weeks" → EXTRACT
+
+## NEGATIVE EXAMPLES
+
+Input: "What's my name?"
+{"memories":[]}
+
+Input: "Do you know my name?"
+{"memories":[]}
+
+Input: "I'll save that for you."
+{"memories":[]}
+
+Input: "User asked what their name is."
+{"memories":[]}
+
+Input: "My name is not recorded anywhere in this system."
+{"memories":[]}
+
+## POSITIVE EXAMPLES (boundary cases — these ARE memories)
+
+Input: "I'm thinking of organizing my closet this weekend." with reference_time 2026-04-18
+{"memories":[{"content":"User plans to organize their closet on 2026-04-18.","memory_type":"episode","importance_score":0.3,"event_time":"2026-04-18T00:00:00"}]}
+
+Input: "I've been doing yoga every morning for 3 months."
+{"memories":[{"content":"User has been doing yoga every morning for 3 months.","memory_type":"semantic","importance_score":0.6,"event_time":null}]}
+
+Input: "Sounds good, I'll go with the ocean view room." with reference_time 2026-04-18
+{"memories":[{"content":"User chose the ocean view room.","memory_type":"episode","importance_score":0.3,"event_time":"2026-04-18T00:00:00"}]}
+
+Input: "I just moved from San Francisco to Boulder." with reference_time 2026-04-18
+{"memories":[{"content":"User lives in Boulder.","memory_type":"semantic","importance_score":0.9,"event_time":null},{"content":"User moved from San Francisco to Boulder on 2026-04-18.","memory_type":"episode","importance_score":0.9,"event_time":"2026-04-18T00:00:00"}]}
+
+## PITFALLS
+- Do NOT atomize rich facts into thin fragments.
+- Relative dates in content MUST be replaced with absolute dates.
+- Bare years ("in 2022"), seasons ("last fall", "summer 2025"), and decade markers ALWAYS imply a concrete event_time.
+- Coreferences: always resolve to the specific name.
+
+## OUTPUT FORMAT
+Return strict JSON:
+{"memories":[{"content":"...","memory_type":"semantic|episode|viewpoint","importance_score":0.0,"speaker_role":"user|assistant|system|tool"|null,"event_time":"ISO8601"|null}]}
+
+If no memories: {"memories":[]}`;
 
 /**
  * JSON Schema for the extraction response. Designed to satisfy OpenAI / OpenRouter
@@ -100,44 +156,49 @@ export const MEMORY_EXTRACTION_SCHEMA = {
  */
 function escapeTags(s: string): string {
   return s
-    .replaceAll('<CONTENT>', '\\<CONTENT\\>')
     .replaceAll('</CONTENT>', '<\\/CONTENT>')
-    .replaceAll('<CONTEXT>', '\\<CONTEXT\\>')
-    .replaceAll('</CONTEXT>', '<\\/CONTEXT>');
+    .replaceAll('<CONTENT>', '\\<CONTENT\\>')
+    .replaceAll('</CONTEXT>', '<\\/CONTEXT>')
+    .replaceAll('<CONTEXT>', '\\<CONTEXT\\>');
 }
 
 export interface MemoryUserPromptInput {
   content: string;
-  referenceTime: string;
+  /** ISO-8601 reference time, or null for content without a temporal anchor. */
+  referenceTime: string | null;
   context?: string | null;
   existingMemories?: string[];
 }
 
 export function buildMemoryUserPrompt(input: MemoryUserPromptInput): string {
-  const content = escapeTags(input.content);
-  const context = input.context ? escapeTags(input.context) : null;
+  const safeContent = escapeTags(input.content);
+  const safeContext = input.context ? escapeTags(input.context) : null;
+
+  const referenceTimeStr = input.referenceTime
+    ? `\n- Current reference time: ${input.referenceTime}`
+    : '';
+
+  let existingMemoriesStr = '';
   const existing = (input.existingMemories ?? []).filter((s) => s.trim().length > 0);
-
-  const blocks: string[] = [];
-
-  if (context) {
-    blocks.push(`<CONTEXT>\n${context}\n</CONTEXT>`);
+  if (existing.length > 0) {
+    const items = existing.map((m) => `- ${m}`).join('\n');
+    existingMemoriesStr =
+      `\n\n<EXISTING_MEMORIES>\n${items}\n</EXISTING_MEMORIES>\n` +
+      'Do not re-extract facts already captured above. ' +
+      'Extract only new or meaningfully updated information.';
   }
 
-  blocks.push(`<CONTENT>\n${content}\n</CONTENT>`);
-  blocks.push(`- Current reference time: ${input.referenceTime}`);
-
-  if (existing.length > 0) {
-    blocks.push(
-      `<EXISTING_MEMORIES>\n${existing.map((m) => `- ${m}`).join('\n')}\n</EXISTING_MEMORIES>\nDo not re-extract facts already captured above. Extract only new or meaningfully updated information.`,
+  if (safeContext) {
+    return (
+      `<CONTEXT>\n${safeContext}\n</CONTEXT>\n\n` +
+      `<CONTENT>\n${safeContent}\n</CONTENT>` +
+      `${referenceTimeStr}${existingMemoriesStr}\n\n` +
+      'Extract from <CONTENT> only. Use <CONTEXT> solely for pronoun resolution.'
     );
   }
-
-  blocks.push(
-    context
-      ? 'Extract from <CONTENT> only. Use <CONTEXT> solely for pronoun resolution.'
-      : 'Extract from the content above.',
+  return (
+    `<CONTENT>\n${safeContent}\n</CONTENT>` +
+    `${referenceTimeStr}${existingMemoriesStr}\n\n` +
+    'Extract from the content above.'
   );
-
-  return blocks.join('\n\n');
 }

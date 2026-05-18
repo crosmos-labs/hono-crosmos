@@ -15,32 +15,32 @@ export interface EntityTypeMeta {
 
 export const ENTITY_TYPES: Readonly<Record<string, EntityTypeMeta>> = {
   person: {
-    description: 'Individuals, users, contacts',
-    examples: ['Alice', 'Dr. Patel', 'User'],
+    description: 'Individuals, users, contacts, people mentioned in conversation',
+    examples: ['Alice', 'Bob', 'the user', 'my manager'],
   },
   organization: {
-    description: 'Companies, institutions, teams',
-    examples: ['Google', 'Stanford', 'Zara'],
+    description: 'Companies, teams, institutions, groups, departments',
+    examples: ['Google', 'the team', 'engineering department', 'startup'],
   },
   technology: {
-    description: 'Languages, frameworks, platforms, tools',
-    examples: ['Python', 'React', 'AWS', 'Docker'],
+    description: 'Programming languages, frameworks, libraries, platforms, tools, and software services',
+    examples: ['Python', 'PostgreSQL', 'React', 'AWS', 'Docker', 'ARQ'],
   },
   project: {
-    description: 'Named systems / products / initiatives',
-    examples: ['Crosmos', 'CS 229'],
+    description: 'Named systems, products, codebases, or initiatives being built or worked on',
+    examples: ['Crosmos', 'the API', 'Consolidation Engine', 'the mobile app'],
   },
   concept: {
-    description: 'Abstract named domains or skills',
-    examples: ['machine learning', 'UTI', 'work-life balance'],
+    description: 'Abstract ideas, domains, skills, preferences, and principles — not tools or named projects',
+    examples: ['machine learning', 'dark mode preference', 'work-life balance', 'honesty'],
   },
   location: {
-    description: 'Physical or virtual places',
-    examples: ['San Francisco', 'Tokyo', 'the office'],
+    description: 'Physical or virtual places, cities, regions, addresses',
+    examples: ['San Francisco', 'the office', 'remote', 'AWS us-east-1'],
   },
   object: {
-    description: 'Named physical items, devices, docs',
-    examples: ['iPhone 15', 'Bell Zephyr helmet'],
+    description: 'Physical items, devices, possessions, and documents',
+    examples: ['laptop', 'iPhone', 'the server', 'the README'],
   },
 } as const;
 

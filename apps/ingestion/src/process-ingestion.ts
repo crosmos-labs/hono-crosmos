@@ -88,7 +88,6 @@ export async function processIngestion(
   await updateJobStatus(db, msg.job_id, 'processing');
 
   const failedSourceIds: number[] = [];
-  const completedSourceIds: number[] = [];
   const sourceErrors: Record<string, string> = {};
   const results: IngestResult[] = [];
 
@@ -109,8 +108,7 @@ export async function processIngestion(
     const sourceStatus = await getSourceExtractionStatus(db, sourceId);
     if (sourceStatus !== 'pending') {
       console.log('ingestion_source_already_processed', { sourceId, status: sourceStatus });
-      if (sourceStatus === 'completed') completedSourceIds.push(sourceId);
-      else if (sourceStatus === 'failed') failedSourceIds.push(sourceId);
+      if (sourceStatus === 'failed') failedSourceIds.push(sourceId);
       continue;
     }
 
@@ -138,7 +136,6 @@ export async function processIngestion(
     if (result) {
       results.push(result);
       await markSourcesStatus(db, scope, [sourceId], 'completed');
-      completedSourceIds.push(sourceId);
     } else {
       const message =
         lastErr instanceof Error ? lastErr.message : String(lastErr);
@@ -152,31 +149,46 @@ export async function processIngestion(
     }
   }
 
-  // Roll up job status
+  // Roll up job status — mirrors Python's `process_ingestion` terminal block.
   const all = msg.source_ids.length;
   const failed = failedSourceIds.length;
   let finalStatus: IngestionJobStatus;
-  if (failed === 0) finalStatus = 'completed';
-  else if (failed === all) finalStatus = 'failed';
-  else finalStatus = 'partial';
+  let rolledUpError: string | undefined;
+  if (failed === 0) {
+    finalStatus = 'completed';
+  } else if (failed === all) {
+    finalStatus = 'failed';
+    rolledUpError = 'All sources failed during ingestion';
+  } else {
+    finalStatus = 'partial';
+    rolledUpError = `${failed}/${all} sources failed`;
+  }
 
   const memoryCount = results.reduce((n, r) => n + r.memories.length, 0);
   const edgeCount = results.reduce((n, r) => n + r.edges.length, 0);
-  const entityCount = results.reduce(
-    (n, r) => n + r.newEntityIds.length + r.resolvedEntityIds.length,
-    0,
-  );
+  // Python counts UNIQUE entity ids across all sources via set union.
+  const entityIds = new Set<number>();
+  for (const r of results) {
+    for (const id of r.newEntityIds) entityIds.add(id);
+    for (const id of r.resolvedEntityIds) entityIds.add(id);
+  }
+  const entityCount = entityIds.size;
   const totalTokens = llm.totalTokens + embedder.totalTokens;
 
-  // Best-effort token recording — failure does not fail the job
-  try {
-    await recordIngestionTokens(db, scope, totalTokens);
-  } catch (err) {
-    console.warn('record_ingestion_tokens_failed', { error: String(err) });
+  // Best-effort token recording — failure does not fail the job (Python
+  // wraps this in try/except too).
+  if (totalTokens > 0) {
+    try {
+      await recordIngestionTokens(db, scope, totalTokens);
+    } catch (err) {
+      console.warn('record_ingestion_tokens_failed', { error: String(err) });
+    }
   }
 
   const resultBody: IngestionJobResult = {
-    source_ids: completedSourceIds,
+    // Python reports the original source_ids (not just completed) so callers
+    // can reconstruct the input batch from the result payload.
+    source_ids: msg.source_ids,
     failed_source_ids: failedSourceIds,
     memory_count: memoryCount,
     entity_count: entityCount,
@@ -184,6 +196,7 @@ export async function processIngestion(
     tokens_used: totalTokens,
   };
   if (Object.keys(sourceErrors).length > 0) resultBody.source_errors = sourceErrors;
+  if (rolledUpError) resultBody.error_message = rolledUpError;
 
   await updateJobStatus(db, msg.job_id, finalStatus, { result: resultBody });
 }

@@ -14,118 +14,156 @@
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const WEEKDAYS: Record<string, number> = {
-  sunday: 0,
-  monday: 1,
-  tuesday: 2,
-  wednesday: 3,
-  thursday: 4,
-  friday: 5,
-  saturday: 6,
+/** Python weekday(): Monday=0, ..., Sunday=6. */
+const WEEKDAY_MAP: Record<string, number> = {
+  monday: 0,
+  tuesday: 1,
+  wednesday: 2,
+  thursday: 3,
+  friday: 4,
+  saturday: 5,
+  sunday: 6,
 };
 
-function midnightUtc(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+function pyWeekday(d: Date): number {
+  // getUTCDay: Sun=0..Sat=6; convert to Python weekday (Mon=0..Sun=6).
+  return (d.getUTCDay() + 6) % 7;
 }
 
-function startOfWeekMonday(d: Date): Date {
-  const day = d.getUTCDay(); // 0 = Sun, 1 = Mon
-  const delta = day === 0 ? -6 : 1 - day;
-  return new Date(midnightUtc(d).getTime() + delta * DAY_MS);
+function toMidnightUtc(d: Date): Date {
+  return new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0),
+  );
 }
 
-function firstOfMonth(d: Date, monthDelta: number): Date {
-  const year = d.getUTCFullYear();
-  const month = d.getUTCMonth() + monthDelta;
-  return new Date(Date.UTC(year, month, 1));
-}
-
-function isoDate(d: Date): string {
-  return midnightUtc(d).toISOString();
-}
-
-function parseFewOrInt(token: string): number {
-  if (token === 'a' || token === 'an') return 1;
-  if (token === 'few') return 3;
-  return parseInt(token, 10);
+function addDays(d: Date, days: number): Date {
+  return new Date(d.getTime() + days * DAY_MS);
 }
 
 /**
- * Resolve relative temporal phrases. Returns an ISO 8601 datetime string at
- * UTC midnight, or `null` if no recognized pattern matched.
+ * Mirror Python's `datetime.isoformat()` for a midnight-aware datetime.
+ * Python emits `2026-05-18T00:00:00+00:00` (with offset) when tz-aware, or
+ * `2026-05-18T00:00:00` when naive. Reference times from the pipeline are
+ * always tz-aware (UTC), so we emit the offset form.
+ */
+function dateIso(d: Date): string {
+  const mid = toMidnightUtc(d);
+  const y = mid.getUTCFullYear().toString().padStart(4, '0');
+  const m = (mid.getUTCMonth() + 1).toString().padStart(2, '0');
+  const day = mid.getUTCDate().toString().padStart(2, '0');
+  return `${y}-${m}-${day}T00:00:00+00:00`;
+}
+
+/**
+ * Deterministic regex-based temporal inference. Mirrors
+ * `app/engine/extractors/temporal.py:infer_temporal_date`.
+ *
+ * Runs after Pass 1 for any extracted memory whose `event_time` is null. The
+ * LLM is supposed to resolve relative dates against `reference_time`, but it
+ * sometimes leaves the field empty when the phrase was non-obvious. The
+ * regex fallback catches the easy cases ("yesterday", "next monday",
+ * "2 weeks ago") so we don't lose temporal context.
  */
 export function inferTemporalDate(
   content: string,
-  referenceTime: Date,
+  referenceTime: Date | null,
 ): string | null {
-  const text = content.toLowerCase();
-  const ref = midnightUtc(referenceTime);
+  if (referenceTime === null) return null;
+  const textLower = content.toLowerCase();
 
-  // Fixed-day phrases. Ordered: most specific (multi-word) first.
-  const fixed: Array<[RegExp, number]> = [
+  const fixedPatterns: Array<[RegExp, number]> = [
     [/\blast night\b/, -1],
     [/\byesterday\b/, -1],
-    [/\btomorrow\b/, 1],
+    [/\btoday\b/, 0],
     [/\bthis morning\b/, 0],
     [/\bthis afternoon\b/, 0],
     [/\bthis evening\b/, 0],
     [/\btonight\b/, 0],
-    [/\btoday\b/, 0],
+    [/\btomorrow\b/, 1],
   ];
-  for (const [re, days] of fixed) {
-    if (re.test(text)) return isoDate(new Date(ref.getTime() + days * DAY_MS));
+  for (const [pattern, offset] of fixedPatterns) {
+    if (pattern.test(textLower)) {
+      return dateIso(addDays(referenceTime, offset));
+    }
   }
 
-  // Numeric: "N days/weeks/months ago", "a few days ago", "in N days/weeks/months"
-  const agoRe =
-    /\b(a|an|few|\d+)\s+(day|days|week|weeks|month|months)\s+ago\b/;
-  const agoMatch = text.match(agoRe);
-  if (agoMatch) {
-    const n = parseFewOrInt(agoMatch[1]!);
-    const unit = agoMatch[2]!;
-    const days = unit.startsWith('day') ? n : unit.startsWith('week') ? 7 * n : 30 * n;
-    return isoDate(new Date(ref.getTime() - days * DAY_MS));
-  }
-  if (/\ba week ago\b/.test(text)) return isoDate(new Date(ref.getTime() - 7 * DAY_MS));
-  if (/\ba month ago\b/.test(text)) return isoDate(new Date(ref.getTime() - 30 * DAY_MS));
-
-  const inRe = /\bin\s+(a|an|few|\d+)\s+(day|days|week|weeks|month|months)\b/;
-  const inMatch = text.match(inRe);
-  if (inMatch) {
-    const n = parseFewOrInt(inMatch[1]!);
-    const unit = inMatch[2]!;
-    const days = unit.startsWith('day') ? n : unit.startsWith('week') ? 7 * n : 30 * n;
-    return isoDate(new Date(ref.getTime() + days * DAY_MS));
+  const numericPatterns: Array<[RegExp, number]> = [
+    [/\b(\d+)\s*days?\s+ago\b/, -1],
+    [/\ba\s+few\s+days?\s+ago\b/, -3],
+    [/\b(\d+)\s*weeks?\s+ago\b/, -7],
+    [/\ba\s+week\s+ago\b/, -7],
+    [/\b(\d+)\s*months?\s+ago\b/, -30],
+    [/\ba\s+month\s+ago\b/, -30],
+    [/\bin\s+(\d+)\s*days?\b/, 1],
+    [/\bin\s+(\d+)\s*weeks?\b/, 7],
+    [/\bin\s+(\d+)\s*months?\b/, 30],
+  ];
+  for (const [pattern, unitDays] of numericPatterns) {
+    const match = textLower.match(pattern);
+    if (match) {
+      const num = match[1] !== undefined ? parseInt(match[1], 10) : 1;
+      return dateIso(addDays(referenceTime, num * unitDays));
+    }
   }
 
-  // Weekday: "last <weekday>", "next <weekday>"
-  const weekdayRe = /\b(last|next)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/;
-  const weekdayMatch = text.match(weekdayRe);
+  const weekdayMatch = textLower.match(
+    /\b(last|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/,
+  );
   if (weekdayMatch) {
     const direction = weekdayMatch[1]!;
-    const target = WEEKDAYS[weekdayMatch[2]!]!;
-    const current = ref.getUTCDay();
+    const dayName = weekdayMatch[2]!;
+    const targetDow = WEEKDAY_MAP[dayName]!;
+    const currentDow = pyWeekday(referenceTime);
+    // Emulate Python's modulo (always non-negative) and `x or N` fallback.
     let delta: number;
     if (direction === 'last') {
-      delta = ((current - target - 7) % 7) || -7;
-      if (delta > 0) delta -= 7;
+      const mod = (((currentDow - targetDow - 7) % 7) + 7) % 7;
+      delta = mod === 0 ? -7 : mod;
     } else {
-      delta = ((target - current + 7) % 7) || 7;
+      const mod = (((targetDow - currentDow + 7) % 7) + 7) % 7;
+      delta = mod === 0 ? 7 : mod;
     }
-    return isoDate(new Date(ref.getTime() + delta * DAY_MS));
+    return dateIso(addDays(referenceTime, delta));
   }
 
-  // Week blocks
-  if (/\blast week\b/.test(text))
-    return isoDate(new Date(startOfWeekMonday(ref).getTime() - 7 * DAY_MS));
-  if (/\bthis week\b/.test(text)) return isoDate(startOfWeekMonday(ref));
-  if (/\bnext week\b/.test(text))
-    return isoDate(new Date(startOfWeekMonday(ref).getTime() + 7 * DAY_MS));
+  if (/\blast week\b/.test(textLower)) {
+    const monday = addDays(referenceTime, -(pyWeekday(referenceTime) + 7));
+    return dateIso(monday);
+  }
+  if (/\bthis week\b/.test(textLower)) {
+    const monday = addDays(referenceTime, -pyWeekday(referenceTime));
+    return dateIso(monday);
+  }
+  if (/\bnext week\b/.test(textLower)) {
+    const monday = addDays(referenceTime, 7 - pyWeekday(referenceTime));
+    return dateIso(monday);
+  }
 
-  // Month blocks
-  if (/\blast month\b/.test(text)) return isoDate(firstOfMonth(ref, -1));
-  if (/\bthis month\b/.test(text)) return isoDate(firstOfMonth(ref, 0));
-  if (/\bnext month\b/.test(text)) return isoDate(firstOfMonth(ref, 1));
+  if (/\blast month\b/.test(textLower)) {
+    const firstOfThis = new Date(
+      Date.UTC(referenceTime.getUTCFullYear(), referenceTime.getUTCMonth(), 1),
+    );
+    const lastMonth = addDays(firstOfThis, -1);
+    const firstOfLast = new Date(
+      Date.UTC(lastMonth.getUTCFullYear(), lastMonth.getUTCMonth(), 1),
+    );
+    return dateIso(firstOfLast);
+  }
+  if (/\bthis month\b/.test(textLower)) {
+    return dateIso(
+      new Date(Date.UTC(referenceTime.getUTCFullYear(), referenceTime.getUTCMonth(), 1)),
+    );
+  }
+  if (/\bnext month\b/.test(textLower)) {
+    // Python: (reference_time.replace(day=28) + timedelta(days=4)).replace(day=1)
+    const day28 = new Date(
+      Date.UTC(referenceTime.getUTCFullYear(), referenceTime.getUTCMonth(), 28),
+    );
+    const plus4 = addDays(day28, 4);
+    return dateIso(
+      new Date(Date.UTC(plus4.getUTCFullYear(), plus4.getUTCMonth(), 1)),
+    );
+  }
 
   return null;
 }

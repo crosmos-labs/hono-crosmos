@@ -7,21 +7,26 @@
  * is non-fatal: the pipeline still persists memories without graph data (see
  * docs/ingestion_migration/pipeline.md §Stage 3).
  */
-import {
-  CANONICAL_RELATIONS,
-  RELATION_TYPES,
-} from '../ontology/relation-types';
-import {
-  ENTITY_NAME_MAX_LENGTH,
-  ENTITY_NAME_MAX_WORDS,
-  MIN_RELATION_CONFIDENCE,
-} from '../constants';
+import { RELATION_TYPES } from '../ontology/relation-types';
 
+/**
+ * Show each canonical relation once — skip inverses already covered by their
+ * pair. Showing both directions (USES + USED_BY, OWNS + OWNED_BY) lets the
+ * LLM pick either, fragmenting the graph. Inverses remain in the ontology
+ * for retrieval rewrites; we just don't expose them as extraction targets.
+ *
+ * Mirrors Python's `_canonical_relations_block` (graph.py).
+ */
 function canonicalRelationBlock(): string {
-  return CANONICAL_RELATIONS.map((name) => {
-    const meta = RELATION_TYPES[name]!;
-    return `- ${name}: ${meta.description}`;
-  }).join('\n');
+  const shown = new Set<string>();
+  const lines: string[] = [];
+  for (const [name, defn] of Object.entries(RELATION_TYPES)) {
+    if (shown.has(name)) continue;
+    lines.push(`- ${name}: ${defn.description}`);
+    shown.add(name);
+    if (defn.inverse) shown.add(defn.inverse);
+  }
+  return lines.join('\n');
 }
 
 export const GRAPH_SYSTEM_PROMPT = `Given a list of extracted memories, identify the named entities and direct relationships in each memory.
@@ -31,7 +36,7 @@ export const GRAPH_SYSTEM_PROMPT = `Given a list of extracted memories, identify
 - Every entity that appears as a subject or object in a relation MUST be in the entities list of that same memory.
 
 ## ENTITIES
-Extract proper nouns AND widely recognized named entities. Each entity must be a concise name (max ${ENTITY_NAME_MAX_WORDS} words; max ${ENTITY_NAME_MAX_LENGTH} chars).
+Extract ONLY proper nouns and widely recognized named entities. Each entity must be a concise name (max 5 words).
 
 Entity types (use these exactly):
 - person: Individuals, users, contacts. e.g. "Alice", "Dr. Patel", "User"
@@ -50,7 +55,7 @@ Do NOT extract as entities:
 - Generic nouns: "furniture", "side dishes", "assignment", "another assignment"
 - Events/actions: "swimming", "playing piano", "5K", "marathon training"
 
-GOOD: "Anthropic", "Sarah", "Boulder", "AWS", "iPhone 15", "Stanford", "User"
+GOOD: "Anthropic", "Sarah", "Boulder", "AWS", "iPhone 15", "Stanford"
 BAD: "a pair of boots from Zara", "going for a walk", "eating dinner", "Medium Cheesburst Margherita with paneer topping"
 
 The SUBJECTS and OBJECTS of an activity are entities — the activity itself is NOT. "I went to Japan" → entity: "Japan", NOT "trip to Japan".
@@ -71,7 +76,7 @@ Direct relationships: action-object, ownership, usage, employment, preference, m
 
 Fields: subject, relation, object, confidence, valid_from
 
-Confidence: higher for explicit relations, lower for inferred ones. Below ${MIN_RELATION_CONFIDENCE} likely not a real relation.
+Confidence: higher for explicit relations, lower for inferred ones. Below 0.7 likely not a real relation.
 
 valid_from = when the asserted fact about this relation became true.
 Set valid_from only when memory gives an explicit transition date. Leave null for ongoing relations.
@@ -88,13 +93,15 @@ Memories:
 [0] User works at Anthropic as a research engineer on Claude safety.
 [1] Emily got accepted to Stanford's MBA program on 2026-04-18.
 [2] User left Anthropic in January 2026 to join OpenAI.
-[3] User likes to eat pizza.
 
 Output:
-{"results":[{"index":0,"entities":[{"name":"User","entity_type":"person"},{"name":"Anthropic","entity_type":"organization"},{"name":"Claude","entity_type":"technology"}],"relations":[{"subject":"User","relation":"WORKS_FOR","object":"Anthropic","confidence":0.95,"valid_from":null}]},{"index":1,"entities":[{"name":"Emily","entity_type":"person"},{"name":"Stanford","entity_type":"organization"}],"relations":[{"subject":"Emily","relation":"ACCEPTED_TO","object":"Stanford","confidence":0.95,"valid_from":null}]},{"index":2,"entities":[{"name":"User","entity_type":"person"},{"name":"Anthropic","entity_type":"organization"},{"name":"OpenAI","entity_type":"organization"}],"relations":[{"subject":"User","relation":"WORKS_FOR","object":"Anthropic","confidence":0.95,"valid_from":"2026-01-01T00:00:00"},{"subject":"User","relation":"WORKS_FOR","object":"OpenAI","confidence":0.95,"valid_from":null}]},{"index":3,"entities":[{"name":"User","entity_type":"person"}],"relations":[]}]}
+{"results":[{"index":0,"entities":[{"name":"User","entity_type":"person"},{"name":"Anthropic","entity_type":"organization"},{"name":"Claude","entity_type":"technology"}],"relations":[{"subject":"User","relation":"WORKS_FOR","object":"Anthropic","confidence":0.95,"valid_from":null}]},{"index":1,"entities":[{"name":"Emily","entity_type":"person"},{"name":"Stanford","entity_type":"organization"}],"relations":[{"subject":"Emily","relation":"ACCEPTED_TO","object":"Stanford","confidence":0.95,"valid_from":null}]},{"index":2,"entities":[{"name":"User","entity_type":"person"},{"name":"Anthropic","entity_type":"organization"},{"name":"OpenAI","entity_type":"organization"}],"relations":[{"subject":"User","relation":"WORKS_FOR","object":"Anthropic","confidence":0.95,"valid_from":"2026-01-01T00:00:00"},{"subject":"User","relation":"WORKS_FOR","object":"OpenAI","confidence":0.95,"valid_from":null}]}]}
 
 ## OUTPUT FORMAT
-Return STRICT JSON matching the provided schema. No prose, no markdown fences. Each memory is identified by its 0-based index. If a memory has no entities or relations, still include it with empty arrays.`;
+Return strict JSON. Each memory is identified by its 0-based index:
+{"results":[{"index":0,"entities":[{"name":"...","entity_type":"..."}],"relations":[{"subject":"...","relation":"...","object":"...","confidence":0.0,"valid_from":"ISO8601"|null}]}]}
+
+If a memory has no entities or relations, still include it with empty arrays.`;
 
 export const GRAPH_EXTRACTION_SCHEMA = {
   name: 'graph_extraction',
