@@ -54,9 +54,12 @@ export class OpenAICompatLLM implements LLM {
   }
 
   async complete(opts: CompleteOptions) {
+    // Python's `generate_object` and `generate_text` both pass `temperature=0`
+    // for determinism. Default to 0 so structured-output paths don't drift
+    // run-to-run; allow callers to override.
     const body = {
       model: opts.model ?? this.defaultModel,
-      temperature: opts.temperature,
+      temperature: opts.temperature ?? 0,
       messages: this.messages(opts.system, opts.user),
     };
     const json = await this.request(body);
@@ -66,7 +69,7 @@ export class OpenAICompatLLM implements LLM {
   async completeJson<T>(opts: CompleteJsonOptions) {
     const body = {
       model: opts.model ?? this.defaultModel,
-      temperature: opts.temperature,
+      temperature: opts.temperature ?? 0,
       messages: this.messages(opts.system, opts.user),
       response_format: {
         type: 'json_schema',
