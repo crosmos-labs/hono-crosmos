@@ -5,6 +5,16 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
+# Smart Placement: run the Worker close to the Hyperdrive origin (NeonDB,
+# ap-southeast-1) instead of near the user. The retrieval path makes several
+# sequential DB round-trips, so co-locating with the DB means far-region users
+# (e.g. US) pay the cross-region distance ONCE (user→Worker) rather than on
+# every query. Tradeoff: a slightly longer user→Worker hop, in exchange for
+# near-local DB access. (Not inherited by named envs — also set under
+# [env.production.placement] below.)
+[placement]
+mode = "smart"
+
 [dev]
 port = 8787
 
@@ -46,6 +56,10 @@ ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
 APP_BASE_URL = "https://hono.crosmos.dev"
 RETRIEVAL_RERANKER_ENABLED = "true"
+
+# Smart Placement for production (env config is not inherited from top-level).
+[env.production.placement]
+mode = "smart"
 
 [[env.production.routes]]
 pattern = "hono.crosmos.dev"

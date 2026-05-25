@@ -46,29 +46,19 @@ export async function getMemoryToEntitiesMap(
   db: Database,
   scope: TenantScope,
 ): Promise<Map<number, number[]>> {
-  const memoryRows = await db
-    .select({ id: memories.id })
-    .from(memories)
-    .where(and(scopeMemories(scope), isNull(memories.forgottenAt)));
-  if (memoryRows.length === 0) return new Map();
-  const memoryIds = memoryRows.map((r) => r.id);
-
-  const entityRows = await db
-    .select({ id: entities.id })
-    .from(entities)
-    .where(scopeEntities(scope));
-  if (entityRows.length === 0) return new Map();
-  const entityIds = entityRows.map((r) => r.id);
-
+  // Single join replaces the old 3 sequential queries (memory ids → entity ids
+  // → links). The joins enforce the same "both endpoints in scope" rule: a link
+  // survives iff its memory is in-scope-and-not-forgotten AND its entity is
+  // in-scope. Identical link set, one round-trip, and no giant IN-list params.
+  // ORDER BY makes the per-memory entity order deterministic (the graph signal
+  // is order-independent anyway — it only does max/set ops).
   const links = await db
     .select({ memoryId: memoryEntities.memoryId, entityId: memoryEntities.entityId })
     .from(memoryEntities)
-    .where(
-      and(
-        inArray(memoryEntities.memoryId, memoryIds),
-        inArray(memoryEntities.entityId, entityIds),
-      ),
-    );
+    .innerJoin(memories, eq(memories.id, memoryEntities.memoryId))
+    .innerJoin(entities, eq(entities.id, memoryEntities.entityId))
+    .where(and(scopeMemories(scope), isNull(memories.forgottenAt), scopeEntities(scope)))
+    .orderBy(asc(memoryEntities.memoryId), asc(memoryEntities.entityId));
 
   const result = new Map<number, number[]>();
   for (const { memoryId, entityId } of links) {

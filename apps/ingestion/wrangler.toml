@@ -20,7 +20,10 @@ localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 [[queues.consumers]]
 queue = "ingestion-jobs-dev"
 max_batch_size = 1
-max_batch_timeout = 30
+# 0s = deliver as soon as a message is available, no batch-fill wait. (CF Queues
+# still have an inherent low-volume delivery-latency floor — the deeper fix is
+# an RPC/service-binding path; see retrieval optimisation notes.)
+max_batch_timeout = 0
 max_retries = 3
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
@@ -41,6 +44,9 @@ id = "334924fce954497fbcc866b74395bca1"
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
 max_batch_size = 1
-max_batch_timeout = 30
+# 0s = deliver as soon as a message is available, no batch-fill wait. (CF Queues
+# still have an inherent low-volume delivery-latency floor — the deeper fix is
+# an RPC/service-binding path; see retrieval optimisation notes.)
+max_batch_timeout = 0
 max_retries = 3
 dead_letter_queue = "ingestion-jobs-dlq"
