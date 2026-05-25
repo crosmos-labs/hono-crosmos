@@ -1,6 +1,6 @@
 import type { Database } from '@crosmos/db';
 import type { Env } from '../../bindings';
-import { getEntitlements } from '../../features/orgs/entitlements';
+import { type Entitlements, getEntitlements } from '../../features/orgs/entitlements';
 import { KvRateLimiter } from './kv';
 import { NoopRateLimiter } from './noop';
 import { RateLimitError, type RateLimiter } from './port';
@@ -30,8 +30,9 @@ export async function enforcePlanRateLimit(
   db: Database,
   limiter: RateLimiter,
   orgId: number,
+  entitlements?: Entitlements,
 ): Promise<void> {
-  const ent = await getEntitlements(db, orgId);
+  const ent = entitlements ?? (await getEntitlements(db, orgId));
   const rpm = typeof ent.rate_limit_rpm === 'number' ? ent.rate_limit_rpm : -1;
   const daily =
     typeof ent.rate_limit_per_day === 'number' ? ent.rate_limit_per_day : -1;

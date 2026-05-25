@@ -12,7 +12,7 @@ import { getReranker } from '../../integrations/reranker';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
-import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
+import { checkQuota, getEntitlements, QuotaExceededError } from '../orgs/entitlements';
 import { getSpaceByUuid } from '../spaces/service';
 import { recordSearchQueries } from '../usage/service';
 import { loadRetrievalCandidates, touchMemories } from './candidates';
@@ -149,10 +149,16 @@ searchRoutes.openapi(
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
 
+    // Fetch org entitlements ONCE per request, then share with the rate-limit
+    // gate, the quota gate, and the orchestrator (was 3 separate fetches).
+    // The space-access check below guarantees space.orgId === orgId, so the
+    // same entitlements apply throughout.
+    const entitlements = await getEntitlements(db, orgId);
+
     // 2. Per-org plan rate limit.
     const limiter = getRateLimiter(c.env);
     try {
-      await enforcePlanRateLimit(db, limiter, orgId);
+      await enforcePlanRateLimit(db, limiter, orgId, entitlements);
     } catch (err) {
       if (err instanceof RateLimitError) {
         throw new HTTPException(429, {
@@ -177,7 +183,7 @@ searchRoutes.openapi(
 
     // 4. Monthly search-query quota (optimistic +1, enforce-only).
     try {
-      await checkQuota(db, space.orgId, 'monthly_search_queries', 1);
+      await checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements);
     } catch (err) {
       if (err instanceof QuotaExceededError) {
         throw new HTTPException(429, {
@@ -230,6 +236,7 @@ searchRoutes.openapi(
           scope,
           candidates,
           deps,
+          entitlements,
         }),
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
       );

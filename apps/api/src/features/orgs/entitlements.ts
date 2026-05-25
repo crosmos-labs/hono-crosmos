@@ -126,8 +126,9 @@ export async function checkQuota(
   orgId: number,
   key: 'monthly_tokens_ingested' | 'monthly_search_queries',
   increment: number = 0,
+  entitlements?: Entitlements,
 ): Promise<void> {
-  const ent = await getEntitlements(db, orgId);
+  const ent = entitlements ?? (await getEntitlements(db, orgId));
   const raw = ent[key];
   const limit = typeof raw === 'number' ? raw : -1;
   if (limit === -1) return;

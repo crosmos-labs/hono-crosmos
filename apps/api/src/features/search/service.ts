@@ -27,7 +27,7 @@ import {
   rankRemap,
   reciprocalRankFusion,
 } from './fusion';
-import { getEntitlements } from '../orgs/entitlements';
+import { type Entitlements, getEntitlements } from '../orgs/entitlements';
 import { rerankCandidates } from './reranker';
 import { keywordSearch } from './signals/keyword';
 import { semanticSearch } from './signals/semantic';
@@ -57,6 +57,13 @@ export interface RetrieveInput {
   scope: TenantScope;
   candidates: RetrievalCandidates;
   deps: RetrieveDeps;
+  /**
+   * Pre-fetched org entitlements (the route fetches once per request and
+   * shares it with the rate-limit + quota gates). If the property is omitted
+   * entirely, the orchestrator fetches its own (back-compat / standalone use).
+   * Pass `null` to mean "load failed, use defaults".
+   */
+  entitlements?: Entitlements | null;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -70,12 +77,19 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
   const temporalRange = extractTemporalRange(query.text);
 
-  // Stage 1 — entitlements → feature flags. Non-fatal on failure (defaults).
-  let entitlements: Awaited<ReturnType<typeof getEntitlements>> | null = null;
-  try {
-    entitlements = await getEntitlements(db, scope.orgId);
-  } catch {
-    console.warn('entitlements_load_failed', { orgId: scope.orgId });
+  // Stage 1 — entitlements → feature flags. The route passes pre-fetched
+  // entitlements (single fetch per request); only fetch here if the caller
+  // didn't provide the property at all. Non-fatal on failure (defaults).
+  let entitlements: Entitlements | null;
+  if (input.entitlements !== undefined) {
+    entitlements = input.entitlements;
+  } else {
+    entitlements = null;
+    try {
+      entitlements = await getEntitlements(db, scope.orgId);
+    } catch {
+      console.warn('entitlements_load_failed', { orgId: scope.orgId });
+    }
   }
 
   const graphRetrieval =
