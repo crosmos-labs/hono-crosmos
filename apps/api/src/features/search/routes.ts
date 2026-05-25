@@ -1,6 +1,4 @@
-import { type Database, memories } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -17,7 +15,7 @@ import { requirePrincipal } from '../auth/principal';
 import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
 import { getSpaceByUuid } from '../spaces/service';
 import { recordSearchQueries } from '../usage/service';
-import { loadRetrievalCandidates } from './candidates';
+import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
@@ -74,29 +72,26 @@ interface SearchCandidateOut {
   event_time: string | null;
 }
 
-async function buildResponse(
-  db: Database,
+function buildResponse(
+  uuidById: Map<number, string>,
   queryText: string,
   result: RetrievalResult,
   tookMs: number,
   includeSource: boolean,
-): Promise<{
+): {
   query: string;
   candidates: SearchCandidateOut[];
   total: number;
   took_ms: number;
-}> {
+} {
   const raw = result.candidates;
   if (raw.length === 0) {
     return { query: queryText, candidates: [], total: 0, took_ms: tookMs };
   }
 
-  const ids = raw.map((c) => c.memoryId);
-  const uuidRows = await db
-    .select({ id: memories.id, uuid: memories.uuid })
-    .from(memories)
-    .where(inArray(memories.id, ids));
-  const uuidMap = new Map(uuidRows.map((r) => [r.id, r.uuid]));
+  // No DB query: every result candidate came from the already-loaded scoped
+  // memory set, so its uuid is in `uuidById` (built from candidates.memories).
+  const uuidMap = uuidById;
 
   const candidates: SearchCandidateOut[] = raw.map((c: CandidateMemory) => {
     const out: SearchCandidateOut = {
@@ -239,20 +234,35 @@ searchRoutes.openapi(
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
       );
 
-      // Daily usage metering — non-fatal (don't fail the search on a write blip).
-      try {
-        await recordSearchQueries(db, scope, 1);
-      } catch (err) {
-        console.warn('record_search_query_failed', { error: String(err) });
-      }
-
-      const response = await buildResponse(
-        db,
+      // Map int id → uuid from the already-loaded scoped memories (no extra
+      // query). Result candidates are a subset of candidates.memories.
+      const uuidById = new Map(candidates.memories.map((m) => [m.id, m.uuid]));
+      const response = buildResponse(
+        uuidById,
         body.query,
         result,
         performance.now() - t0,
         body.include_source,
       );
+
+      // Write-side bookkeeping runs OFF the critical path via waitUntil — the
+      // user never waits on it. `touch` bumps access_frequency (org+space
+      // scoped, user_id=0); `recordSearchQueries` meters daily_usage. Both
+      // non-fatal. The worker stays alive until these settle.
+      const touchedIds = result.candidates.map((cm) => cm.memoryId);
+      c.executionCtx.waitUntil(
+        Promise.allSettled([
+          touchMemories(db, { orgId: space.orgId, spaceId: space.id, userId: 0 }, touchedIds),
+          recordSearchQueries(db, scope, 1),
+        ]).then((results) => {
+          for (const r of results) {
+            if (r.status === 'rejected') {
+              console.warn('search_write_side_effect_failed', { error: String(r.reason) });
+            }
+          }
+        }),
+      );
+
       return c.json(response, 200);
     } catch (err) {
       if (err instanceof TimeoutError) {
