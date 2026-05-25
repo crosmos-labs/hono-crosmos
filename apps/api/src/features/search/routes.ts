@@ -12,8 +12,8 @@ import { getReranker } from '../../integrations/reranker';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
-import { checkQuota, getEntitlements, QuotaExceededError } from '../orgs/entitlements';
-import { getSpaceByUuid } from '../spaces/service';
+import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
+import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cache';
 import { recordSearchQueries } from '../usage/service';
 import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
@@ -149,11 +149,11 @@ searchRoutes.openapi(
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
 
-    // Fetch org entitlements ONCE per request, then share with the rate-limit
-    // gate, the quota gate, and the orchestrator (was 3 separate fetches).
-    // The space-access check below guarantees space.orgId === orgId, so the
-    // same entitlements apply throughout.
-    const entitlements = await getEntitlements(db, orgId);
+    // Fetch org entitlements ONCE per request (KV-cached), then share with the
+    // rate-limit gate, the quota gate, and the orchestrator (was 3 separate
+    // fetches). The space-access check below guarantees space.orgId === orgId,
+    // so the same entitlements apply throughout.
+    const entitlements = await getCachedEntitlements(c, orgId);
 
     // 2. Per-org plan rate limit.
     const limiter = getRateLimiter(c.env);
@@ -173,8 +173,8 @@ searchRoutes.openapi(
     }
 
     // 3. Space access — authoritative org is the SPACE's org. 404 on missing
-    // or cross-tenant (no existence leak).
-    const space = await getSpaceByUuid(db, body.space_id);
+    // or cross-tenant (no existence leak). KV-cached (slim {id, orgId}).
+    const space = await getCachedSpaceByUuid(c, body.space_id);
     if (!space || space.orgId !== orgId) {
       throw new HTTPException(404, {
         res: jsonError(`Space ${body.space_id} not found`, 404),

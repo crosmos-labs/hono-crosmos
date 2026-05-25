@@ -9,6 +9,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { invalidateSpace } from '../../lib/gate-cache';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { checkCountQuota, QuotaExceededError } from '../orgs/entitlements';
@@ -230,6 +231,8 @@ spaceRoutes.openapi(
     if (!deleted) {
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
+    // Drop the cached gate entry — this space no longer exists.
+    c.executionCtx.waitUntil(invalidateSpace(c.env, space_uuid));
     return c.body(null, 204);
   },
 );

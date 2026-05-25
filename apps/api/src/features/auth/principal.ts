@@ -2,8 +2,7 @@ import type { Context, Next } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
-import { getDb } from '../../db';
-import { getMembership } from '../orgs/memberships';
+import { getCachedMembership } from '../../lib/gate-cache';
 
 /**
  * Mirrors Python's `get_current_principal`: assumes `requireAuth` has already
@@ -24,8 +23,7 @@ export const requirePrincipal = createMiddleware<HonoEnv>(async (c, next) => {
   if (c.var.activeOrgId == null) {
     throw new HTTPException(400, { message: 'no_org_context' });
   }
-  const db = getDb(c);
-  const member = await getMembership(db, c.var.activeOrgId, c.var.userId);
+  const member = await getCachedMembership(c, c.var.activeOrgId, c.var.userId);
   if (!member) {
     throw new HTTPException(404, { message: 'Organization not found' });
   }
