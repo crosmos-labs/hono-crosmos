@@ -21,7 +21,10 @@ export async function semanticSearch(
 ): Promise<RankedCandidate[]> {
   const distance = cosineDistance(memories.embedding, queryEmbedding);
   const rows = await db
-    .select({ memory: memories, score: sql<number>`1.0 - ${distance}` })
+    // Parenthesize the distance: Postgres `-` binds tighter than pgvector's
+    // `<=>`, so `1.0 - embedding <=> $1` would parse as `(1.0 - embedding) <=> $1`
+    // → "operator does not exist: numeric - vector".
+    .select({ memory: memories, score: sql<number>`1.0 - (${distance})` })
     .from(memories)
     .where(
       and(

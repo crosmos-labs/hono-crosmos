@@ -262,9 +262,21 @@ searchRoutes.openapi(
       }
       if (err instanceof HTTPException) throw err;
       console.error('retrieval_failed', err);
-      throw new HTTPException(500, {
-        res: jsonError('Search failed unexpectedly.', 500),
-      });
+      // Outside production, surface the real error in the response body so it
+      // can be debugged without a logging pipeline. Production keeps the
+      // generic message — no stack/internal leak. Flip the `ENVIRONMENT` var
+      // away from "production" (e.g. in the dashboard) to enable this on a
+      // deployed worker, then flip it back.
+      const detail =
+        c.env.ENVIRONMENT === 'production'
+          ? 'Search failed unexpectedly.'
+          : {
+              error: 'retrieval_failed',
+              message: err instanceof Error ? err.message : String(err),
+              name: err instanceof Error ? err.name : typeof err,
+              stack: err instanceof Error ? err.stack : undefined,
+            };
+      throw new HTTPException(500, { res: jsonError(detail, 500) });
     } finally {
       // The concurrency slot MUST be released on every exit path.
       await concurrency.release(userKey);
