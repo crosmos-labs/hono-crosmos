@@ -33,12 +33,19 @@ queue = "ingestion-jobs-dev"
 ENVIRONMENT = "development"
 OAUTH_SERVER_BASE_URL = "http://localhost:8787"
 APP_BASE_URL = "http://localhost:3000"
+# Retrieval cross-encoder reranker toggle. Anything other than "false" = on.
+RETRIEVAL_RERANKER_ENABLED = "true"
+
+# Retrieval secrets (set via `wrangler secret put` or .dev.vars):
+#   OPENAI_API_KEY        — query embeddings (text-embedding-3-small)
+#   ZEROENTROPY_API_KEY   — cross-encoder reranker (zerank-2); omit to fall back to RRF
 
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
 APP_BASE_URL = "https://hono.crosmos.dev"
+RETRIEVAL_RERANKER_ENABLED = "true"
 
 [[env.production.routes]]
 pattern = "hono.crosmos.dev"
