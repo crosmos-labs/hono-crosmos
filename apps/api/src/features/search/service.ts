@@ -7,7 +7,7 @@
 import type { Embedder, Reranker } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
-import { attachSourceText, type RetrievalCandidates, touchMemories } from './candidates';
+import { attachSourceText, type RetrievalCandidates } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
@@ -289,17 +289,9 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     top = scored.slice(0, query.topK);
   }
 
-  // Stage 10 — touch (org+space scoped, user_id=0). Non-fatal: a touch failure
-  // must not fail the search (worker.md error-parity table).
-  try {
-    await touchMemories(
-      db,
-      { orgId: scope.orgId, spaceId: scope.spaceId, userId: 0 },
-      top.map((c) => c.memoryId),
-    );
-  } catch {
-    console.warn('touch_memories_failed', { orgId: scope.orgId, spaceId: scope.spaceId });
-  }
-
+  // Stage 10 — touch (access-frequency bookkeeping) is a write side-effect. It
+  // is intentionally NOT done here: the route schedules it off the critical
+  // path via `waitUntil` so it doesn't add latency to the response. The
+  // access-frequency feedback loop is preserved (it still runs, just async).
   return { query, candidates: top };
 }
