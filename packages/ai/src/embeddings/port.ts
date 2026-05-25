@@ -1,0 +1,47 @@
+/**
+ * Embedding provider — the interface callers use for memory, entity, and
+ * query vectors.
+ *
+ * The pipeline stores 1536-dim vectors (matching `Vector(1536)` on
+ * `memories.embedding` and `entities.embedding`). If you ever switch to a
+ * model with a different dimension, the DB migration must change too.
+ *
+ * `mode` distinguishes asymmetric retrieval models (one vector space for
+ * documents, another for queries). For OpenAI `text-embedding-3-small` both
+ * modes use the same vector space, so the mode is informational — but the
+ * field is on the interface so future providers (e.g. Voyage, Cohere v3)
+ * can honor it without an API break.
+ */
+export type EmbeddingMode = 'document' | 'search';
+
+export interface EmbeddingUsage {
+  promptTokens: number;
+  totalTokens: number;
+}
+
+export interface EmbedOptions {
+  mode?: EmbeddingMode;
+}
+
+export interface Embedder {
+  /** Dimensionality of every vector this embedder returns. */
+  readonly dimensions: number;
+
+  /** Cumulative token count across every call made to this instance. */
+  readonly totalTokens: number;
+
+  /** Single text, single round-trip. Use `embedBatch` when possible. */
+  embed(
+    text: string,
+    opts?: EmbedOptions,
+  ): Promise<{ vector: number[]; usage: EmbeddingUsage }>;
+
+  /**
+   * Batch embed in one network round-trip. Order of `vectors` matches order
+   * of `texts`. Empty input returns an empty vectors array with zero usage.
+   */
+  embedBatch(
+    texts: string[],
+    opts?: EmbedOptions,
+  ): Promise<{ vectors: number[][]; usage: EmbeddingUsage }>;
+}
