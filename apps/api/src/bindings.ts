@@ -16,6 +16,12 @@ export interface Env {
   RESEND_API_KEY: string;
   SENTRY_DSN: string;
   POLAR_WEBHOOK_SECRET: string;
+  // Retrieval (read path) — embedder + cross-encoder reranker.
+  OPENAI_API_KEY?: string;
+  ZEROENTROPY_API_KEY?: string;
+  // Toggles the cross-encoder reranker. Anything other than "false" keeps it
+  // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
+  RETRIEVAL_RERANKER_ENABLED?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).
