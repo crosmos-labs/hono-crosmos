@@ -15,6 +15,7 @@
       "name": "@crosmos/api",
       "version": "0.0.0",
       "dependencies": {
+        "@crosmos/ai": "workspace:*",
         "@crosmos/db": "workspace:*",
         "@crosmos/types": "workspace:*",
         "@hono/swagger-ui": "^0.5.0",
@@ -36,6 +37,7 @@
       "name": "@crosmos/ingestion",
       "version": "0.0.0",
       "dependencies": {
+        "@crosmos/ai": "workspace:*",
         "@crosmos/db": "workspace:*",
         "@crosmos/types": "workspace:*",
         "@sentry/cloudflare": "^8.47.0",
@@ -47,6 +49,14 @@
         "@cloudflare/workers-types": "^4.20241224.0",
         "typescript": "^5.6.3",
         "wrangler": "4",
+      },
+    },
+    "packages/ai": {
+      "name": "@crosmos/ai",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20241224.0",
+        "typescript": "^5.6.3",
       },
     },
     "packages/db": {
@@ -89,6 +99,8 @@
     "@cloudflare/workerd-windows-64": ["@cloudflare/workerd-windows-64@1.20260515.1", "", { "os": "win32", "cpu": "x64" }, "sha512-WmV/iv+MHjYsvkcMVzpM2B5/mf06UUkdpVhZrtMfV9graWjBGPYFvE/eab8748RPVGKh1Xe1vXofLzDSwc08lA=="],
 
     "@cloudflare/workers-types": ["@cloudflare/workers-types@4.20260511.1", "", {}, "sha512-FA+si7cOq9i/gtCHhIc0XJL0l1F/ApF+m00752Aj7WZFJrj3ZulT2T8/+rT3BabMT0QEnqFEGIqCgrmqhgEfMg=="],
+
+    "@crosmos/ai": ["@crosmos/ai@workspace:packages/ai"],
 
     "@crosmos/api": ["@crosmos/api@workspace:apps/api"],
 

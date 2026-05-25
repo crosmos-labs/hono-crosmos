@@ -12,6 +12,7 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
+    "@crosmos/ai": "workspace:*",
     "@crosmos/db": "workspace:*",
     "@crosmos/types": "workspace:*",
     "@sentry/cloudflare": "^8.47.0",

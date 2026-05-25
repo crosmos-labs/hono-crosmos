@@ -21,7 +21,7 @@ import {
   SOURCE_RETRY_DELAY_MS,
 } from './constants';
 import type { Embedder } from './integrations/embeddings';
-import { EmbeddingRequestError } from './integrations/embeddings/openai';
+import { EmbeddingRequestError } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
 import { LLMRequestError } from './integrations/llm';
 import { ingestSource, type IngestResult } from './ingestion/pipeline';
