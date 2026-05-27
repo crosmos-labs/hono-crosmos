@@ -15,6 +15,7 @@
     "@crosmos/ai": "workspace:*",
     "@crosmos/db": "workspace:*",
     "@crosmos/observability": "workspace:*",
+    "@crosmos/runtime": "workspace:*",
     "@crosmos/types": "workspace:*",
     "drizzle-orm": "^0.36.4",
     "postgres": "^3.4.5",
