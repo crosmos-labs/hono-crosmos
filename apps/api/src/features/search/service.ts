@@ -4,7 +4,12 @@
  * and scoring assembly below ARE the ranking. See .codex/pipelines.md.
  * Runs inline in the API worker.
  */
-import type { Embedder, Reranker } from '@crosmos/ai';
+import {
+  EmbeddingRequestError,
+  RerankerRequestError,
+  type Embedder,
+  type Reranker,
+} from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
@@ -72,6 +77,19 @@ function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
+function failureFields(err: unknown): {
+  error_category: 'external_service' | 'internal';
+  dependency: 'embedding' | 'reranker' | 'database' | 'retrieval';
+} {
+  if (err instanceof EmbeddingRequestError) {
+    return { error_category: 'external_service', dependency: 'embedding' };
+  }
+  if (err instanceof RerankerRequestError) {
+    return { error_category: 'external_service', dependency: 'reranker' };
+  }
+  return { error_category: 'internal', dependency: 'retrieval' };
+}
+
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const { query, scope, candidates, deps } = input;
   const { db, embedder, reranker } = deps;
@@ -103,6 +121,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     } catch (err) {
       logger?.warn('retrieval.entitlements_load_failed', {
         stage: 'entitlements',
+        error_category: 'internal',
+        dependency: 'database',
       }, err);
     }
   }
@@ -143,6 +163,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         embedding_mode: 'search',
         embedding_count: 1,
         duration_ms: durationMs(embedStart),
+        ...failureFields(err),
       }, err);
       throw err;
     },
@@ -247,6 +268,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       logger?.warn('retrieval.source_text_attach_failed', {
         stage: 'source_text_attach',
         duration_ms: durationMs(attachSourceStart),
+        error_category: 'internal',
+        dependency: 'database',
       }, err);
     }
   }
@@ -275,6 +298,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         stage: 'rerank',
         duration_ms: durationMs(rerankStart),
         candidate_count: selection.length,
+        ...failureFields(err),
       }, err);
       ceEnabled = false;
     }
@@ -416,6 +440,7 @@ async function timeSignal(
     logger?.error('retrieval.signal_failed', {
       signal,
       duration_ms: durationMs(start),
+      ...failureFields(err),
     }, err);
     throw err;
   }

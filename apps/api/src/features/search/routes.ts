@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -34,6 +35,19 @@ export const searchRoutes = new OpenAPIHono<HonoEnv>();
 const ErrorBody = z.object({ detail: z.unknown() }).openapi('SearchErrorBody');
 
 class TimeoutError extends Error {}
+
+function failureFields(err: unknown): {
+  error_category: 'external_service' | 'internal';
+  dependency: 'embedding' | 'reranker' | 'retrieval';
+} {
+  if (err instanceof EmbeddingRequestError) {
+    return { error_category: 'external_service', dependency: 'embedding' };
+  }
+  if (err instanceof RerankerRequestError) {
+    return { error_category: 'external_service', dependency: 'reranker' };
+  }
+  return { error_category: 'internal', dependency: 'retrieval' };
+}
 
 function jsonError(
   detail: unknown,
@@ -347,6 +361,8 @@ searchRoutes.openapi(
           duration_ms: durationMs(t0),
           status_code: 504,
           timed_out: true,
+          error_category: 'internal',
+          dependency: 'retrieval',
         });
         throw new HTTPException(504, {
           res: jsonError('Search timed out. Please try again.', 504),
@@ -357,6 +373,7 @@ searchRoutes.openapi(
         space_id: space.id,
         duration_ms: durationMs(t0),
         status_code: 500,
+        ...failureFields(err),
       }, err);
       // Outside production, surface the real error in the response body so it
       // can be debugged without a logging pipeline. Production keeps the

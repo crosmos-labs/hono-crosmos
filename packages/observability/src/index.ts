@@ -44,6 +44,8 @@ const FIELD_ALLOWLIST = new Set([
   'embedding_mode',
   'entity_count',
   'environment',
+  'dependency',
+  'error_category',
   'error_message',
   'error_name',
   'event',

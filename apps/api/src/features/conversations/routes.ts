@@ -144,35 +144,35 @@ conversationRoutes.openapi(
         meta,
       };
     });
-    const sourceInsertStart = performance.now();
-    const created = await createSources(db, inserts);
-    logger.info('ingestion.enqueue_stage_completed', {
+    const created = await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'source_insert',
       space_id: space.id,
-      source_count: created.length,
-      duration_ms: durationMs(sourceInsertStart),
-    });
+      source_count: inserts.length,
+      error_category: 'internal',
+      dependency: 'database',
+    }, () => createSources(db, inserts));
 
     const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
-    const jobCreateStart = performance.now();
-    await jobStore.create({
+    await logger.time('ingestion.enqueue_stage_completed', {
+      stage: 'job_create',
+      space_id: space.id,
+      error_category: 'internal',
+      dependency: 'database',
+    }, () => jobStore.create({
       jobId,
       orgId: space.orgId,
       spaceId: space.id,
       userId,
       sourceIds: created.map((s) => s.id),
-    });
-    logger.info('ingestion.enqueue_stage_completed', {
-      stage: 'job_create',
-      space_id: space.id,
-      duration_ms: durationMs(jobCreateStart),
-    });
+    }));
 
     const enqueuedAtMs = Date.now();
     await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'queue_enqueue',
       space_id: space.id,
+      error_category: 'external_service',
+      dependency: 'queue',
     }, () => queue.enqueue({
       task: 'process_ingestion',
       job_id: jobId,

@@ -42,12 +42,11 @@ export async function handleIngestionDelivery(
     queue_delay_ms: queueDelayMs,
   });
 
-  // One LLM + one embedder per job so totalTokens aggregates across every
-  // source. Reinstantiating per source would lose attribution.
-  const llm = deps.createLLM();
-  const embedder = deps.createEmbedder();
-
   try {
+    // One LLM + one embedder per job so totalTokens aggregates across every
+    // source. Reinstantiating per source would lose attribution.
+    const llm = deps.createLLM();
+    const embedder = deps.createEmbedder();
     await processIngestion(body, {
       db: deps.db,
       llm,
@@ -60,6 +59,8 @@ export async function handleIngestionDelivery(
     // Don't ack; let the queue runtime retry or DLQ according to its policy.
     logger.error('ingestion.job_unhandled_error', {
       attempt: delivery.attempts,
+      error_category: 'internal',
+      dependency: 'pipeline',
     }, err);
     delivery.retry();
   }

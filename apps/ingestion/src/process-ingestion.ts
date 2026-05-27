@@ -58,6 +58,19 @@ function isRetryable(err: unknown): boolean {
   return false;
 }
 
+function failureFields(err: unknown): {
+  error_category: 'external_service' | 'internal';
+  dependency: 'llm' | 'embedding' | 'pipeline';
+} {
+  if (err instanceof LLMRequestError) {
+    return { error_category: 'external_service', dependency: 'llm' };
+  }
+  if (err instanceof EmbeddingRequestError) {
+    return { error_category: 'external_service', dependency: 'embedding' };
+  }
+  return { error_category: 'internal', dependency: 'pipeline' };
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -148,6 +161,7 @@ export async function processIngestion(
           sourceLogger.warn('ingestion.source_retry_scheduled', {
             attempt,
             duration_ms: durationMs(sourceStart),
+            ...failureFields(err),
           });
           await sleep(SOURCE_RETRY_DELAY_MS * attempt);
           continue;
@@ -171,6 +185,7 @@ export async function processIngestion(
       sourceLogger.error('ingestion.source_failed', {
         duration_ms: durationMs(sourceStart),
         error_message: message,
+        ...failureFields(lastErr),
       }, lastErr);
       sourceErrors[String(sourceId)] = message;
       await markSourcesFailed(db, scope, [sourceId], message);
