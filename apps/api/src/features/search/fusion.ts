@@ -1,7 +1,7 @@
 /**
  * Fusion & scoring — verbatim port of `app/engine/retrieval/fusion.py` plus
  * the rank-remap from `service.py`. These formulas ARE the ranking. See
- * docs/retrieval_migration/scoring.md.
+ * .codex/pipelines.md.
  */
 import {
   ALPHA,

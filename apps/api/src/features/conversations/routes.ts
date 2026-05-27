@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createLogger, durationMs } from '@crosmos/observability';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
@@ -85,11 +86,26 @@ conversationRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const requestId = crypto.randomUUID();
+    const logger = createLogger({
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      base: {
+        request_id: requestId,
+        org_id: orgId,
+        user_id: userId,
+      },
+    });
+    const enqueueStart = performance.now();
+    logger.info('ingestion.enqueue_started', {
+      source_count: Math.ceil(body.messages.length / 4),
+    });
 
     const limiter = getRateLimiter(c.env);
     const queue = getQueueService(c.env, db);
     const jobStore = getJobStore(db);
 
+    const preflightStart = performance.now();
     const space = await preflight({
       db,
       limiter,
@@ -98,6 +114,11 @@ conversationRoutes.openapi(
       orgId,
       userId,
       spaceUuid: body.space_id,
+    });
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'preflight',
+      space_id: space.id,
+      duration_ms: durationMs(preflightStart),
     });
 
     const scope: TenantScope = {
@@ -123,10 +144,18 @@ conversationRoutes.openapi(
         meta,
       };
     });
+    const sourceInsertStart = performance.now();
     const created = await createSources(db, inserts);
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'source_insert',
+      space_id: space.id,
+      source_count: created.length,
+      duration_ms: durationMs(sourceInsertStart),
+    });
 
     const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
+    const jobCreateStart = performance.now();
     await jobStore.create({
       jobId,
       orgId: space.orgId,
@@ -134,7 +163,17 @@ conversationRoutes.openapi(
       userId,
       sourceIds: created.map((s) => s.id),
     });
-    await queue.enqueue({
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'job_create',
+      space_id: space.id,
+      duration_ms: durationMs(jobCreateStart),
+    });
+
+    const enqueuedAtMs = Date.now();
+    await logger.time('ingestion.enqueue_stage_completed', {
+      stage: 'queue_enqueue',
+      space_id: space.id,
+    }, () => queue.enqueue({
       task: 'process_ingestion',
       job_id: jobId,
       correlation_id: correlationId,
@@ -142,6 +181,12 @@ conversationRoutes.openapi(
       space_id: space.id,
       user_id: userId,
       source_ids: created.map((s) => s.id),
+      enqueued_at_ms: enqueuedAtMs,
+    }));
+    logger.info('ingestion.enqueue_accepted', {
+      space_id: space.id,
+      source_count: created.length,
+      duration_ms: durationMs(enqueueStart),
     });
 
     return c.json(

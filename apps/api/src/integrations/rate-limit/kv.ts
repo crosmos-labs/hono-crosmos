@@ -4,6 +4,7 @@ import {
   RateLimitError,
   type RateLimitScope,
 } from './port';
+import { createLogger } from '@crosmos/observability';
 
 const RPM_PREFIX = 'rl:rpm:';
 const DAY_PREFIX = 'rl:day:';
@@ -54,7 +55,10 @@ export class KvRateLimiter implements RateLimiter {
     } catch (err) {
       if (err instanceof RateLimitError) throw err;
       // Any other failure: fail open and log.
-      console.error('rate limiter KV failure', err);
+      createLogger({ service: 'api' }).error('rate_limit.kv_failure', {
+        org_id: input.orgId,
+        stage: 'rate_limit_check',
+      }, err);
     }
   }
 

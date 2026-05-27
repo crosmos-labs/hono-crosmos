@@ -6,7 +6,7 @@
  * `WORKS_FOR` and `EMPLOYS`). Inverses remain in the registry purely for
  * retrieval-time query rewriting.
  *
- * See docs/ingestion_migration/entity-resolution.md §Relation ontology.
+ * See .codex/pipelines.md.
  */
 export interface RelationTypeMeta {
   description: string;

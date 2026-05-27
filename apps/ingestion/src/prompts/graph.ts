@@ -5,7 +5,7 @@
  * Pass 2 receives the **content strings** of the memories produced by Pass 1
  * and asks the LLM to extract entities + relations per memory. Graph failure
  * is non-fatal: the pipeline still persists memories without graph data (see
- * docs/ingestion_migration/pipeline.md §Stage 3).
+ * .codex/pipelines.md).
  */
 import { RELATION_TYPES } from '../ontology/relation-types';
 

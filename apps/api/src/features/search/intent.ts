@@ -3,7 +3,7 @@
  *
  * ⚠️ `analyzeQueryIntent` is NOT wired into `service.retrieve` (Python's
  * `service.py` never imports it). Ported for completeness/parity; it does not
- * affect ranking. See docs/retrieval_migration/signals-lexical.md §1.
+ * affect ranking. See .codex/pipelines.md.
  *
  * Patterns are the contract: input is lowercased + whitespace-collapsed, then
  * matched case-sensitively (Python compiles them WITHOUT re.IGNORECASE).

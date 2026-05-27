@@ -14,7 +14,6 @@ export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   RESEND_API_KEY: string;
-  SENTRY_DSN: string;
   POLAR_WEBHOOK_SECRET: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
   OPENAI_API_KEY?: string;

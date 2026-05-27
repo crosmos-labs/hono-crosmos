@@ -4,7 +4,7 @@ const ZEROENTROPY_RERANK_URL = 'https://api.zeroentropy.dev/v1/models/rerank';
 
 /**
  * ZeroEntropy `zerank-2`. Matches the retrieval reranker called out in
- * docs/cloudflare-workers-migration.md. Score is unbounded but typically
+ * .codex/deployed-architecture.md. Score is unbounded but typically
  * in 0..1 for `zerank-2`; relative ordering is what callers should use.
  */
 const DEFAULT_MODEL = 'zerank-2';

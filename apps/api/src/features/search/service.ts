@@ -1,11 +1,12 @@
 /**
  * Retrieval orchestrator — port of `RetrievalService.retrieve`
  * (`app/engine/retrieval/service.py`). This is the spine: the 10-stage order
- * and scoring assembly below ARE the ranking. See docs/retrieval_migration/
- * service.md. Runs inline (no queue) per decisions.md §1.
+ * and scoring assembly below ARE the ranking. See .codex/pipelines.md.
+ * Runs inline in the API worker.
  */
 import type { Embedder, Reranker } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
+import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { attachSourceText, type RetrievalCandidates } from './candidates';
 import {
@@ -64,6 +65,7 @@ export interface RetrieveInput {
    * Pass `null` to mean "load failed, use defaults".
    */
   entitlements?: Entitlements | null;
+  logger?: Logger;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -73,9 +75,15 @@ function clamp(x: number, lo: number, hi: number): number {
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const { query, scope, candidates, deps } = input;
   const { db, embedder, reranker } = deps;
+  const logger = input.logger;
 
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
+  const temporalParseStart = performance.now();
   const temporalRange = extractTemporalRange(query.text);
+  logger?.info('retrieval.stage_completed', {
+    stage: 'temporal_parse',
+    duration_ms: durationMs(temporalParseStart),
+  });
 
   // Stage 1 — entitlements → feature flags. The route passes pre-fetched
   // entitlements (single fetch per request); only fetch here if the caller
@@ -86,9 +94,16 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   } else {
     entitlements = null;
     try {
+      const entitlementStart = performance.now();
       entitlements = await getEntitlements(db, scope.orgId);
-    } catch {
-      console.warn('entitlements_load_failed', { orgId: scope.orgId });
+      logger?.info('retrieval.stage_completed', {
+        stage: 'entitlements',
+        duration_ms: durationMs(entitlementStart),
+      });
+    } catch (err) {
+      logger?.warn('retrieval.entitlements_load_failed', {
+        stage: 'entitlements',
+      }, err);
     }
   }
 
@@ -110,17 +125,40 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   if (effectiveMaxDepth === 0) graphEnabled = false;
 
   // Stage 2 — start embedding as a shared promise (semantic + graph await it).
-  const embedPromise = embedder.embed(query.text, { mode: 'search' });
+  const embedStart = performance.now();
+  const embedPromise = embedder.embed(query.text, { mode: 'search' }).then(
+    (result) => {
+      logger?.info('embedding.request_completed', {
+        stage: 'retrieval_query_embedding',
+        embedding_mode: 'search',
+        embedding_count: 1,
+        duration_ms: durationMs(embedStart),
+        token_count: result.usage.totalTokens,
+      });
+      return result;
+    },
+    (err) => {
+      logger?.error('embedding.request_failed', {
+        stage: 'retrieval_query_embedding',
+        embedding_mode: 'search',
+        embedding_count: 1,
+        duration_ms: durationMs(embedStart),
+      }, err);
+      throw err;
+    },
+  );
 
   // Stage 3 — four signals in parallel.
   const [semanticResults, keywordResults, graphResults, temporalResults] =
     await Promise.all([
-      (async (): Promise<RankedCandidate[]> => {
+      timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
         const { vector } = await embedPromise;
         return semanticSearch(db, vector, scope.spaceId, query.candidatePool);
-      })(),
-      keywordSearch(query.text, db, scope.spaceId, query.candidatePool),
-      (async (): Promise<RankedCandidate[]> => {
+      }),
+      timeSignal(logger, SourceSignal.KEYWORD, () =>
+        keywordSearch(query.text, db, scope.spaceId, query.candidatePool),
+      ),
+      timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
         if (!graphEnabled) return [];
         if (candidates.memories.length === 0 || candidates.entities.length === 0) {
           return [];
@@ -139,8 +177,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
           scope.orgId,
           scope.spaceId,
         );
-      })(),
-      (async (): Promise<RankedCandidate[]> => {
+      }),
+      timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
         if (temporalRange === null) return [];
         return temporalSearch(
           candidates.memories,
@@ -148,10 +186,11 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
           temporalRange[1],
           Math.min(query.candidatePool, TEMPORAL_CANDIDATE_LIMIT),
         );
-      })(),
+      }),
     ]);
 
   // Stage 4 — assemble ranked lists (order preserved) + RRF.
+  const fusionStart = performance.now();
   const rankedLists: Array<[SourceSignal, RankedCandidate[]]> = [
     [SourceSignal.SEMANTIC, semanticResults],
     [SourceSignal.KEYWORD, keywordResults],
@@ -165,7 +204,14 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
 
   const selectorFused = reciprocalRankFusion(rankedLists);
   const fallbackFused = selectorFused;
+  logger?.info('retrieval.stage_completed', {
+    stage: 'fusion',
+    duration_ms: durationMs(fusionStart),
+    candidate_count: selectorFused.length,
+    graph_enabled: graphEnabled,
+  });
 
+  const lookupStart = performance.now();
   const candidateLookup = new Map<number, RankedCandidate>();
   const sourceSignalsMap = new Map<number, SourceSignal[]>();
   for (const [signal, cands] of rankedLists) {
@@ -180,20 +226,35 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       }
     }
   }
+  logger?.info('retrieval.stage_completed', {
+    stage: 'candidate_lookup',
+    duration_ms: durationMs(lookupStart),
+    candidate_count: candidateLookup.size,
+  });
 
   // Stage 5 — attach source text for the top candidates. Non-fatal: on failure
   // candidates keep source=null (worker.md error-parity table).
   if (candidateLookup.size > 0) {
+    const attachSourceStart = performance.now();
     try {
       await attachSourceText(db, scope.orgId, candidateLookup);
-    } catch {
-      console.warn('source_text_attach_failed', { orgId: scope.orgId });
+      logger?.info('retrieval.stage_completed', {
+        stage: 'source_text_attach',
+        duration_ms: durationMs(attachSourceStart),
+        candidate_count: candidateLookup.size,
+      });
+    } catch (err) {
+      logger?.warn('retrieval.source_text_attach_failed', {
+        stage: 'source_text_attach',
+        duration_ms: durationMs(attachSourceStart),
+      }, err);
     }
   }
 
   // Stage 6 — base scores (CE rerank OR rank-remap fallback).
   let baseScores = new Map<number, number>();
   if (ceEnabled) {
+    const rerankStart = performance.now();
     const selection: RankedCandidate[] = [];
     for (const [mid] of selectorFused.slice(0, RERANKER_MAX_CANDIDATES)) {
       const c = candidateLookup.get(mid);
@@ -202,16 +263,36 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     try {
       baseScores = await rerankCandidates(reranker!, query.text, selection);
       if (baseScores.size === 0) ceEnabled = false;
-    } catch {
-      console.warn('ce_failed_falling_back_to_rrf', { orgId: scope.orgId });
+      logger?.info('retrieval.stage_completed', {
+        stage: 'rerank',
+        duration_ms: durationMs(rerankStart),
+        candidate_count: selection.length,
+        result_count: baseScores.size,
+        ce_enabled: ceEnabled,
+      });
+    } catch (err) {
+      logger?.warn('retrieval.rerank_failed_falling_back', {
+        stage: 'rerank',
+        duration_ms: durationMs(rerankStart),
+        candidate_count: selection.length,
+      }, err);
       ceEnabled = false;
     }
   }
   if (!ceEnabled) {
+    const rankRemapStart = performance.now();
     baseScores = rankRemap(fallbackFused);
+    logger?.info('retrieval.stage_completed', {
+      stage: 'rank_remap',
+      duration_ms: durationMs(rankRemapStart),
+      candidate_count: fallbackFused.length,
+      result_count: baseScores.size,
+      ce_enabled: false,
+    });
   }
 
   // Stage 7 — recency alpha + pool + optional temporal filter.
+  const scoringStart = performance.now();
   const recencyAlpha =
     query.recencyBias !== null
       ? query.recencyBias
@@ -302,10 +383,40 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   } else {
     top = scored.slice(0, query.topK);
   }
+  logger?.info('retrieval.stage_completed', {
+    stage: 'score_and_select',
+    duration_ms: durationMs(scoringStart),
+    candidate_count: scored.length,
+    result_count: top.length,
+    top_k: query.topK,
+  });
 
   // Stage 10 — touch (access-frequency bookkeeping) is a write side-effect. It
   // is intentionally NOT done here: the route schedules it off the critical
   // path via `waitUntil` so it doesn't add latency to the response. The
   // access-frequency feedback loop is preserved (it still runs, just async).
   return { query, candidates: top };
+}
+
+async function timeSignal(
+  logger: Logger | undefined,
+  signal: SourceSignal,
+  fn: () => Promise<RankedCandidate[]>,
+): Promise<RankedCandidate[]> {
+  const start = performance.now();
+  try {
+    const results = await fn();
+    logger?.info('retrieval.signal_completed', {
+      signal,
+      duration_ms: durationMs(start),
+      result_count: results.length,
+    });
+    return results;
+  } catch (err) {
+    logger?.error('retrieval.signal_failed', {
+      signal,
+      duration_ms: durationMs(start),
+    }, err);
+    throw err;
+  }
 }

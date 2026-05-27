@@ -10,6 +10,7 @@
  * completed / partial / failed / cancelled.
  */
 import type { Database } from '@crosmos/db';
+import { durationMs, type Logger } from '@crosmos/observability';
 import type {
   IngestionJobMessage,
   IngestionJobResult,
@@ -48,6 +49,7 @@ export interface ProcessIngestionDeps {
   db: Database;
   llm: LLM;
   embedder: Embedder;
+  logger: Logger;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -64,7 +66,8 @@ export async function processIngestion(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
 ): Promise<void> {
-  const { db, llm, embedder } = deps;
+  const { db, llm, embedder, logger } = deps;
+  const jobStart = performance.now();
   const scope: TenantScope = {
     orgId: msg.org_id,
     spaceId: msg.space_id,
@@ -74,18 +77,20 @@ export async function processIngestion(
   // Idempotency gate 1 — terminal jobs are no-ops on redelivery
   const initial = await getJobStatus(db, msg.job_id);
   if (initial === null) {
-    console.warn('ingestion_job_not_found', { jobId: msg.job_id });
+    logger.warn('ingestion.job_not_found');
     return;
   }
   if (TERMINAL_STATUSES.has(initial)) {
-    console.log('ingestion_job_already_terminal', {
-      jobId: msg.job_id,
+    logger.info('ingestion.job_already_terminal', {
       status: initial,
     });
     return;
   }
 
   await updateJobStatus(db, msg.job_id, 'processing');
+  logger.info('ingestion.job_started', {
+    source_count: msg.source_ids.length,
+  });
 
   const failedSourceIds: number[] = [];
   const sourceErrors: Record<string, string> = {};
@@ -96,10 +101,9 @@ export async function processIngestion(
 
     // Cancellation check between sources
     if (await isJobCancelled(db, msg.job_id)) {
-      console.log('ingestion_job_cancelled_mid_run', {
-        jobId: msg.job_id,
-        processed: i,
-        total: msg.source_ids.length,
+      logger.info('ingestion.job_cancelled_mid_run', {
+        completed_source_count: i,
+        source_count: msg.source_ids.length,
       });
       return;
     }
@@ -107,7 +111,10 @@ export async function processIngestion(
     // Idempotency gate 2 — source already past pending → skip
     const sourceStatus = await getSourceExtractionStatus(db, sourceId);
     if (sourceStatus !== 'pending') {
-      console.log('ingestion_source_already_processed', { sourceId, status: sourceStatus });
+      logger.info('ingestion.source_already_processed', {
+        source_id: sourceId,
+        status: sourceStatus,
+      });
       if (sourceStatus === 'failed') failedSourceIds.push(sourceId);
       continue;
     }
@@ -116,16 +123,32 @@ export async function processIngestion(
       stage: `source ${i + 1}/${msg.source_ids.length}`,
     });
     await markSourcesStatus(db, scope, [sourceId], 'processing');
+    const sourceLogger = logger.child({ source_id: sourceId });
+    const sourceStart = performance.now();
+    sourceLogger.info('ingestion.source_started', {
+      stage: `source ${i + 1}/${msg.source_ids.length}`,
+    });
 
     let result: IngestResult | null = null;
     let lastErr: unknown = null;
     for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
       try {
-        result = await ingestSource({ db, scope, sourceId, llm, embedder });
+        result = await ingestSource({
+          db,
+          scope,
+          sourceId,
+          llm,
+          embedder,
+          logger: sourceLogger,
+        });
         break;
       } catch (err) {
         lastErr = err;
         if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
+          sourceLogger.warn('ingestion.source_retry_scheduled', {
+            attempt,
+            duration_ms: durationMs(sourceStart),
+          });
           await sleep(SOURCE_RETRY_DELAY_MS * attempt);
           continue;
         }
@@ -136,13 +159,19 @@ export async function processIngestion(
     if (result) {
       results.push(result);
       await markSourcesStatus(db, scope, [sourceId], 'completed');
+      sourceLogger.info('ingestion.source_completed', {
+        duration_ms: durationMs(sourceStart),
+        memory_count: result.memories.length,
+        edge_count: result.edges.length,
+        entity_count: result.newEntityIds.length + result.resolvedEntityIds.length,
+      });
     } else {
       const message =
         lastErr instanceof Error ? lastErr.message : String(lastErr);
-      console.error('ingestion_source_failed', {
-        sourceId,
-        error: message,
-      });
+      sourceLogger.error('ingestion.source_failed', {
+        duration_ms: durationMs(sourceStart),
+        error_message: message,
+      }, lastErr);
       sourceErrors[String(sourceId)] = message;
       await markSourcesFailed(db, scope, [sourceId], message);
       failedSourceIds.push(sourceId);
@@ -181,7 +210,7 @@ export async function processIngestion(
     try {
       await recordIngestionTokens(db, scope, totalTokens);
     } catch (err) {
-      console.warn('record_ingestion_tokens_failed', { error: String(err) });
+      logger.warn('ingestion.record_tokens_failed', {}, err);
     }
   }
 
@@ -199,4 +228,14 @@ export async function processIngestion(
   if (rolledUpError) resultBody.error_message = rolledUpError;
 
   await updateJobStatus(db, msg.job_id, finalStatus, { result: resultBody });
+  logger.info('ingestion.job_completed', {
+    duration_ms: durationMs(jobStart),
+    final_status: finalStatus,
+    source_count: all,
+    failed_source_count: failed,
+    memory_count: memoryCount,
+    entity_count: entityCount,
+    edge_count: edgeCount,
+    token_count: totalTokens,
+  });
 }

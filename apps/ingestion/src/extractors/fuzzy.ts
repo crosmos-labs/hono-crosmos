@@ -10,7 +10,7 @@
  * `process.extract` returns the top-K matches with scores at or above a cutoff,
  * matching Python's rapidfuzz API closely enough for our use.
  *
- * See docs/ingestion_migration/entity-resolution.md §Stage B.
+ * See .codex/pipelines.md.
  */
 
 /** Standard Levenshtein distance (insert/delete/substitute = 1). */

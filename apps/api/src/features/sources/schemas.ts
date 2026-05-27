@@ -94,8 +94,7 @@ export const ListSourcesQuerySchema = z.object({
 
 /**
  * Structured error bodies used by ingestion routes. Matches the shapes in
- * docs/ingestion_migration/api-routes.md — clients can branch on
- * `detail.error`.
+ * .codex/pipelines.md — clients can branch on `detail.error`.
  */
 export const RateLimitedBodySchema = z
   .object({

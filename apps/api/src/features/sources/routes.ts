@@ -1,4 +1,5 @@
 import { memorySpaces, sources, type Source } from '@crosmos/db';
+import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
@@ -123,11 +124,26 @@ sourceRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const requestId = crypto.randomUUID();
+    const logger = createLogger({
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      base: {
+        request_id: requestId,
+        org_id: orgId,
+        user_id: userId,
+      },
+    });
+    const enqueueStart = performance.now();
+    logger.info('ingestion.enqueue_started', {
+      source_count: body.sources.length,
+    });
 
     const limiter = getRateLimiter(c.env);
     const queue = getQueueService(c.env, db);
     const jobStore = getJobStore(db);
 
+    const preflightStart = performance.now();
     const space = await preflight({
       db,
       limiter,
@@ -136,6 +152,11 @@ sourceRoutes.openapi(
       orgId,
       userId,
       spaceUuid: body.space_id,
+    });
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'preflight',
+      space_id: space.id,
+      duration_ms: durationMs(preflightStart),
     });
 
     const scope: TenantScope = {
@@ -158,10 +179,18 @@ sourceRoutes.openapi(
         meta: Object.keys(meta).length > 0 ? meta : null,
       };
     });
+    const sourceInsertStart = performance.now();
     const created = await createSources(db, inserts);
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'source_insert',
+      space_id: space.id,
+      source_count: created.length,
+      duration_ms: durationMs(sourceInsertStart),
+    });
 
     const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
+    const jobCreateStart = performance.now();
     await jobStore.create({
       jobId,
       orgId: space.orgId,
@@ -169,7 +198,17 @@ sourceRoutes.openapi(
       userId,
       sourceIds: created.map((s) => s.id),
     });
-    await queue.enqueue({
+    logger.info('ingestion.enqueue_stage_completed', {
+      stage: 'job_create',
+      space_id: space.id,
+      duration_ms: durationMs(jobCreateStart),
+    });
+
+    const enqueuedAtMs = Date.now();
+    await logger.time('ingestion.enqueue_stage_completed', {
+      stage: 'queue_enqueue',
+      space_id: space.id,
+    }, () => queue.enqueue({
       task: 'process_ingestion',
       job_id: jobId,
       correlation_id: correlationId,
@@ -177,6 +216,12 @@ sourceRoutes.openapi(
       space_id: space.id,
       user_id: userId,
       source_ids: created.map((s) => s.id),
+      enqueued_at_ms: enqueuedAtMs,
+    }));
+    logger.info('ingestion.enqueue_accepted', {
+      space_id: space.id,
+      source_count: created.length,
+      duration_ms: durationMs(enqueueStart),
     });
 
     return c.json(

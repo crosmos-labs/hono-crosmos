@@ -4,7 +4,7 @@
  * `app/worker/constants.py`, and `app/engine/ingestion/sessions.py`.
  *
  * Hard-coded, not env-configurable — Python treats them as code. See
- * docs/ingestion_migration/README.md §Critical Numbers.
+ * .codex/pipelines.md.
  */
 
 // Extraction

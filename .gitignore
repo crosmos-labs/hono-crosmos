@@ -7,6 +7,8 @@ dist/
 .env.local
 *.log
 .DS_Store
+bench-results/
+performace bench/
 
 # Drizzle
 packages/db/migrations/meta/

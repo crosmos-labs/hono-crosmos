@@ -11,6 +11,7 @@
  * is 30s; we floor to 60s. This only affects how fast a leaked slot self-heals
  * (60s vs 30s) — the counter check itself is unchanged.
  */
+import { createLogger } from '@crosmos/observability';
 import type { Env } from '../../bindings';
 import { RETRIEVAL_USER_COUNTER_TTL_SECONDS } from './constants';
 
@@ -39,7 +40,9 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
       return true;
     } catch (err) {
       // Fail open — a KV blip must not 429 real traffic.
-      console.error('concurrency_limiter_acquire_failure', err);
+      createLogger({ service: 'api' }).error('retrieval.concurrency_acquire_failed', {
+        stage: 'concurrency_acquire',
+      }, err);
       return true;
     }
   }
@@ -54,7 +57,9 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
         expirationTtl: Math.max(KV_MIN_TTL_SECONDS, RETRIEVAL_USER_COUNTER_TTL_SECONDS),
       });
     } catch (err) {
-      console.error('concurrency_limiter_release_failure', err);
+      createLogger({ service: 'api' }).error('retrieval.concurrency_release_failed', {
+        stage: 'concurrency_release',
+      }, err);
     }
   }
 }

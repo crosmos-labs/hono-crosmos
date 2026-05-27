@@ -2,8 +2,7 @@
  * Normalization + dedup. Mirrors `app/engine/extractors/normalize.py` and the
  * normalization pass in `app/engine/extractors/memories.py`.
  *
- * Order matters — see docs/ingestion_migration/pipeline.md §Stage 5 and the
- * port-time invariants checklist. Each drop reason is counted in a
+ * Order matters; see .codex/pipelines.md. Each drop reason is counted in a
  * `DropCounter` so the pipeline can log a summary.
  */
 import {

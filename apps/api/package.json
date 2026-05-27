@@ -8,16 +8,17 @@
     "build": "wrangler deploy --dry-run --outdir=dist",
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",
+    "bench:compare": "bun scripts/benchmark-compare.ts",
     "typecheck": "tsc --noEmit",
     "tail": "wrangler tail"
   },
   "dependencies": {
     "@crosmos/ai": "workspace:*",
     "@crosmos/db": "workspace:*",
+    "@crosmos/observability": "workspace:*",
     "@crosmos/types": "workspace:*",
     "@hono/swagger-ui": "^0.5.0",
     "@hono/zod-openapi": "^0.18.3",
-    "@sentry/cloudflare": "^8.47.0",
     "drizzle-orm": "^0.36.4",
     "hono": "^4.6.14",
     "jose": "^5.9.6",

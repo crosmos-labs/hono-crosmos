@@ -4,7 +4,7 @@
  * our path (Postgres store configured): edges are fetched per-hop from the DB,
  * NOT re-sorted in JS (the SQL `ORDER BY effective_time DESC, id DESC` is the
  * order). Seeding uses three strategies; an entity's relevance is the max
- * across them. See docs/retrieval_migration/signals-graph.md.
+ * across them. See .codex/pipelines.md.
  */
 import { type Database, type Entity, type Memory, edges } from '@crosmos/db';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';

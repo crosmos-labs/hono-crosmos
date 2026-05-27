@@ -3,7 +3,7 @@ import { OpenAICompatLLM } from './openai-compat';
 /**
  * Default extraction model on OpenRouter. Matches Python's
  * `extractors/constants.py:MODEL_NAME` — do not change without confirming
- * extraction parity (see docs/ingestion_migration/README.md §Critical Numbers).
+ * extraction parity (see .codex/pipelines.md).
  */
 const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
 

@@ -18,7 +18,7 @@ export type { TenantScope } from '@crosmos/types';
  * Returned `SQL` chunks are meant to be passed to `.where(scopeX(scope))`,
  * or combined with extra conditions via Drizzle's `and(scopeX(scope), ...)`.
  *
- * See docs/ingestion_migration/tenancy.md.
+ * See .codex/stack-and-practices.md.
  */
 export function scopeSources(scope: TenantScope): SQL {
   return and(eq(sources.orgId, scope.orgId), eq(sources.spaceId, scope.spaceId))!;

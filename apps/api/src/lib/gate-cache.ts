@@ -23,6 +23,7 @@
  *  - **Fails open**: any KV error falls back to a direct DB read.
  */
 import type { Context } from 'hono';
+import { createLogger } from '@crosmos/observability';
 import type { Env, HonoEnv } from '../bindings';
 import { getDb } from '../db';
 import { type Entitlements, getEntitlements } from '../features/orgs/entitlements';
@@ -56,11 +57,15 @@ async function readThrough<T>(
   loader: () => Promise<T | null>,
 ): Promise<T | null> {
   const kv = c.env.API_KEY_CACHE;
+  const logger = createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+  });
   try {
     const hit = (await kv.get(key, 'json')) as T | null;
     if (hit !== null) return hit;
   } catch (err) {
-    console.warn('gate_cache_read_failed', { key, error: String(err) });
+    logger.warn('gate_cache.read_failed', { stage: 'gate_cache_read' }, err);
   }
 
   const fresh = await loader();
@@ -68,7 +73,9 @@ async function readThrough<T>(
     c.executionCtx.waitUntil(
       kv
         .put(key, JSON.stringify(fresh), { expirationTtl: ttlSeconds })
-        .catch((err) => console.warn('gate_cache_write_failed', { key, error: String(err) })),
+        .catch((err) =>
+          logger.warn('gate_cache.write_failed', { stage: 'gate_cache_write' }, err),
+        ),
     );
   }
   return fresh;

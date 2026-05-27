@@ -1,9 +1,9 @@
 import { swaggerUI } from '@hono/swagger-ui';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import * as Sentry from '@sentry/cloudflare';
+import { createLogger } from '@crosmos/observability';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
-import type { Env, HonoEnv } from './bindings';
+import type { HonoEnv } from './bindings';
 import { authRoutes } from './features/auth/routes';
 import { conversationRoutes } from './features/conversations/routes';
 import { jobRoutes } from './features/jobs/routes';
@@ -42,14 +42,10 @@ app.onError((err, c) => {
     if (res.headers.get('content-type')?.includes('application/json')) return res;
     return c.json({ detail: err.message }, err.status);
   }
-  if (c.env.SENTRY_DSN) {
-    try {
-      Sentry.captureException(err);
-    } catch {
-      // ignore Sentry init failures
-    }
-  }
-  console.error('Unhandled error', err);
+  createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+  }).error('api.unhandled_error', {}, err);
   return c.json({ detail: 'Internal server error' }, 500);
 });
 
@@ -87,19 +83,6 @@ app.get(
 
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
-const handler = {
+export default {
   fetch: app.fetch,
 };
-
-export default Sentry.withSentry(
-  (env) => {
-    const e = env as Env | undefined;
-    return {
-      dsn: e?.SENTRY_DSN ?? '',
-      environment: e?.ENVIRONMENT ?? 'development',
-      tracesSampleRate: e?.ENVIRONMENT === 'production' ? 0.1 : 1.0,
-      enabled: Boolean(e?.SENTRY_DSN),
-    };
-  },
-  handler,
-);

@@ -1,4 +1,4 @@
-import * as Sentry from '@sentry/cloudflare';
+import { createLogger } from '@crosmos/observability';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { Env } from './bindings';
 import { getDb } from './db';
@@ -11,8 +11,7 @@ import { processIngestion } from './process-ingestion';
  *
  * One queue message = one ingestion job (a job may carry many `source_ids`).
  * `wrangler.toml` is configured with `max_batch_size: 1` so we process jobs
- * serially per isolate but in parallel across isolates — see
- * docs/ingestion_migration/decisions.md §4.
+ * serially per isolate but in parallel across isolates. See .codex/pipelines.md.
  *
  * Acking strategy: a job that completes (in any terminal state — completed /
  * partial / failed / cancelled) is acked. An *unhandled* exception bubbles
@@ -27,16 +26,34 @@ import { processIngestion } from './process-ingestion';
 const handler: ExportedHandler<Env> = {
   async queue(batch, env): Promise<void> {
     const db = getDb(env);
+    const rootLogger = createLogger({
+      service: 'ingestion',
+      environment: env.ENVIRONMENT,
+    });
 
     for (const message of batch.messages) {
       const body = message.body as IngestionJobMessage;
-      console.log('ingestion_job_received', {
+      const logger = rootLogger.child({
         job_id: body.job_id,
         correlation_id: body.correlation_id,
         org_id: body.org_id,
         space_id: body.space_id,
+        user_id: body.user_id,
+      });
+      const queueDelayMs =
+        typeof body.enqueued_at_ms === 'number'
+          ? Math.max(0, Date.now() - body.enqueued_at_ms)
+          : undefined;
+
+      logger.info('ingestion.job_received', {
+        job_id: body.job_id,
+        correlation_id: body.correlation_id,
+        org_id: body.org_id,
+        space_id: body.space_id,
+        user_id: body.user_id,
         source_count: body.source_ids.length,
         attempt: message.attempts,
+        queue_delay_ms: queueDelayMs,
       });
 
       // One LLM + one embedder per job so totalTokens aggregates across
@@ -45,32 +62,18 @@ const handler: ExportedHandler<Env> = {
       const embedder = getEmbedder(env);
 
       try {
-        await processIngestion(body, { db, llm, embedder });
+        await processIngestion(body, { db, llm, embedder, logger });
         message.ack();
       } catch (err) {
         // Outer failure path — DB went away mid-run, factory threw, etc.
         // Don't ack; let Cloudflare Queues retry (or DLQ on the final attempt).
-        Sentry.captureException(err);
-        console.error('ingestion_job_unhandled_error', {
-          job_id: body.job_id,
+        logger.error('ingestion.job_unhandled_error', {
           attempt: message.attempts,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        }, err);
         message.retry();
       }
     }
   },
 };
 
-export default Sentry.withSentry(
-  (env) => {
-    const e = env as Env | undefined;
-    return {
-      dsn: e?.SENTRY_DSN ?? '',
-      environment: e?.ENVIRONMENT ?? 'development',
-      tracesSampleRate: e?.ENVIRONMENT === 'production' ? 0.1 : 1.0,
-      enabled: Boolean(e?.SENTRY_DSN),
-    };
-  },
-  handler,
-);
+export default handler;

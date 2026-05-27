@@ -1,7 +1,6 @@
 /**
  * Producer-side backpressure constants. Mirror Python's
- * `app/worker/constants.py` — see
- * docs/ingestion_migration/decisions.md §10 for the parity table. Keep these
+ * `app/worker/constants.py`; see .codex/pipelines.md. Keep these
  * hard-coded (not env-configurable) so behavior matches between deploys.
  */
 

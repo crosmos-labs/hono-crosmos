@@ -5,6 +5,10 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 [dev]
 port = 8788
 
@@ -15,8 +19,7 @@ id = "f5a4b0b3c894450f9ad332221a92ff5a"
 localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
 # Queue consumer: one ingestion job per invocation. A job may carry many
-# source_ids, but each job is its own queue message — see
-# docs/ingestion_migration/decisions.md §4 for the rationale.
+# source_ids, but each job is its own queue message; see .codex/pipelines.md.
 [[queues.consumers]]
 queue = "ingestion-jobs-dev"
 max_batch_size = 1
@@ -33,6 +36,10 @@ ENVIRONMENT = "development"
 LLM_PROVIDER = "openrouter"
 
 [env.production]
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
+
 [env.production.vars]
 ENVIRONMENT = "production"
 LLM_PROVIDER = "openrouter"

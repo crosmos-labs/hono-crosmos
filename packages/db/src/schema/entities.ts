@@ -22,7 +22,7 @@ import { organizations } from './organizations';
  * be unique. `entity_type` is free-form text (not an enum) so newer types
  * can land without a migration.
  *
- * See docs/ingestion_migration/database-schema.md §entities.
+ * See .codex/code-architecture.md.
  */
 export const entities = pgTable(
   'entities',

@@ -6,7 +6,7 @@
  * list is allowed but coerced to `DEFAULT_ENTITY_TYPE` when backfilled from a
  * relation that didn't supply a type.
  *
- * See docs/ingestion_migration/entity-resolution.md §Entity ontology.
+ * See .codex/pipelines.md.
  */
 export interface EntityTypeMeta {
   description: string;

@@ -10,5 +10,4 @@ export interface Env {
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
-  SENTRY_DSN?: string;
 }

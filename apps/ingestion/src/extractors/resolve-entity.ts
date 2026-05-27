@@ -13,13 +13,14 @@
  * Concurrency-safety: the unique index `uq_entity_space_name` makes Stage C
  * race-safe across parallel ingesters.
  *
- * See docs/ingestion_migration/entity-resolution.md.
+ * See .codex/pipelines.md.
  */
 import {
   entities,
   type Database,
   type Entity,
 } from '@crosmos/db';
+import { durationMs, type Logger } from '@crosmos/observability';
 import { type TenantScope } from '@crosmos/types';
 import { and, cosineDistance, eq, isNotNull, sql } from 'drizzle-orm';
 import {
@@ -175,13 +176,29 @@ export async function resolveEntities(
   scope: TenantScope,
   extracted: NormalizedEntity[],
   embedder: Embedder,
+  logger?: Logger,
 ): Promise<ResolvedEntity[]> {
   if (extracted.length === 0) return [];
 
   const names = extracted.map((e) => e.name);
+  const embedStart = performance.now();
   const { vectors } = await embedder.embedBatch(names, { mode: 'document' });
-  const pool = await fetchCandidatePool(db, scope, vectors);
+  logger?.info('embedding.request_completed', {
+    stage: 'entity_embedding',
+    embedding_mode: 'document',
+    embedding_count: names.length,
+    duration_ms: durationMs(embedStart),
+  });
 
+  const candidatePoolStart = performance.now();
+  const pool = await fetchCandidatePool(db, scope, vectors);
+  logger?.info('ingestion.stage_completed', {
+    stage: 'entity_candidate_pool',
+    duration_ms: durationMs(candidatePoolStart),
+    candidate_count: pool.length,
+  });
+
+  const upsertStart = performance.now();
   const out: ResolvedEntity[] = [];
   for (let i = 0; i < extracted.length; i++) {
     const e = extracted[i]!;
@@ -199,6 +216,11 @@ export async function resolveEntities(
       isNew: upserted.isNew,
     });
   }
+  logger?.info('ingestion.stage_completed', {
+    stage: 'entity_upsert',
+    duration_ms: durationMs(upsertStart),
+    entity_count: out.length,
+  });
   return out;
 }
 

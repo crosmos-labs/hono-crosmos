@@ -7,8 +7,7 @@ import type { QueueService } from './port';
  * Cloudflare Queues producer adapter.
  *
  * `queueDepth` uses Postgres (`COUNT(*) ingestion_jobs WHERE status IN
- * (pending, processing)`) rather than a Durable Object counter — see
- * docs/ingestion_migration/decisions.md §4. Slightly stale, but bounded at
+ * (pending, processing)`) rather than a Durable Object counter. Slightly stale, but bounded at
  * the 5000 ceiling and runs over Hyperdrive, so adds maybe ~20ms per
  * `POST /sources`. Revisit if it shows up in p95.
  */

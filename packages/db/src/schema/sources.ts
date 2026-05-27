@@ -19,7 +19,7 @@ import { organizations } from './organizations';
  * (text blob, markdown chunk, transcript turn). Memories are extracted
  * **from** sources; this table is the citation trail.
  *
- * See docs/ingestion_migration/database-schema.md §sources.
+ * See .codex/code-architecture.md.
  */
 export const sources = pgTable(
   'sources',

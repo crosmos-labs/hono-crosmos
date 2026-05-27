@@ -27,7 +27,7 @@ import { organizations } from './organizations';
  * `memory_id` is `ON DELETE SET NULL`: losing the evidence memory must not
  * drop the edge from the graph.
  *
- * See docs/ingestion_migration/database-schema.md §edges.
+ * See .codex/code-architecture.md.
  */
 export const edges = pgTable(
   'edges',

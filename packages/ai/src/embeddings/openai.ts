@@ -5,7 +5,7 @@ const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 /**
  * OpenAI `text-embedding-3-small` at 1536 dimensions. Matches the
  * `Vector(1536)` column shape in the schema — see
- * docs/ingestion_migration/README.md §Critical Numbers.
+ * .codex/stack-and-practices.md.
  *
  * `text-embedding-3-small` is symmetric: document and search modes share one
  * vector space, so the `mode` option on the interface is ignored here. Callers

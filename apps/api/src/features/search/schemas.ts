@@ -3,8 +3,7 @@ import { UuidSchema } from '../../lib/zod-common';
 
 /**
  * Search API contract — port of `app/api/search/schemas.py`. Field names and
- * defaults match Python exactly (snake_case on the wire). See
- * docs/retrieval_migration/schemas.md + api-routes.md.
+ * defaults match Python exactly (snake_case on the wire). See .codex/pipelines.md.
  */
 export const SearchRequestSchema = z
   .object({

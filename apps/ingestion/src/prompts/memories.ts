@@ -4,7 +4,7 @@
  * Mirrors `app/engine/prompts/memories.py` and `app/engine/extractors/memories.py`.
  * The system prompt is the **highest-priority** part of the pipeline contract —
  * any drift here changes what the model considers a memory. See
- * docs/ingestion_migration/pipeline.md §Stage 2.
+ * .codex/pipelines.md.
  */
 
 export const MEMORY_SYSTEM_PROMPT = `Extract contextual memories from content. A memory must be useful for future personalization or task continuation.

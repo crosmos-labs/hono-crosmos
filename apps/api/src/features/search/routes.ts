@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createLogger, durationMs } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -148,19 +149,42 @@ searchRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const requestId = crypto.randomUUID();
+    const logger = createLogger({
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      base: {
+        request_id: requestId,
+        org_id: orgId,
+        user_id: userId,
+      },
+    });
+    logger.info('retrieval.request_started', {
+      query_length: body.query.length,
+      top_k: body.limit,
+      graph_enabled: body.graph,
+    });
 
     // Fetch org entitlements ONCE per request (KV-cached), then share with the
     // rate-limit gate, the quota gate, and the orchestrator (was 3 separate
     // fetches). The space-access check below guarantees space.orgId === orgId,
     // so the same entitlements apply throughout.
-    const entitlements = await getCachedEntitlements(c, orgId);
+    const entitlements = await logger.time('retrieval.stage_completed', {
+      stage: 'entitlements',
+    }, () => getCachedEntitlements(c, orgId));
 
     // 2. Per-org plan rate limit.
     const limiter = getRateLimiter(c.env);
     try {
-      await enforcePlanRateLimit(db, limiter, orgId, entitlements);
+      await logger.time('retrieval.stage_completed', {
+        stage: 'plan_rate_limit',
+      }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
     } catch (err) {
       if (err instanceof RateLimitError) {
+        logger.warn('retrieval.request_rejected', {
+          stage: 'plan_rate_limit',
+          status_code: 429,
+        });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
@@ -174,8 +198,14 @@ searchRoutes.openapi(
 
     // 3. Space access — authoritative org is the SPACE's org. 404 on missing
     // or cross-tenant (no existence leak). KV-cached (slim {id, orgId}).
-    const space = await getCachedSpaceByUuid(c, body.space_id);
+    const space = await logger.time('retrieval.stage_completed', {
+      stage: 'space_access',
+    }, () => getCachedSpaceByUuid(c, body.space_id));
     if (!space || space.orgId !== orgId) {
+      logger.warn('retrieval.request_rejected', {
+        stage: 'space_access',
+        status_code: 404,
+      });
       throw new HTTPException(404, {
         res: jsonError(`Space ${body.space_id} not found`, 404),
       });
@@ -183,9 +213,16 @@ searchRoutes.openapi(
 
     // 4. Monthly search-query quota (optimistic +1, enforce-only).
     try {
-      await checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements);
+      await logger.time('retrieval.stage_completed', {
+        stage: 'monthly_quota',
+        space_id: space.id,
+      }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
     } catch (err) {
       if (err instanceof QuotaExceededError) {
+        logger.warn('retrieval.request_rejected', {
+          stage: 'monthly_quota',
+          status_code: 429,
+        });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
@@ -199,12 +236,25 @@ searchRoutes.openapi(
     // 6. Per-user concurrency cap. (5. queue-depth gate dropped inline — §4.)
     const concurrency = getConcurrencyLimiter(c.env);
     const userKey = String(userId);
-    const acquired = await concurrency.acquire(
-      userKey,
-      RETRIEVAL_MAX_CONCURRENT_PER_USER,
-      RETRIEVAL_USER_COUNTER_TTL_SECONDS,
+    const acquired = await logger.time(
+      'retrieval.stage_completed',
+      {
+        stage: 'concurrency_acquire',
+        space_id: space.id,
+      },
+      () =>
+        concurrency.acquire(
+          userKey,
+          RETRIEVAL_MAX_CONCURRENT_PER_USER,
+          RETRIEVAL_USER_COUNTER_TTL_SECONDS,
+        ),
     );
     if (!acquired) {
+      logger.warn('retrieval.request_rejected', {
+        stage: 'concurrency_acquire',
+        space_id: space.id,
+        status_code: 429,
+      });
       throw new HTTPException(429, {
         res: jsonError(
           'Too many concurrent searches. Wait for existing searches to complete.',
@@ -216,7 +266,15 @@ searchRoutes.openapi(
     const t0 = performance.now();
     try {
       const scope: TenantScope = { orgId: space.orgId, spaceId: space.id, userId };
+      const candidateLoadStart = performance.now();
       const candidates = await loadRetrievalCandidates(db, scope);
+      logger.info('retrieval.stage_completed', {
+        stage: 'candidate_load',
+        space_id: space.id,
+        duration_ms: durationMs(candidateLoadStart),
+        memory_count: candidates.memories.length,
+        entity_count: candidates.entities.length,
+      });
       const deps = {
         db,
         embedder: getEmbedder(c.env),
@@ -237,6 +295,7 @@ searchRoutes.openapi(
           candidates,
           deps,
           entitlements,
+          logger: logger.child({ space_id: space.id }),
         }),
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
       );
@@ -251,6 +310,13 @@ searchRoutes.openapi(
         performance.now() - t0,
         body.include_source,
       );
+      logger.info('retrieval.request_completed', {
+        space_id: space.id,
+        duration_ms: durationMs(t0),
+        candidate_count: candidates.memories.length,
+        result_count: response.total,
+        top_k: body.limit,
+      });
 
       // Write-side bookkeeping runs OFF the critical path via waitUntil — the
       // user never waits on it. `touch` bumps access_frequency (org+space
@@ -264,7 +330,9 @@ searchRoutes.openapi(
         ]).then((results) => {
           for (const r of results) {
             if (r.status === 'rejected') {
-              console.warn('search_write_side_effect_failed', { error: String(r.reason) });
+              logger.warn('retrieval.write_side_effect_failed', {
+                space_id: space.id,
+              }, r.reason);
             }
           }
         }),
@@ -273,12 +341,22 @@ searchRoutes.openapi(
       return c.json(response, 200);
     } catch (err) {
       if (err instanceof TimeoutError) {
+        logger.warn('retrieval.request_failed', {
+          space_id: space.id,
+          duration_ms: durationMs(t0),
+          status_code: 504,
+          timed_out: true,
+        });
         throw new HTTPException(504, {
           res: jsonError('Search timed out. Please try again.', 504),
         });
       }
       if (err instanceof HTTPException) throw err;
-      console.error('retrieval_failed', err);
+      logger.error('retrieval.request_failed', {
+        space_id: space.id,
+        duration_ms: durationMs(t0),
+        status_code: 500,
+      }, err);
       // Outside production, surface the real error in the response body so it
       // can be debugged without a logging pipeline. Production keeps the
       // generic message — no stack/internal leak. Flip the `ENVIRONMENT` var

@@ -1,5 +1,6 @@
 import { ZeroEntropyReranker } from '@crosmos/ai';
 import type { Reranker } from '@crosmos/ai';
+import { createLogger } from '@crosmos/observability';
 import type { Env } from '../../bindings';
 import { isRerankerEnabled } from '../../features/search/constants';
 
@@ -16,7 +17,10 @@ export type { Reranker } from '@crosmos/ai';
 export function getReranker(env: Env): Reranker | null {
   if (!isRerankerEnabled(env.RETRIEVAL_RERANKER_ENABLED)) return null;
   if (!env.ZEROENTROPY_API_KEY) {
-    console.warn('reranker_enabled_but_no_api_key — falling back to RRF');
+    createLogger({
+      service: 'api',
+      environment: env.ENVIRONMENT,
+    }).warn('retrieval.reranker_missing_api_key', { stage: 'reranker_init' });
     return null;
   }
   return new ZeroEntropyReranker({ apiKey: env.ZEROENTROPY_API_KEY });

@@ -20,9 +20,8 @@ import {
 
 /**
  * Producer-side pre-flight gates applied to both `POST /sources` and
- * `POST /conversations`. Order matches Python and
- * docs/ingestion_migration/api-routes.md so error precedence stays
- * predictable for clients.
+ * `POST /conversations`. Order matches Python and .codex/pipelines.md so error
+ * precedence stays predictable for clients.
  *
  * Throws `HTTPException` with the structured error body conventions from
  * the docs:

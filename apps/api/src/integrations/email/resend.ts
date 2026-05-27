@@ -1,4 +1,5 @@
 import type { EmailSender } from './port';
+import { createLogger } from '@crosmos/observability';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 const FROM_ADDRESS = 'Crosmos <hello@crosmos.dev>';
@@ -22,11 +23,11 @@ export class ResendEmailSender implements EmailSender {
     });
     if (!res.ok) {
       // Callers fire this via waitUntil — never surface errors to the user.
-      console.error(
-        'Resend welcome email failed',
-        res.status,
-        await res.text().catch(() => ''),
-      );
+      await res.text().catch(() => '');
+      createLogger({ service: 'api' }).error('email.welcome_send_failed', {
+        provider: 'resend',
+        status_code: res.status,
+      });
     }
   }
 }

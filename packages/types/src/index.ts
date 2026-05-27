@@ -15,7 +15,7 @@
  * `userId` is in the scope for usage attribution only (`daily_usage.user_id`)
  * — by the time a scope exists, authorization has already passed.
  *
- * See docs/ingestion_migration/tenancy.md.
+ * See .codex/stack-and-practices.md.
  */
 export interface TenantScope {
   readonly orgId: number;
@@ -39,6 +39,8 @@ export interface IngestionJobMessage {
   space_id: number;
   user_id: number;
   source_ids: number[];
+  /** Producer wall-clock timestamp in milliseconds, used for queue-delay logs. */
+  enqueued_at_ms?: number;
 }
 
 export type IngestionJobStatus =
@@ -51,7 +53,7 @@ export type IngestionJobStatus =
 
 /**
  * Result blob written onto `ingestion_jobs.result` at the terminal
- * transition. See docs/ingestion_migration/database-schema.md §ingestion_jobs.
+ * transition. See .codex/pipelines.md.
  */
 export interface IngestionJobResult {
   source_ids: number[];

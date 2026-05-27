@@ -22,7 +22,7 @@ import { organizations } from './organizations';
  * is `vector(1536)` to match OpenAI `text-embedding-3-small`; changing the
  * embedding model means a schema change here.
  *
- * See docs/ingestion_migration/database-schema.md §memories.
+ * See .codex/code-architecture.md.
  */
 export const memories = pgTable(
   'memories',

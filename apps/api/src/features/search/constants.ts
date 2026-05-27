@@ -5,7 +5,7 @@
  *
  * These ARE the ranking. Do NOT round, clean up, or make env-configurable —
  * Python treats them as code. A drift of 0.4 → 0.5 silently changes every
- * result. See docs/retrieval_migration/constants.md.
+ * result. See .codex/pipelines.md.
  */
 
 export const SEMANTIC_MIN_SCORE = 0.1;
@@ -48,7 +48,7 @@ export const BOOST_MAX = 0.3;
 
 // asyncio.Semaphore bound in Python. On Workers/Hyperdrive connection pooling
 // is handled by Hyperdrive, so this maps to nothing today — kept for parity
-// reference (docs/retrieval_migration/worker.md).
+// reference (.codex/pipelines.md).
 export const RETRIEVAL_CONNECTION_LIMIT = 20;
 
 export const MMR_LAMBDA = 0.6;
