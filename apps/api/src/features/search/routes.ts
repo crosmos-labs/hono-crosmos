@@ -15,6 +15,7 @@ import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
 import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cache';
+import { getBackgroundTasks } from '../../lib/runtime';
 import { recordSearchQueries } from '../usage/service';
 import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
@@ -149,7 +150,7 @@ searchRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
-    const requestId = crypto.randomUUID();
+    const requestId = c.var.requestId ?? crypto.randomUUID();
     const logger = createLogger({
       service: 'api',
       environment: c.env.ENVIRONMENT,
@@ -323,7 +324,7 @@ searchRoutes.openapi(
       // scoped, user_id=0); `recordSearchQueries` meters daily_usage. Both
       // non-fatal. The worker stays alive until these settle.
       const touchedIds = result.candidates.map((cm) => cm.memoryId);
-      c.executionCtx.waitUntil(
+      getBackgroundTasks(c).waitUntil(
         Promise.allSettled([
           touchMemories(db, { orgId: space.orgId, spaceId: space.id, userId: 0 }, touchedIds),
           recordSearchQueries(db, scope, 1),

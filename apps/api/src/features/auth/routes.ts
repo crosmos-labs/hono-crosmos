@@ -11,9 +11,11 @@ import {
   UserSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { waitUntilLogged } from '../../lib/runtime';
 import { invalidateApiKeyCacheByHash, requireAuth, requireOrg } from './middleware';
 import {
   createApiKey,
@@ -247,8 +249,12 @@ authRoutes.openapi(
       throw new HTTPException(404, { message: 'API key not found' });
     }
     // Best-effort: drop KV cache entry so revocation takes effect immediately.
-    c.executionCtx.waitUntil(
+    waitUntilLogged(
+      c,
+      createLogger({ service: 'api', environment: c.env.ENVIRONMENT }),
+      'auth.api_key_cache_invalidation_failed',
       invalidateApiKeyCacheByHash(c.env, revoked.keyHash),
+      { stage: 'api_key_cache_invalidation' },
     );
     return c.body(null, 204);
   },
@@ -300,12 +306,22 @@ authRoutes.openapi(
     }
 
     // Rotate refresh token: revoke the one we just used.
-    c.executionCtx.waitUntil(
+    waitUntilLogged(
+      c,
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: {
+          user_id: claims.userId,
+        },
+      }),
+      'auth.refresh_revoke_failed',
       revokeRefreshToken(db, {
         jti: claims.jti,
         userId: claims.userId,
         expiresAt: claims.expiresAt,
       }),
+      { stage: 'refresh_revoke' },
     );
 
     const membership = await getEarliestMembershipForUser(db, user.id);

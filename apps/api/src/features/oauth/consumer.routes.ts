@@ -13,10 +13,12 @@ import {
   OAuthProvidersSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getEmailSender } from '../../integrations/email';
+import { waitUntilLogged } from '../../lib/runtime';
 import {
   buildGoogleAuthorizationUrl,
   exchangeGoogleCode,
@@ -195,11 +197,21 @@ oauthConsumerRoutes.openapi(
     // The adapter is a NoopEmailSender in environments without RESEND_API_KEY.
     if (result.isNewUser) {
       const email = getEmailSender(c.env);
-      c.executionCtx.waitUntil(
+      waitUntilLogged(
+        c,
+        createLogger({
+          service: 'api',
+          environment: c.env.ENVIRONMENT,
+          base: {
+            user_id: result.user.id,
+          },
+        }),
+        'email.welcome_send_failed',
         email.sendWelcome({
           to: result.user.email,
           name: result.user.name,
         }),
+        { stage: 'welcome_email', provider: 'resend' },
       );
     }
 

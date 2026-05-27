@@ -18,6 +18,7 @@
         "@crosmos/ai": "workspace:*",
         "@crosmos/db": "workspace:*",
         "@crosmos/observability": "workspace:*",
+        "@crosmos/runtime": "workspace:*",
         "@crosmos/types": "workspace:*",
         "@hono/swagger-ui": "^0.5.0",
         "@hono/zod-openapi": "^0.18.3",
@@ -40,6 +41,7 @@
         "@crosmos/ai": "workspace:*",
         "@crosmos/db": "workspace:*",
         "@crosmos/observability": "workspace:*",
+        "@crosmos/runtime": "workspace:*",
         "@crosmos/types": "workspace:*",
         "drizzle-orm": "^0.36.4",
         "postgres": "^3.4.5",
@@ -75,6 +77,13 @@
     },
     "packages/observability": {
       "name": "@crosmos/observability",
+      "version": "0.0.0",
+      "devDependencies": {
+        "typescript": "^5.6.3",
+      },
+    },
+    "packages/runtime": {
+      "name": "@crosmos/runtime",
       "version": "0.0.0",
       "devDependencies": {
         "typescript": "^5.6.3",
@@ -116,6 +125,8 @@
     "@crosmos/ingestion": ["@crosmos/ingestion@workspace:apps/ingestion"],
 
     "@crosmos/observability": ["@crosmos/observability@workspace:packages/observability"],
+
+    "@crosmos/runtime": ["@crosmos/runtime@workspace:packages/runtime"],
 
     "@crosmos/types": ["@crosmos/types@workspace:packages/types"],
 

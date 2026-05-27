@@ -13,6 +13,13 @@
 - AI: OpenAI embeddings (`text-embedding-3-small`), OpenRouter/OpenAI-compatible extraction LLM, ZeroEntropy reranker.
 - Observability: structured JSON `console.*` logs captured by Cloudflare Workers Logs through `@crosmos/observability`.
 
+## Provider Boundaries
+
+- Product and pipeline logic must depend on ports, not provider SDKs or runtime bindings.
+- Cloudflare-specific APIs belong in adapters only: Wrangler config, Worker entrypoints, `apps/*/src/bindings.ts`, and integrations named for Cloudflare/KV/Queues.
+- Background work should go through `@crosmos/runtime` `BackgroundTasks`; queue consumers should use `QueueDelivery`; application logs should use `@crosmos/observability`.
+- Tests and future non-Cloudflare runtimes should use memory/inline adapters instead of importing Cloudflare Workers types.
+
 ## Coding Practices
 
 - Keep code in the existing app/package boundaries. API feature code goes under `apps/api/src/features/<domain>`.

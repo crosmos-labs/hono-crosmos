@@ -9,6 +9,17 @@ workers_dev = true
 enabled = true
 head_sampling_rate = 1
 
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
+
 # Smart Placement: run the Worker close to the Hyperdrive origin (NeonDB,
 # ap-southeast-1) instead of near the user. The retrieval path makes several
 # sequential DB round-trips, so co-locating with the DB means far-region users
@@ -57,6 +68,17 @@ RETRIEVAL_RERANKER_ENABLED = "true"
 [env.production]
 [env.production.observability]
 enabled = true
+head_sampling_rate = 1
+
+[env.production.observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[env.production.observability.traces]
+enabled = true
+persist = true
 head_sampling_rate = 1
 
 [env.production.vars]

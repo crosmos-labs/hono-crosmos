@@ -5,6 +5,9 @@ import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { getCacheStore } from '../../integrations/cache';
+import { waitUntilLogged } from '../../lib/runtime';
+import { createLogger } from '@crosmos/observability';
 import {
   resolveApiKeyByHash,
   touchApiKeyLastUsed,
@@ -32,15 +35,24 @@ function cacheKey(hash: string): string {
 
 async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void> {
   const hash = await hashApiKey(rawKey);
-  const cache = c.env.API_KEY_CACHE;
+  const cache = getCacheStore(c.env);
   const now = Date.now();
+  const logger = createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+  });
 
-  let cached = (await cache.get(cacheKey(hash), 'json')) as CachedApiKey | null;
+  let cached = await cache.getJson<CachedApiKey>(cacheKey(hash));
 
   if (cached && cached.expiresAt != null && cached.expiresAt < now) {
     cached = null;
-    // Don't await — best-effort eviction
-    c.executionCtx.waitUntil(cache.delete(cacheKey(hash)));
+    waitUntilLogged(
+      c,
+      logger,
+      'auth.api_key_cache_delete_failed',
+      cache.delete(cacheKey(hash)),
+      { stage: 'api_key_cache_delete' },
+    );
   }
 
   if (!cached) {
@@ -63,16 +75,26 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
       orgId: apiKey.orgId,
       expiresAt: apiKey.expiresAt ? apiKey.expiresAt.getTime() : null,
     };
-    c.executionCtx.waitUntil(
-      cache.put(cacheKey(hash), JSON.stringify(cached), {
-        expirationTtl: API_KEY_CACHE_TTL_SECONDS,
+    waitUntilLogged(
+      c,
+      logger,
+      'auth.api_key_cache_write_failed',
+      cache.putJson(cacheKey(hash), cached, {
+        expirationTtlSeconds: API_KEY_CACHE_TTL_SECONDS,
       }),
+      { stage: 'api_key_cache_write' },
     );
   }
 
-  // Fire and forget last_used update
+  // Fire and forget last_used update, but keep failures visible in logs.
   const db = getDb(c);
-  c.executionCtx.waitUntil(touchApiKeyLastUsed(db, cached.apiKeyId));
+  waitUntilLogged(
+    c,
+    logger,
+    'auth.api_key_touch_failed',
+    touchApiKeyLastUsed(db, cached.apiKeyId),
+    { stage: 'api_key_touch' },
+  );
 
   c.set('userId', cached.userId);
   c.set('userUuid', cached.userUuid);
@@ -154,16 +176,16 @@ export const requireOrg = createMiddleware<HonoEnv>(async (c, next) => {
 });
 
 export async function invalidateApiKeyCache(
-  c: { env: { API_KEY_CACHE: KVNamespace }; executionCtx: ExecutionContext },
+  c: { env: Pick<HonoEnv['Bindings'], 'API_KEY_CACHE'> },
   rawKey: string,
 ): Promise<void> {
   const hash = await hashApiKey(rawKey);
-  await c.env.API_KEY_CACHE.delete(cacheKey(hash));
+  await getCacheStore(c.env).delete(cacheKey(hash));
 }
 
 export async function invalidateApiKeyCacheByHash(
-  env: { API_KEY_CACHE: KVNamespace },
+  env: Pick<HonoEnv['Bindings'], 'API_KEY_CACHE'>,
   hash: string,
 ): Promise<void> {
-  await env.API_KEY_CACHE.delete(cacheKey(hash));
+  await getCacheStore(env).delete(cacheKey(hash));
 }

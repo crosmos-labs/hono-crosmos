@@ -25,6 +25,7 @@ export interface Env {
 
 // Variables Hono sets on the request context (populated by middleware).
 export interface Variables {
+  requestId?: string;
   // Set after auth middleware
   userId?: number;
   userUuid?: string;

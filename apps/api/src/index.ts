@@ -36,17 +36,35 @@ app.use(
   }),
 );
 
+app.use('*', async (c, next) => {
+  const requestId = c.req.header('x-request-id') ?? crypto.randomUUID();
+  c.set('requestId', requestId);
+  await next();
+  c.header('X-Request-Id', requestId);
+});
+
 app.onError((err, c) => {
+  const requestId = c.var.requestId ?? crypto.randomUUID();
   if (err instanceof HTTPException) {
     const res = err.getResponse();
+    res.headers.set('X-Request-Id', requestId);
     if (res.headers.get('content-type')?.includes('application/json')) return res;
-    return c.json({ detail: err.message }, err.status);
+    return c.json(
+      { detail: err.message },
+      err.status,
+      { 'X-Request-Id': requestId },
+    );
   }
   createLogger({
     service: 'api',
     environment: c.env.ENVIRONMENT,
+    base: { request_id: requestId },
   }).error('api.unhandled_error', {}, err);
-  return c.json({ detail: 'Internal server error' }, 500);
+  return c.json(
+    { detail: 'Internal server error', request_id: requestId },
+    500,
+    { 'X-Request-Id': requestId },
+  );
 });
 
 app.get('/health', (c) =>

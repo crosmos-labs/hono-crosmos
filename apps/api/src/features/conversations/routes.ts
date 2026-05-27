@@ -86,7 +86,7 @@ conversationRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
-    const requestId = crypto.randomUUID();
+    const requestId = c.var.requestId ?? crypto.randomUUID();
     const logger = createLogger({
       service: 'api',
       environment: c.env.ENVIRONMENT,

@@ -1,7 +1,7 @@
 /**
- * Read-through KV cache for the per-request "gate" reads that change rarely:
+ * Read-through cache for the per-request "gate" reads that change rarely:
  * org entitlements, org membership, and space-by-uuid. Backed by the
- * `API_KEY_CACHE` namespace under a `gate:` prefix.
+ * configured `CacheStore` under a `gate:` prefix.
  *
  * On free-tier / cross-region Neon each of these is a ~150–200ms round-trip, so
  * caching them removes a big chunk of the pre-retrieval gate latency.
@@ -26,6 +26,8 @@ import type { Context } from 'hono';
 import { createLogger } from '@crosmos/observability';
 import type { Env, HonoEnv } from '../bindings';
 import { getDb } from '../db';
+import { getCacheStore } from '../integrations/cache';
+import { getBackgroundTasks } from './runtime';
 import { type Entitlements, getEntitlements } from '../features/orgs/entitlements';
 import { getMembership, type MembershipRow } from '../features/orgs/memberships';
 import { getSpaceByUuid } from '../features/spaces/service';
@@ -56,13 +58,13 @@ async function readThrough<T>(
   ttlSeconds: number,
   loader: () => Promise<T | null>,
 ): Promise<T | null> {
-  const kv = c.env.API_KEY_CACHE;
+  const cache = getCacheStore(c.env);
   const logger = createLogger({
     service: 'api',
     environment: c.env.ENVIRONMENT,
   });
   try {
-    const hit = (await kv.get(key, 'json')) as T | null;
+    const hit = await cache.getJson<T>(key);
     if (hit !== null) return hit;
   } catch (err) {
     logger.warn('gate_cache.read_failed', { stage: 'gate_cache_read' }, err);
@@ -70,9 +72,9 @@ async function readThrough<T>(
 
   const fresh = await loader();
   if (fresh != null) {
-    c.executionCtx.waitUntil(
-      kv
-        .put(key, JSON.stringify(fresh), { expirationTtl: ttlSeconds })
+    getBackgroundTasks(c).waitUntil(
+      cache
+        .putJson(key, fresh, { expirationTtlSeconds: ttlSeconds })
         .catch((err) =>
           logger.warn('gate_cache.write_failed', { stage: 'gate_cache_write' }, err),
         ),
@@ -119,7 +121,7 @@ export async function getCachedSpaceByUuid(
 }
 
 export async function invalidateEntitlements(env: Env, orgId: number): Promise<void> {
-  await env.API_KEY_CACHE.delete(entKey(orgId));
+  await getCacheStore(env).delete(entKey(orgId));
 }
 
 export async function invalidateMembership(
@@ -127,9 +129,9 @@ export async function invalidateMembership(
   orgId: number,
   userId: number,
 ): Promise<void> {
-  await env.API_KEY_CACHE.delete(memberKey(orgId, userId));
+  await getCacheStore(env).delete(memberKey(orgId, userId));
 }
 
 export async function invalidateSpace(env: Env, uuid: string): Promise<void> {
-  await env.API_KEY_CACHE.delete(spaceKey(uuid));
+  await getCacheStore(env).delete(spaceKey(uuid));
 }

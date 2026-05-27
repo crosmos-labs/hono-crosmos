@@ -6,10 +6,12 @@ import {
 } from './schemas';
 import type { MemorySpace } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { invalidateSpace } from '../../lib/gate-cache';
+import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { checkCountQuota, QuotaExceededError } from '../orgs/entitlements';
@@ -232,7 +234,20 @@ spaceRoutes.openapi(
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
     // Drop the cached gate entry — this space no longer exists.
-    c.executionCtx.waitUntil(invalidateSpace(c.env, space_uuid));
+    waitUntilLogged(
+      c,
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: {
+          org_id: space.orgId,
+          space_id: space.id,
+        },
+      }),
+      'gate_cache.space_invalidation_failed',
+      invalidateSpace(c.env, space_uuid),
+      { stage: 'gate_cache_invalidation' },
+    );
     return c.body(null, 204);
   },
 );
