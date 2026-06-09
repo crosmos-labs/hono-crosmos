@@ -18,6 +18,7 @@ import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
 import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cache';
 import { getBackgroundTasks } from '../../lib/runtime';
 import { recordSearchQueries } from '../usage/service';
+import { resolveReadVisibility } from '../visibility/service';
 import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
@@ -280,7 +281,16 @@ searchRoutes.openapi(
 
     const t0 = performance.now();
     try {
-      const scope: TenantScope = { orgId: space.orgId, spaceId: space.id, userId };
+      const visibleUserIds = await logger.time('retrieval.stage_completed', {
+        stage: 'visibility_scope',
+        space_id: space.id,
+      }, () => resolveReadVisibility(db, { orgId: space.orgId, userId }));
+      const scope: TenantScope = {
+        orgId: space.orgId,
+        spaceId: space.id,
+        userId,
+        visibleUserIds,
+      };
       const candidateLoadStart = performance.now();
       const candidates = await loadRetrievalCandidates(db, scope);
       logger.info('retrieval.stage_completed', {

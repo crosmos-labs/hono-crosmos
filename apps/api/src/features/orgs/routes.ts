@@ -1,16 +1,22 @@
 import {
   EntitlementsResponseSchema,
+  MemberListResponseSchema,
+  MemberResponseSchema,
   OrganizationListResponseSchema,
   OrganizationSchema,
   OrganizationSummarySchema,
+  UpdateMemberRoleSchema,
   UpdateOrganizationSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
+import { and, count, eq } from 'drizzle-orm';
+import { organizationMembers, users } from '@crosmos/db';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
+import { removeUserFromAllGroups } from '../visibility/service';
 import { getEntitlements, getMonthlyUsage } from './entitlements';
 import { getMembership } from './memberships';
 import {
@@ -77,6 +83,43 @@ function orgToShallow(org: Awaited<ReturnType<typeof getOrganizationByIdOrThrow>
   };
 }
 
+function assertActiveOrg(orgId: number, activeOrgId: number | undefined) {
+  if (orgId !== activeOrgId) {
+    throw new HTTPException(404, { message: 'Organization not found' });
+  }
+}
+
+async function countOwners(db: ReturnType<typeof getDb>, orgId: number): Promise<number> {
+  const rows = await db
+    .select({ c: count() })
+    .from(organizationMembers)
+    .where(and(eq(organizationMembers.orgId, orgId), eq(organizationMembers.role, 'owner')));
+  return rows[0]?.c ?? 0;
+}
+
+async function loadMember(db: ReturnType<typeof getDb>, orgId: number, userUuid: string) {
+  const rows = await db
+    .select({ member: organizationMembers, user: users })
+    .from(organizationMembers)
+    .innerJoin(users, eq(users.id, organizationMembers.userId))
+    .where(and(eq(organizationMembers.orgId, orgId), eq(users.uuid, userUuid)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+function memberToResponse(row: {
+  member: typeof organizationMembers.$inferSelect;
+  user: typeof users.$inferSelect;
+}) {
+  return {
+    user_id: row.user.uuid,
+    email: row.user.email,
+    name: row.user.name,
+    role: row.member.role,
+    joined_at: row.member.joinedAt.toISOString(),
+  };
+}
+
 // GET /api/v1/orgs — list user's orgs
 orgRoutes.openapi(
   createRoute({
@@ -125,6 +168,169 @@ orgRoutes.openapi(
 
     const cursor = hasMore && rows.length > 0 ? rows[rows.length - 1]!.id : null;
     return c.json({ orgs: rows, next_cursor: cursor }, 200);
+  },
+);
+
+// GET /api/v1/orgs/{org_uuid}/members
+orgRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/{org_uuid}/members',
+    tags: ['organizations'],
+    summary: 'List organization members',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requirePrincipal] as const,
+    request: {
+      params: z.object({ org_uuid: z.string().uuid() }),
+    },
+    responses: {
+      200: {
+        description: 'Members',
+        content: { 'application/json': { schema: MemberListResponseSchema } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid } = c.req.valid('param');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) {
+      throw new HTTPException(404, { message: 'Organization not found' });
+    }
+    assertActiveOrg(orgId, c.var.activeOrgId);
+
+    const rows = await db
+      .select({ member: organizationMembers, user: users })
+      .from(organizationMembers)
+      .innerJoin(users, eq(users.id, organizationMembers.userId))
+      .where(eq(organizationMembers.orgId, orgId))
+      .orderBy(organizationMembers.joinedAt);
+
+    return c.json(
+      { members: rows.map(memberToResponse), next_cursor: null },
+      200,
+    );
+  },
+);
+
+// PATCH /api/v1/orgs/{org_uuid}/members/{user_uuid}
+orgRoutes.openapi(
+  createRoute({
+    method: 'patch',
+    path: '/{org_uuid}/members/{user_uuid}',
+    tags: ['organizations'],
+    summary: 'Update organization member role',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requireRole('owner', 'admin')] as const,
+    request: {
+      params: z.object({
+        org_uuid: z.string().uuid(),
+        user_uuid: z.string().uuid(),
+      }),
+      body: {
+        content: { 'application/json': { schema: UpdateMemberRoleSchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Updated member',
+        content: { 'application/json': { schema: MemberResponseSchema } },
+      },
+      403: {
+        description: 'Insufficient role',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid, user_uuid } = c.req.valid('param');
+    const { role } = c.req.valid('json');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) {
+      throw new HTTPException(404, { message: 'Organization not found' });
+    }
+    assertActiveOrg(orgId, c.var.activeOrgId);
+
+    const target = await loadMember(db, orgId, user_uuid);
+    if (!target) {
+      throw new HTTPException(404, { message: 'Member not found' });
+    }
+    if (target.member.role === 'owner') {
+      const owners = await countOwners(db, orgId);
+      if (owners <= 1) {
+        throw new HTTPException(400, { message: 'last_owner' });
+      }
+    }
+
+    await db
+      .update(organizationMembers)
+      .set({ role, updatedAt: new Date() })
+      .where(eq(organizationMembers.id, target.member.id));
+
+    const updated = await loadMember(db, orgId, user_uuid);
+    if (!updated) {
+      throw new HTTPException(404, { message: 'Member not found' });
+    }
+    return c.json(memberToResponse(updated), 200);
+  },
+);
+
+// DELETE /api/v1/orgs/{org_uuid}/members/{user_uuid}
+orgRoutes.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/{org_uuid}/members/{user_uuid}',
+    tags: ['organizations'],
+    summary: 'Remove organization member',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requirePrincipal] as const,
+    request: {
+      params: z.object({
+        org_uuid: z.string().uuid(),
+        user_uuid: z.string().uuid(),
+      }),
+    },
+    responses: {
+      204: { description: 'Removed' },
+      403: {
+        description: 'Insufficient role',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid, user_uuid } = c.req.valid('param');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) {
+      throw new HTTPException(404, { message: 'Organization not found' });
+    }
+    assertActiveOrg(orgId, c.var.activeOrgId);
+
+    const target = await loadMember(db, orgId, user_uuid);
+    if (!target) {
+      throw new HTTPException(404, { message: 'Member not found' });
+    }
+    const isSelf = target.user.id === c.var.userId;
+    if (!isSelf && c.var.orgRole !== 'owner' && c.var.orgRole !== 'admin') {
+      throw new HTTPException(403, { message: 'insufficient_role' });
+    }
+    if (target.member.role === 'owner') {
+      const owners = await countOwners(db, orgId);
+      if (owners <= 1) {
+        throw new HTTPException(400, { message: 'last_owner' });
+      }
+    }
+
+    await db
+      .delete(organizationMembers)
+      .where(eq(organizationMembers.id, target.member.id));
+    await removeUserFromAllGroups(db, { orgId, userId: target.user.id });
+    return c.body(null, 204);
   },
 );
 

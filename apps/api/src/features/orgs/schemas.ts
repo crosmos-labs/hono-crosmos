@@ -66,3 +66,24 @@ export const EntitlementsResponseSchema = z
     }),
   })
   .openapi('EntitlementsResponse');
+
+export const MemberResponseSchema = z
+  .object({
+    user_id: UuidSchema,
+    email: z.string().email(),
+    name: z.string(),
+    role: OrgRoleSchema,
+    joined_at: IsoDateTimeSchema,
+  })
+  .openapi('MemberResponse');
+
+export const MemberListResponseSchema = z
+  .object({
+    members: z.array(MemberResponseSchema),
+    next_cursor: z.string().nullable(),
+  })
+  .openapi('MemberListResponse');
+
+export const UpdateMemberRoleSchema = z
+  .object({ role: z.enum(['admin', 'member']) })
+  .openapi('UpdateMemberRoleRequest');

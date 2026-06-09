@@ -10,9 +10,10 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
-import { sourceExtractionStatus } from './enums';
+import { memoryVisibility, sourceExtractionStatus } from './enums';
 import { memorySpaces } from './memory-spaces';
 import { organizations } from './organizations';
+import { users } from './users';
 
 /**
  * Unified raw-content storage. A source is whatever was ingested verbatim
@@ -32,11 +33,14 @@ export const sources = pgTable(
     spaceId: integer('space_id')
       .notNull()
       .references(() => memorySpaces.id, { onDelete: 'cascade' }),
+    ownerUserId: integer('owner_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    visibility: memoryVisibility('visibility').notNull().default('private'),
     // Free-form text rather than an enum: today only `text` + `markdown` are
     // processable but the schema admits future binary types stored verbatim.
     contentType: varchar('content_type', { length: 20 }).notNull().default('text'),
     content: text('content').notNull(),
-    sequence: integer('sequence').notNull().default(0),
     extractionStatus: sourceExtractionStatus('extraction_status')
       .notNull()
       .default('pending'),
@@ -57,6 +61,7 @@ export const sources = pgTable(
     index('sources_extraction_status_idx').on(t.extractionStatus),
     index('sources_created_at_idx').on(t.createdAt),
     index('idx_sources_org_space').on(t.orgId, t.spaceId),
+    index('idx_sources_org_owner').on(t.orgId, t.ownerUserId),
   ],
 );
 

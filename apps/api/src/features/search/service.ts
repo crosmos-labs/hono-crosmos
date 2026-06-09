@@ -174,10 +174,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     await Promise.all([
       timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
         const { vector } = await embedPromise;
-        return semanticSearch(db, vector, scope.spaceId, query.candidatePool);
+        return semanticSearch(db, vector, scope, query.candidatePool);
       }),
       timeSignal(logger, SourceSignal.KEYWORD, () =>
-        keywordSearch(query.text, db, scope.spaceId, query.candidatePool),
+        keywordSearch(query.text, db, scope, query.candidatePool),
       ),
       timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
         if (!graphEnabled) return [];
@@ -195,8 +195,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
           query.candidatePool,
           temporalRange ? temporalRange[1] : null,
           effectiveMaxDepth,
-          scope.orgId,
-          scope.spaceId,
+          scope,
         );
       }),
       timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {

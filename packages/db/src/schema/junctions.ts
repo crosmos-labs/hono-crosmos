@@ -6,12 +6,12 @@ import {
   timestamp,
   unique,
 } from 'drizzle-orm/pg-core';
+import { chunks } from './chunks';
 import { entities } from './entities';
 import { memories } from './memories';
-import { sources } from './sources';
 
 /**
- * Junction tables for source→memory and memory→entity edges.
+ * Junction tables for chunk→memory and memory→entity edges.
  *
  * These carry no `org_id` / `space_id`. Isolation is transitive: every parent
  * row is already scoped, and FK CASCADE wipes the junction with the parent.
@@ -19,13 +19,13 @@ import { sources } from './sources';
  * different `(org_id, space_id)` pairs — `resolve_entities` enforces this
  * by being called with the same scope used to insert the memory.
  */
-export const sourceMemories = pgTable(
-  'source_memories',
+export const chunkMemories = pgTable(
+  'chunk_memories',
   {
     id: serial('id').primaryKey(),
-    sourceId: integer('source_id')
+    chunkId: integer('chunk_id')
       .notNull()
-      .references(() => sources.id, { onDelete: 'cascade' }),
+      .references(() => chunks.id, { onDelete: 'cascade' }),
     memoryId: integer('memory_id')
       .notNull()
       .references(() => memories.id, { onDelete: 'cascade' }),
@@ -34,9 +34,9 @@ export const sourceMemories = pgTable(
     }),
   },
   (t) => [
-    unique('uq_source_memories').on(t.sourceId, t.memoryId),
-    index('source_memories_source_id_idx').on(t.sourceId),
-    index('source_memories_memory_id_idx').on(t.memoryId),
+    unique('uq_chunk_memory').on(t.chunkId, t.memoryId),
+    index('chunk_memories_chunk_id_idx').on(t.chunkId),
+    index('chunk_memories_memory_id_idx').on(t.memoryId),
   ],
 );
 
@@ -58,7 +58,7 @@ export const memoryEntities = pgTable(
   ],
 );
 
-export type SourceMemory = typeof sourceMemories.$inferSelect;
-export type NewSourceMemory = typeof sourceMemories.$inferInsert;
+export type ChunkMemory = typeof chunkMemories.$inferSelect;
+export type NewChunkMemory = typeof chunkMemories.$inferInsert;
 export type MemoryEntity = typeof memoryEntities.$inferSelect;
 export type NewMemoryEntity = typeof memoryEntities.$inferInsert;

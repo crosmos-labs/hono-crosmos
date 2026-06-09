@@ -6,7 +6,10 @@ import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from './bindings';
 import { authRoutes } from './features/auth/routes';
 import { conversationRoutes } from './features/conversations/routes';
+import { entityRoutes } from './features/entities/routes';
+import { graphRoutes } from './features/graph/routes';
 import { jobRoutes } from './features/jobs/routes';
+import { memoryRoutes } from './features/memories/routes';
 import { oauthConsumerRoutes } from './features/oauth/consumer.routes';
 import {
   oauthServerRedirectApp,
@@ -16,6 +19,8 @@ import { orgRoutes } from './features/orgs/routes';
 import { searchRoutes } from './features/search/routes';
 import { sourceRoutes } from './features/sources/routes';
 import { spaceRoutes } from './features/spaces/routes';
+import { usageRoutes } from './features/usage/routes';
+import { visibilityRoutes } from './features/visibility/routes';
 
 const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
@@ -74,11 +79,16 @@ app.get('/health', (c) =>
 app.route('/api/v1/auth', authRoutes);
 app.route('/api/v1/auth/oauth', oauthConsumerRoutes);
 app.route('/api/v1/orgs', orgRoutes);
+app.route('/api/v1/orgs', visibilityRoutes);
 app.route('/api/v1/spaces', spaceRoutes);
 app.route('/api/v1/sources', sourceRoutes);
+app.route('/api/v1/memories', memoryRoutes);
+app.route('/api/v1/entities', entityRoutes);
+app.route('/api/v1/graph', graphRoutes);
 app.route('/api/v1/search', searchRoutes);
 app.route('/api/v1/conversations', conversationRoutes);
 app.route('/api/v1/jobs', jobRoutes);
+app.route('/api/v1/usage', usageRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);
 

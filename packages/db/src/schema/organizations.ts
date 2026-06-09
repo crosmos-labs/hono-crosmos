@@ -25,6 +25,7 @@ export const organizations = pgTable(
     name: varchar('name', { length: 255 }).notNull(),
     plan: planType('plan').notNull().default('free'),
     isPersonal: boolean('is_personal').notNull().default(false),
+    visibilityEnabled: boolean('visibility_enabled').notNull().default(false),
     entitlements: jsonb('entitlements'),
     posthogFlagOverrides: jsonb('posthog_flag_overrides'),
     billingEmail: varchar('billing_email', { length: 255 }),

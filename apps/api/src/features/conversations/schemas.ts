@@ -4,6 +4,7 @@ import {
   MAX_CONTENT_LENGTH_PER_SOURCE,
   MAX_CONVERSATION_MESSAGES,
 } from '../sources/constants';
+import { VisibilitySchema } from '../sources/schemas';
 
 const ConversationMessageSchema = z
   .object({
@@ -21,6 +22,7 @@ export const IngestConversationRequestSchema = z
       .max(MAX_CONVERSATION_MESSAGES),
     session_id: z.string().min(1).max(255).optional(),
     session_date: z.string().min(1).optional(),
+    visibility: VisibilitySchema.default('private'),
     meta: z.record(z.unknown()).nullable().optional(),
   })
   .openapi('IngestConversationRequest');
@@ -29,6 +31,6 @@ export const IngestConversationResponseSchema = z
   .object({
     job_id: UuidSchema,
     status: z.literal('pending'),
-    source_ids: z.array(UuidSchema),
+    source_id: UuidSchema,
   })
   .openapi('IngestConversationResponse');

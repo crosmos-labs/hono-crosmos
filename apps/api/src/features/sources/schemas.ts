@@ -11,7 +11,7 @@ import {
  * them now and the pipeline can grow into them. Matches Python.
  */
 const ContentTypeSchema = z
-  .enum(['text', 'markdown', 'html', 'json', 'pdf', 'image', 'audio', 'video'])
+  .enum(['text', 'markdown', 'conversation', 'html', 'json', 'pdf', 'image', 'audio', 'video'])
   .openapi({ description: 'Today only `text` and `markdown` are processable.' });
 
 const ExtractionStatusSchema = z.enum([
@@ -21,12 +21,14 @@ const ExtractionStatusSchema = z.enum([
   'failed',
 ]);
 
+export const VisibilitySchema = z.enum(['private', 'org']).openapi('MemoryVisibility');
+
 const SourcePayloadSchema = z
   .object({
     content: z.string().min(1).max(MAX_CONTENT_LENGTH_PER_SOURCE),
     content_type: ContentTypeSchema.default('text'),
     role: z.string().min(1).max(50).optional(),
-    sequence: z.number().int().nonnegative().optional(),
+    visibility: VisibilitySchema.default('private'),
     meta: z.record(z.unknown()).nullable().optional(),
   })
   .openapi('SourcePayload');
@@ -51,7 +53,6 @@ export const SourceSummarySchema = z
     id: UuidSchema,
     space_id: UuidSchema,
     content_type: z.string(),
-    sequence: z.number().int(),
     extraction_status: ExtractionStatusSchema,
     meta: z.record(z.unknown()).nullable(),
     token_count: z.number().int(),
@@ -67,7 +68,6 @@ export const SourceResponseSchema = z
     space_id: UuidSchema,
     content: z.string(),
     content_type: z.string(),
-    sequence: z.number().int(),
     extraction_status: ExtractionStatusSchema,
     meta: z.record(z.unknown()).nullable(),
     token_count: z.number().int(),
@@ -117,3 +117,18 @@ export const QuotaExceededBodySchema = z
     }),
   })
   .openapi('QuotaExceededBody');
+
+export const UpdateSourceVisibilityRequestSchema = z
+  .object({
+    visibility: VisibilitySchema,
+  })
+  .openapi('UpdateSourceVisibilityRequest');
+
+export const SourceVisibilityResponseSchema = z
+  .object({
+    id: UuidSchema,
+    visibility: VisibilitySchema,
+    memories_updated: z.number().int().nonnegative(),
+    edges_updated: z.number().int().nonnegative(),
+  })
+  .openapi('SourceVisibilityResponse');

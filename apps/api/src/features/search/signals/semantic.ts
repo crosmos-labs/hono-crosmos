@@ -8,7 +8,9 @@
  * ones do: BREAK (truncate), not filter.
  */
 import { type Database, memories } from '@crosmos/db';
-import { and, cosineDistance, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import type { TenantScope } from '@crosmos/types';
+import { and, cosineDistance, isNotNull, isNull, sql } from 'drizzle-orm';
+import { scopeMemories } from '../../../lib/scope';
 import { SEMANTIC_MIN_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { type RankedCandidate, SourceSignal } from '../types';
@@ -16,7 +18,7 @@ import { type RankedCandidate, SourceSignal } from '../types';
 export async function semanticSearch(
   db: Database,
   queryEmbedding: number[],
-  spaceId: number,
+  scope: TenantScope,
   limit: number,
 ): Promise<RankedCandidate[]> {
   const distance = cosineDistance(memories.embedding, queryEmbedding);
@@ -28,7 +30,7 @@ export async function semanticSearch(
     .from(memories)
     .where(
       and(
-        eq(memories.spaceId, spaceId),
+        scopeMemories(scope),
         isNull(memories.forgottenAt),
         isNotNull(memories.embedding),
       ),

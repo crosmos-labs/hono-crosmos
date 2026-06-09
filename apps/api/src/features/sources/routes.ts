@@ -1,7 +1,7 @@
 import { memorySpaces, sources, type Source } from '@crosmos/db';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -21,14 +21,18 @@ import {
   RateLimitedBodySchema,
   SourceListResponseSchema,
   SourceResponseSchema,
+  SourceVisibilityResponseSchema,
+  UpdateSourceVisibilityRequestSchema,
 } from './schemas';
 import {
   countSourcesByOrg,
   createSources,
   deleteSource,
   listSourcesByOrg,
+  setSourceVisibility,
   type ContentType,
 } from './service';
+import { resolveReadVisibility } from '../visibility/service';
 
 export const sourceRoutes = new OpenAPIHono<HonoEnv>();
 
@@ -55,7 +59,6 @@ function toResponse(source: Source, spaceUuid: string) {
     space_id: spaceUuid,
     content: source.content,
     content_type: source.contentType,
-    sequence: source.sequence,
     extraction_status: source.extractionStatus,
     meta: (source.meta as Record<string, unknown> | null) ?? null,
     token_count: source.tokenCount,
@@ -69,7 +72,6 @@ function toSummary(source: Source, spaceUuid: string) {
     id: source.uuid,
     space_id: spaceUuid,
     content_type: source.contentType,
-    sequence: source.sequence,
     extraction_status: source.extractionStatus,
     meta: (source.meta as Record<string, unknown> | null) ?? null,
     token_count: source.tokenCount,
@@ -175,7 +177,7 @@ sourceRoutes.openapi(
         scope,
         content: payload.content,
         contentType: payload.content_type as ContentType,
-        sequence: payload.sequence ?? i,
+        visibility: payload.visibility,
         meta: Object.keys(meta).length > 0 ? meta : null,
       };
     });
@@ -257,6 +259,10 @@ sourceRoutes.openapi(
     const query = c.req.valid('query');
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
+    const visibleUserIds = await resolveReadVisibility(db, {
+      orgId,
+      userId: c.var.userId!,
+    });
 
     // If `?space_id=` is given, verify access first so cross-tenant lookups
     // surface as 404 before any data is selected.
@@ -280,6 +286,7 @@ sourceRoutes.openapi(
       spaceId: resolvedSpaceId,
       contentType: query.content_type,
       extractionStatus: query.extraction_status,
+      visibleUserIds,
     };
 
     const [results, total] = await Promise.all([
@@ -323,7 +330,8 @@ sourceRoutes.openapi(
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
 
-    const source = await loadSourceForCaller(db, source_uuid, orgId);
+    const visibleUserIds = await resolveReadVisibility(db, { orgId, userId });
+    const source = await loadSourceForCaller(db, source_uuid, orgId, visibleUserIds);
     const scope: TenantScope = {
       orgId: source.orgId,
       spaceId: source.spaceId,
@@ -362,7 +370,11 @@ sourceRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
 
-    const source = await loadSourceForCaller(db, source_uuid, orgId);
+    const visibleUserIds = await resolveReadVisibility(db, {
+      orgId,
+      userId: c.var.userId!,
+    });
+    const source = await loadSourceForCaller(db, source_uuid, orgId, visibleUserIds);
     const [spaceRow] = await db
       .select({ uuid: memorySpaces.uuid })
       .from(memorySpaces)
@@ -378,6 +390,68 @@ sourceRoutes.openapi(
   },
 );
 
+// PATCH /api/v1/sources/{source_uuid}/visibility
+sourceRoutes.openapi(
+  createRoute({
+    method: 'patch',
+    path: '/{source_uuid}/visibility',
+    tags: ['sources'],
+    summary: 'Update Source Visibility',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requirePrincipal] as const,
+    request: {
+      params: z.object({ source_uuid: UuidSchema }),
+      body: {
+        content: {
+          'application/json': {
+            schema: UpdateSourceVisibilityRequestSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Updated visibility',
+        content: { 'application/json': { schema: SourceVisibilityResponseSchema } },
+      },
+      403: {
+        description: 'Forbidden',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { source_uuid } = c.req.valid('param');
+    const { visibility } = c.req.valid('json');
+    const db = getDb(c);
+    const orgId = c.var.activeOrgId!;
+
+    const source = await loadSourceForCaller(db, source_uuid, orgId, null);
+    if (source.ownerUserId !== c.var.userId && !['owner', 'admin'].includes(c.var.orgRole ?? '')) {
+      throw new HTTPException(403, {
+        message: 'Only the source owner or an org owner/admin can change its visibility.',
+      });
+    }
+
+    const result = await setSourceVisibility(
+      db,
+      { orgId: source.orgId, spaceId: source.spaceId, userId: c.var.userId! },
+      source.id,
+      visibility,
+    );
+    return c.json(
+      {
+        id: source.uuid,
+        visibility,
+        memories_updated: result.memoriesUpdated,
+        edges_updated: result.edgesUpdated,
+      },
+      200,
+    );
+  },
+);
+
 /**
  * Look up a source by uuid and confirm it belongs to the caller's org. 404
  * on both missing and cross-tenant (no existence leak — Python behavior).
@@ -386,13 +460,25 @@ async function loadSourceForCaller(
   db: ReturnType<typeof getDb>,
   sourceUuid: string,
   orgId: number,
+  visibleUserIds: readonly number[] | null,
 ): Promise<Source> {
+  const conditions = [eq(sources.uuid, sourceUuid), eq(sources.orgId, orgId)];
+  if (visibleUserIds != null) {
+    conditions.push(
+      visibleUserIds.length === 0
+        ? sql`false`
+        : or(
+            eq(sources.visibility, 'org'),
+            inArray(sources.ownerUserId, [...visibleUserIds]),
+          )!,
+    );
+  }
   const [row] = await db
     .select()
     .from(sources)
-    .where(eq(sources.uuid, sourceUuid))
+    .where(and(...conditions))
     .limit(1);
-  if (!row || row.orgId !== orgId) {
+  if (!row) {
     throw new HTTPException(404, {
       message: `Source ${sourceUuid} not found`,
     });

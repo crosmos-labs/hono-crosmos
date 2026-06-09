@@ -18,7 +18,7 @@ import {
   IngestConversationRequestSchema,
   IngestConversationResponseSchema,
 } from './schemas';
-import { buildContext, formatMessages, segmentMessages } from './sessions';
+import { formatMessages } from './sessions';
 
 export const conversationRoutes = new OpenAPIHono<HonoEnv>();
 
@@ -98,7 +98,7 @@ conversationRoutes.openapi(
     });
     const enqueueStart = performance.now();
     logger.info('ingestion.enqueue_started', {
-      source_count: Math.ceil(body.messages.length / 4),
+      source_count: 1,
     });
 
     const limiter = getRateLimiter(c.env);
@@ -128,22 +128,17 @@ conversationRoutes.openapi(
     };
 
     const sessionId = body.session_id ?? crypto.randomUUID();
-    const segments = segmentMessages(body.messages);
+    const meta: Record<string, unknown> = { session_id: sessionId };
+    if (body.session_date) meta.date = body.session_date;
+    if (body.meta) Object.assign(meta, body.meta);
 
-    const inserts = segments.map((segment, i) => {
-      const meta: Record<string, unknown> = { session_id: sessionId };
-      if (body.session_date) meta.date = body.session_date;
-      if (body.meta) Object.assign(meta, body.meta);
-      const context = buildContext(segments, i);
-      if (context) meta.lookback_context = context;
-      return {
-        scope,
-        content: formatMessages(segment),
-        contentType: 'text' as const,
-        sequence: i,
-        meta,
-      };
-    });
+    const inserts = [{
+      scope,
+      content: formatMessages(body.messages),
+      contentType: 'conversation' as const,
+      visibility: body.visibility,
+      meta,
+    }];
     const created = await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'source_insert',
       space_id: space.id,
@@ -193,7 +188,7 @@ conversationRoutes.openapi(
       {
         job_id: jobId,
         status: 'pending' as const,
-        source_ids: created.map((s) => s.uuid),
+        source_id: created[0]!.uuid,
       },
       202,
     );

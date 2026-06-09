@@ -12,9 +12,11 @@ import {
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
 import { entities } from './entities';
+import { memoryVisibility } from './enums';
 import { memories } from './memories';
 import { memorySpaces } from './memory-spaces';
 import { organizations } from './organizations';
+import { users } from './users';
 
 /**
  * ERE relations between two entities, witnessed by one memory. The graph is
@@ -40,6 +42,10 @@ export const edges = pgTable(
     spaceId: integer('space_id')
       .notNull()
       .references(() => memorySpaces.id, { onDelete: 'cascade' }),
+    ownerUserId: integer('owner_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    visibility: memoryVisibility('visibility').notNull().default('private'),
     sourceEntityId: integer('source_entity_id')
       .notNull()
       .references(() => entities.id, { onDelete: 'cascade' }),
@@ -70,6 +76,7 @@ export const edges = pgTable(
     index('edges_space_id_idx').on(t.spaceId),
     index('edges_org_id_idx').on(t.orgId),
     index('idx_edges_org_space').on(t.orgId, t.spaceId),
+    index('idx_edges_org_owner').on(t.orgId, t.ownerUserId),
     index('edges_space_source_idx').on(t.spaceId, t.sourceEntityId),
     index('edges_space_target_idx').on(t.spaceId, t.targetEntityId),
     // Partial: the only edges retrieval cares about.

@@ -34,6 +34,8 @@ export async function createEdgesFromFacts(
   ingested: IngestedMemoryRef[],
   nameToId: Map<string, number>,
   learnedTime: Date,
+  ownerUserId: number | null,
+  visibility: 'private' | 'org',
 ): Promise<IngestedEdge[]> {
   const rows: Array<{
     orgId: number;
@@ -45,6 +47,8 @@ export async function createEdgesFromFacts(
     validFrom: Date | null;
     confidence: number;
     recordedAt: Date;
+    ownerUserId: number | null;
+    visibility: 'private' | 'org';
   }> = [];
 
   const refsByRow: Array<{ memoryId: number; relationType: string }> = [];
@@ -71,6 +75,8 @@ export async function createEdgesFromFacts(
         validFrom: rel.validFrom ?? fact.eventTime,
         confidence: rel.confidence,
         recordedAt: learnedTime,
+        ownerUserId,
+        visibility,
       });
       refsByRow.push({ memoryId, relationType: rel.relation });
     }

@@ -2,9 +2,9 @@
  * Candidate loading + write-side bookkeeping for retrieval. Sits at the
  * boundary between scoping (here) and the pure engine code (signals). Ports
  * `app/services/retrieval.py` (loader) + `services/memories.py:touch_memories`
- * + the `source_memories → sources` text attach (decisions.md §2).
+ * + the `chunk_memories → chunks → sources` text attach.
  */
-import { type Database, type Memory, type Entity, memories, entities, memoryEntities, sourceMemories, sources } from '@crosmos/db';
+import { type Database, type Memory, type Entity, memories, entities, memoryEntities, chunkMemories, chunks, sources } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { scopeEntities, scopeMemories } from '../../lib/scope';
@@ -87,10 +87,9 @@ export async function loadRetrievalCandidates(
 
 /**
  * Attach source text + source id to the top candidates. Resolves via
- * `source_memories → sources` (our equivalent of Python's `chunk_memories →
- * chunks`, where the legacy chunk content == the full source). `org_id`
- * scopes the join defensively. One source per memory (lowest source id —
- * deterministic, which Python's bare `DISTINCT ON` was not).
+ * `chunk_memories → chunks → sources`, matching Python's citation path.
+ * `org_id` scopes the join defensively. One source per memory (lowest source
+ * id, then chunk sequence) keeps the response deterministic.
  */
 export async function attachSourceText(
   db: Database,
@@ -102,14 +101,15 @@ export async function attachSourceText(
 
   const rows = await db
     .select({
-      memoryId: sourceMemories.memoryId,
+      memoryId: chunkMemories.memoryId,
       content: sources.content,
       sourceId: sources.id,
     })
-    .from(sourceMemories)
-    .innerJoin(sources, eq(sources.id, sourceMemories.sourceId))
-    .where(and(eq(sources.orgId, orgId), inArray(sourceMemories.memoryId, ids)))
-    .orderBy(asc(sourceMemories.memoryId), asc(sources.id));
+    .from(chunkMemories)
+    .innerJoin(chunks, eq(chunks.id, chunkMemories.chunkId))
+    .innerJoin(sources, eq(sources.id, chunks.sourceId))
+    .where(and(eq(sources.orgId, orgId), inArray(chunkMemories.memoryId, ids)))
+    .orderBy(asc(chunkMemories.memoryId), asc(sources.id), asc(chunks.sequence));
 
   const seen = new Set<number>();
   for (const row of rows) {

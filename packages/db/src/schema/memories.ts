@@ -12,9 +12,10 @@ import {
   vector,
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
-import { memoryType } from './enums';
+import { memoryType, memoryVisibility } from './enums';
 import { memorySpaces } from './memory-spaces';
 import { organizations } from './organizations';
+import { users } from './users';
 
 /**
  * Atomic facts extracted from sources. Embedding-bearing. Soft-deleted via
@@ -35,6 +36,10 @@ export const memories = pgTable(
     spaceId: integer('space_id')
       .notNull()
       .references(() => memorySpaces.id, { onDelete: 'cascade' }),
+    ownerUserId: integer('owner_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    visibility: memoryVisibility('visibility').notNull().default('private'),
     content: text('content').notNull(),
     memoryType: memoryType('memory_type').notNull(),
     embedding: vector('embedding', { dimensions: 1536 }),
@@ -69,6 +74,7 @@ export const memories = pgTable(
     index('memories_event_time_idx').on(t.eventTime),
     index('memories_importance_idx').on(t.importanceScore),
     index('idx_memories_org_space').on(t.orgId, t.spaceId),
+    index('idx_memories_org_owner').on(t.orgId, t.ownerUserId),
     index('memories_embedding_hnsw_idx').using(
       'hnsw',
       t.embedding.op('vector_cosine_ops'),

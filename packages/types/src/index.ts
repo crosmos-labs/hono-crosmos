@@ -21,6 +21,13 @@ export interface TenantScope {
   readonly orgId: number;
   readonly spaceId: number;
   readonly userId: number;
+  /**
+   * When set, user-facing reads are restricted to rows with
+   * `visibility='org'` or `owner_user_id` in this set. A populated set always
+   * includes `userId`. `null`/`undefined` is reserved for internal/system
+   * paths that intentionally bypass per-user visibility.
+   */
+  readonly visibleUserIds?: readonly number[] | null;
 }
 
 /**

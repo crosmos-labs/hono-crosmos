@@ -1,15 +1,20 @@
 import {
+  chunkMemories,
+  chunks,
+  edges,
+  memories,
   memorySpaces,
   sources,
   type Source,
 } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
-import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { scopeSources, type TenantScope } from '../../lib/scope';
 
 export type ContentType =
   | 'text'
   | 'markdown'
+  | 'conversation'
   | 'html'
   | 'json'
   | 'pdf'
@@ -23,7 +28,7 @@ export interface CreateSourceInput {
   scope: TenantScope;
   content: string;
   contentType?: ContentType;
-  sequence?: number;
+  visibility?: 'private' | 'org';
   meta?: Record<string, unknown> | null;
   tokenCount?: number;
 }
@@ -43,9 +48,10 @@ export async function createSource(
     .values({
       orgId: input.scope.orgId,
       spaceId: input.scope.spaceId,
+      ownerUserId: input.scope.userId,
+      visibility: input.visibility ?? 'private',
       content: input.content,
       contentType: input.contentType ?? 'text',
-      sequence: input.sequence ?? 0,
       meta: input.meta ?? null,
       tokenCount: input.tokenCount ?? 0,
     })
@@ -69,9 +75,10 @@ export async function createSources(
       inputs.map((input) => ({
         orgId: input.scope.orgId,
         spaceId: input.scope.spaceId,
+        ownerUserId: input.scope.userId,
+        visibility: input.visibility ?? 'private',
         content: input.content,
         contentType: input.contentType ?? 'text',
-        sequence: input.sequence ?? 0,
         meta: input.meta ?? null,
         tokenCount: input.tokenCount ?? 0,
       })),
@@ -116,6 +123,7 @@ export interface ListSourcesFilters {
   spaceId?: number;
   contentType?: string;
   extractionStatus?: ExtractionStatus;
+  visibleUserIds?: readonly number[] | null;
   limit?: number;
   offset?: number;
 }
@@ -144,6 +152,16 @@ export async function listSourcesByOrg(
     conditions.push(eq(sources.contentType, filters.contentType));
   if (filters.extractionStatus !== undefined)
     conditions.push(eq(sources.extractionStatus, filters.extractionStatus));
+  if (filters.visibleUserIds != null) {
+    conditions.push(
+      filters.visibleUserIds.length === 0
+        ? sql`false`
+        : or(
+            eq(sources.visibility, 'org'),
+            inArray(sources.ownerUserId, [...filters.visibleUserIds]),
+          )!,
+    );
+  }
 
   const rows = await db
     .select({ source: sources, spaceUuid: memorySpaces.uuid })
@@ -168,6 +186,16 @@ export async function countSourcesByOrg(
     conditions.push(eq(sources.contentType, filters.contentType));
   if (filters.extractionStatus !== undefined)
     conditions.push(eq(sources.extractionStatus, filters.extractionStatus));
+  if (filters.visibleUserIds != null) {
+    conditions.push(
+      filters.visibleUserIds.length === 0
+        ? sql`false`
+        : or(
+            eq(sources.visibility, 'org'),
+            inArray(sources.ownerUserId, [...filters.visibleUserIds]),
+          )!,
+    );
+  }
 
   const rows = await db
     .select({ c: count() })
@@ -186,6 +214,49 @@ export async function deleteSource(
     .where(and(scopeSources(scope), eq(sources.id, sourceId)))
     .returning({ id: sources.id });
   return rows.length > 0;
+}
+
+export async function setSourceVisibility(
+  db: Database,
+  scope: TenantScope,
+  sourceId: number,
+  visibility: 'private' | 'org',
+): Promise<{ memoriesUpdated: number; edgesUpdated: number }> {
+  await db
+    .update(sources)
+    .set({ visibility, updatedAt: new Date() })
+    .where(and(eq(sources.id, sourceId), eq(sources.orgId, scope.orgId)));
+
+  const chunkRows = await db
+    .select({ id: chunks.id })
+    .from(chunks)
+    .where(and(eq(chunks.sourceId, sourceId), eq(chunks.orgId, scope.orgId)));
+  const chunkIds = chunkRows.map((r) => r.id);
+  if (chunkIds.length === 0) return { memoriesUpdated: 0, edgesUpdated: 0 };
+
+  const memoryRows = await db
+    .select({ id: chunkMemories.memoryId })
+    .from(chunkMemories)
+    .where(inArray(chunkMemories.chunkId, chunkIds));
+  const memoryIds = [...new Set(memoryRows.map((r) => r.id))];
+  if (memoryIds.length === 0) return { memoriesUpdated: 0, edgesUpdated: 0 };
+
+  const updatedMemories = await db
+    .update(memories)
+    .set({ visibility, updatedAt: new Date() })
+    .where(and(eq(memories.orgId, scope.orgId), inArray(memories.id, memoryIds)))
+    .returning({ id: memories.id });
+
+  const updatedEdges = await db
+    .update(edges)
+    .set({ visibility })
+    .where(and(eq(edges.orgId, scope.orgId), inArray(edges.memoryId, memoryIds)))
+    .returning({ id: edges.id });
+
+  return {
+    memoriesUpdated: updatedMemories.length,
+    edgesUpdated: updatedEdges.length,
+  };
 }
 
 /**

@@ -3,11 +3,19 @@ import { IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
 
 export const UserSchema = z
   .object({
-    id: UuidSchema,
+    user_id: UuidSchema,
     email: z.string().email(),
     name: z.string(),
+    org: z
+      .object({
+        id: UuidSchema,
+        slug: z.string(),
+        name: z.string(),
+        role: z.enum(['owner', 'admin', 'member']),
+      })
+      .nullable(),
   })
-  .openapi('User');
+  .openapi('MeResponse');
 
 export const UpdateUserSchema = z
   .object({
@@ -28,7 +36,7 @@ export const TokenPairSchema = z
   .openapi('TokenPair');
 
 export const RefreshRequestSchema = z
-  .object({ refresh_token: z.string() })
+  .object({ refresh_token: z.string(), active_org_id: UuidSchema.nullable().optional() })
   .openapi('RefreshRequest');
 
 export const LogoutRequestSchema = RefreshRequestSchema.openapi('LogoutRequest');
@@ -70,3 +78,14 @@ export const ApiKeyListResponseSchema = z
 export const ApiKeyValidateResponseSchema = z
   .object({ valid: z.boolean(), key_prefix: z.string() })
   .openapi('ApiKeyValidateResponse');
+
+export const SetActiveOrgSchema = z
+  .object({ org_id: UuidSchema })
+  .openapi('SetActiveOrgRequest');
+
+export const SetActiveOrgResponseSchema = z
+  .object({
+    access_token: z.string(),
+    active_org_id: UuidSchema,
+  })
+  .openapi('SetActiveOrgResponse');

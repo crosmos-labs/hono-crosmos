@@ -1,4 +1,9 @@
-import { createTokenPair, decodeRefreshTokenClaims, InvalidTokenError } from './jwt';
+import {
+  createAccessToken,
+  createTokenPair,
+  decodeRefreshTokenClaims,
+  InvalidTokenError,
+} from './jwt';
 import {
   ApiKeyCreatedSchema,
   ApiKeyListResponseSchema,
@@ -6,6 +11,8 @@ import {
   CreateApiKeySchema,
   LogoutRequestSchema,
   RefreshRequestSchema,
+  SetActiveOrgResponseSchema,
+  SetActiveOrgSchema,
   TokenPairSchema,
   UpdateUserSchema,
   UserSchema,
@@ -17,13 +24,21 @@ import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { waitUntilLogged } from '../../lib/runtime';
 import { invalidateApiKeyCacheByHash, requireAuth, requireOrg } from './middleware';
+import { requirePrincipal } from './principal';
 import {
   createApiKey,
   getApiKeyByUuid,
   listApiKeysForUser,
   revokeApiKey,
 } from './api-keys';
-import { getEarliestMembershipForUser } from '../orgs/memberships';
+import {
+  getEarliestMembershipForUser,
+  getMembership,
+} from '../orgs/memberships';
+import {
+  getOrganizationByIdOrThrow,
+  resolveOrgIdFromUuid,
+} from '../orgs/service';
 import {
   isRefreshTokenRevoked,
   revokeRefreshToken,
@@ -56,7 +71,7 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Get current user',
     security: [{ bearerAuth: [] }],
-    middleware: [requireAuth] as const,
+    middleware: [requireAuth, requirePrincipal] as const,
     responses: {
       200: {
         description: 'Current user',
@@ -65,12 +80,24 @@ authRoutes.openapi(
       ...errorResponses,
     },
   }),
-  (c) => {
+  async (c) => {
+    const db = getDb(c);
+    const org = c.var.activeOrgId
+      ? await getOrganizationByIdOrThrow(db, c.var.activeOrgId)
+      : null;
     return c.json(
       {
-        id: c.var.userUuid!,
+        user_id: c.var.userUuid!,
         email: c.var.userEmail!,
         name: c.var.userName!,
+        org: org
+          ? {
+              id: org.uuid,
+              slug: org.slug,
+              name: org.name,
+              role: c.var.orgRole!,
+            }
+          : null,
       },
       200,
     );
@@ -84,7 +111,7 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Update current user',
     security: [{ bearerAuth: [] }],
-    middleware: [requireAuth] as const,
+    middleware: [requireAuth, requirePrincipal] as const,
     request: {
       body: {
         content: { 'application/json': { schema: UpdateUserSchema } },
@@ -104,14 +131,64 @@ authRoutes.openapi(
     if (body.name) {
       const updated = await updateUserName(db, c.var.userId!, body.name);
       if (!updated) throw new HTTPException(404, { message: 'User not found' });
-      return c.json(
-        { id: updated.uuid, email: updated.email, name: updated.name },
-        200,
-      );
+      const org = c.var.activeOrgId
+        ? await getOrganizationByIdOrThrow(db, c.var.activeOrgId)
+        : null;
+      return c.json({
+        user_id: updated.uuid,
+        email: updated.email,
+        name: updated.name,
+        org: org
+          ? { id: org.uuid, slug: org.slug, name: org.name, role: c.var.orgRole! }
+          : null,
+      }, 200);
     }
     const user = await getUserById(db, c.var.userId!);
     if (!user) throw new HTTPException(404, { message: 'User not found' });
-    return c.json({ id: user.uuid, email: user.email, name: user.name }, 200);
+    const org = c.var.activeOrgId
+      ? await getOrganizationByIdOrThrow(db, c.var.activeOrgId)
+      : null;
+    return c.json({
+      user_id: user.uuid,
+      email: user.email,
+      name: user.name,
+      org: org
+        ? { id: org.uuid, slug: org.slug, name: org.name, role: c.var.orgRole! }
+        : null,
+    }, 200);
+  },
+);
+
+authRoutes.openapi(
+  createRoute({
+    method: 'post',
+    path: '/active-org',
+    tags: ['auth'],
+    summary: 'Switch active organization',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth] as const,
+    request: {
+      body: { content: { 'application/json': { schema: SetActiveOrgSchema } } },
+    },
+    responses: {
+      200: {
+        description: 'New access token',
+        content: { 'application/json': { schema: SetActiveOrgResponseSchema } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_id } = c.req.valid('json');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_id);
+    if (orgId == null || !(await getMembership(db, orgId, c.var.userId!))) {
+      throw new HTTPException(404, { message: 'Organization not found' });
+    }
+    const token = await createAccessToken(c.env.JWT_SECRET, c.var.userId!, {
+      activeOrgId: orgId,
+    });
+    return c.json({ access_token: token, active_org_id: org_id }, 200);
   },
 );
 
@@ -282,7 +359,7 @@ authRoutes.openapi(
     },
   }),
   async (c) => {
-    const { refresh_token } = c.req.valid('json');
+    const { refresh_token, active_org_id } = c.req.valid('json');
     let claims;
     try {
       claims = await decodeRefreshTokenClaims(c.env.JWT_SECRET, refresh_token);
@@ -324,7 +401,14 @@ authRoutes.openapi(
       { stage: 'refresh_revoke' },
     );
 
-    const membership = await getEarliestMembershipForUser(db, user.id);
+    let membership = null;
+    if (active_org_id) {
+      const requestedOrgId = await resolveOrgIdFromUuid(db, active_org_id);
+      if (requestedOrgId != null) {
+        membership = await getMembership(db, requestedOrgId, user.id);
+      }
+    }
+    membership ??= await getEarliestMembershipForUser(db, user.id);
     const activeOrgId = membership?.orgId ?? null;
 
     const pair = await createTokenPair(c.env.JWT_SECRET, user.id, {

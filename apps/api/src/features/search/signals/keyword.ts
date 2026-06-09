@@ -9,7 +9,9 @@
  * content)` expression MUST match the GIN index expression for index use.
  */
 import { type Database, memories } from '@crosmos/db';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import type { TenantScope } from '@crosmos/types';
+import { and, desc, isNull, sql } from 'drizzle-orm';
+import { scopeMemories } from '../../../lib/scope';
 import { GIN_CANDIDATE_LIMIT, MIN_KEYWORD_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { type RankedCandidate, SourceSignal } from '../types';
@@ -17,7 +19,7 @@ import { type RankedCandidate, SourceSignal } from '../types';
 export async function keywordSearch(
   queryText: string,
   db: Database,
-  spaceId: number,
+  scope: TenantScope,
   limit: number,
 ): Promise<RankedCandidate[]> {
   const tsQuery = sql`websearch_to_tsquery('english', ${queryText})`;
@@ -29,7 +31,7 @@ export async function keywordSearch(
     .from(memories)
     .where(
       and(
-        eq(memories.spaceId, spaceId),
+        scopeMemories(scope),
         isNull(memories.forgottenAt),
         sql`${tsVector} @@ ${tsQuery}`,
       ),

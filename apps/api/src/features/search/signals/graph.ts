@@ -7,7 +7,9 @@
  * across them. See .codex/pipelines.md.
  */
 import { type Database, type Entity, type Memory, edges } from '@crosmos/db';
+import type { TenantScope } from '@crosmos/types';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { graphEdgeVisibilityClause } from '../../../lib/scope';
 import {
   DEPTH_DECAY,
   GRAPH_EDGE_RECENCY_DAYS,
@@ -46,8 +48,7 @@ export async function getEdgesForEntities(
   db: Database,
   entityIds: number[],
   asOf: Date | null,
-  orgId: number | null,
-  spaceId: number | null,
+  scope: TenantScope,
 ): Promise<EdgeRow[]> {
   if (entityIds.length === 0) return [];
   const effectiveTime = sql`coalesce(${edges.validFrom}, ${edges.recordedAt})`;
@@ -59,8 +60,9 @@ export async function getEdgesForEntities(
       inArray(edges.targetEntityId, entityIds),
     )!,
   ];
-  if (orgId !== null) conditions.push(eq(edges.orgId, orgId));
-  if (spaceId !== null) conditions.push(eq(edges.spaceId, spaceId));
+  conditions.push(eq(edges.orgId, scope.orgId), eq(edges.spaceId, scope.spaceId));
+  const edgeVisibility = graphEdgeVisibilityClause(scope);
+  if (edgeVisibility !== undefined) conditions.push(edgeVisibility);
   if (asOf !== null) conditions.push(sql`${effectiveTime} <= ${asOf}`);
 
   return db
@@ -176,8 +178,7 @@ export async function graphSearchWithStore(
   limit: number,
   asOf: Date | null,
   maxDepth: number,
-  orgId: number | null,
-  spaceId: number | null,
+  scope: TenantScope,
 ): Promise<RankedCandidate[]> {
   const effectiveMaxDepth = maxDepth ?? MAX_DEPTH;
   const now = new Date();
@@ -186,11 +187,18 @@ export async function graphSearchWithStore(
   for (const m of memories) if (m.forgottenAt === null) memoryMap.set(m.id, m);
   if (memoryMap.size === 0) return [];
 
+  const seedEntities =
+    scope.visibleUserIds == null
+      ? entities
+      : entities.filter((entity) =>
+          new Set([...memoryToEntities.values()].flat()).has(entity.id),
+        );
+
   // Seed: entity relevance = max score across the three strategies.
   const seedResults = [
     seedByMemory(queryEmbedding, memories, memoryToEntities),
-    seedByEntityEmbedding(queryEmbedding, entities),
-    seedByEntityName(queryText, entities),
+    seedByEntityEmbedding(queryEmbedding, seedEntities),
+    seedByEntityName(queryText, seedEntities),
   ];
   const entityRelevance = new Map<number, number>();
   for (const sd of seedResults) {
@@ -225,7 +233,7 @@ export async function graphSearchWithStore(
   for (let depth = 1; depth <= effectiveMaxDepth; depth++) {
     if (frontier.size === 0 || scores.size >= GRAPH_MEMORY_BUDGET) break;
 
-    const hopEdges = await getEdgesForEntities(db, [...frontier], asOf, orgId, spaceId);
+    const hopEdges = await getEdgesForEntities(db, [...frontier], asOf, scope);
 
     // Dedup by edge id, filter by confidence. Preserve SQL order (no resort).
     const seenEdgeIds = new Set<number>();

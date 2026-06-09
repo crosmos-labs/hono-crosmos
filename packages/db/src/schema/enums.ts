@@ -24,6 +24,8 @@ export const memoryType = pgEnum('memory_type', [
   'inference',
 ]);
 
+export const memoryVisibility = pgEnum('memory_visibility', ['private', 'org']);
+
 export const sourceExtractionStatus = pgEnum('source_extraction_status', [
   'pending',
   'processing',
