@@ -21,6 +21,7 @@ import {
   RateLimitedBodySchema,
   SourceListResponseSchema,
   SourceResponseSchema,
+  SourceScopedQuerySchema,
   SourceVisibilityResponseSchema,
   UpdateSourceVisibilityRequestSchema,
 } from './schemas';
@@ -318,7 +319,10 @@ sourceRoutes.openapi(
     summary: 'Delete Source',
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requirePrincipal] as const,
-    request: { params: z.object({ source_uuid: UuidSchema }) },
+    request: {
+      params: z.object({ source_uuid: UuidSchema }),
+      query: SourceScopedQuerySchema,
+    },
     responses: {
       204: { description: 'Deleted' },
       ...errorResponses,
@@ -326,12 +330,20 @@ sourceRoutes.openapi(
   }),
   async (c) => {
     const { source_uuid } = c.req.valid('param');
+    const { space_id } = c.req.valid('query');
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const spaceId = await resolveSpaceIdForCaller(c, space_id);
 
     const visibleUserIds = await resolveReadVisibility(db, { orgId, userId });
-    const source = await loadSourceForCaller(db, source_uuid, orgId, visibleUserIds);
+    const source = await loadSourceForCaller(
+      db,
+      source_uuid,
+      orgId,
+      visibleUserIds,
+      spaceId,
+    );
     const scope: TenantScope = {
       orgId: source.orgId,
       spaceId: source.spaceId,
@@ -356,7 +368,10 @@ sourceRoutes.openapi(
     summary: 'Get Source',
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requirePrincipal] as const,
-    request: { params: z.object({ source_uuid: UuidSchema }) },
+    request: {
+      params: z.object({ source_uuid: UuidSchema }),
+      query: SourceScopedQuerySchema,
+    },
     responses: {
       200: {
         description: 'Source',
@@ -367,14 +382,22 @@ sourceRoutes.openapi(
   }),
   async (c) => {
     const { source_uuid } = c.req.valid('param');
+    const { space_id } = c.req.valid('query');
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
+    const spaceId = await resolveSpaceIdForCaller(c, space_id);
 
     const visibleUserIds = await resolveReadVisibility(db, {
       orgId,
       userId: c.var.userId!,
     });
-    const source = await loadSourceForCaller(db, source_uuid, orgId, visibleUserIds);
+    const source = await loadSourceForCaller(
+      db,
+      source_uuid,
+      orgId,
+      visibleUserIds,
+      spaceId,
+    );
     const [spaceRow] = await db
       .select({ uuid: memorySpaces.uuid })
       .from(memorySpaces)
@@ -401,6 +424,7 @@ sourceRoutes.openapi(
     middleware: [requireAuth, requirePrincipal] as const,
     request: {
       params: z.object({ source_uuid: UuidSchema }),
+      query: SourceScopedQuerySchema,
       body: {
         content: {
           'application/json': {
@@ -423,11 +447,13 @@ sourceRoutes.openapi(
   }),
   async (c) => {
     const { source_uuid } = c.req.valid('param');
+    const { space_id } = c.req.valid('query');
     const { visibility } = c.req.valid('json');
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
+    const spaceId = await resolveSpaceIdForCaller(c, space_id);
 
-    const source = await loadSourceForCaller(db, source_uuid, orgId, null);
+    const source = await loadSourceForCaller(db, source_uuid, orgId, null, spaceId);
     if (source.ownerUserId !== c.var.userId && !['owner', 'admin'].includes(c.var.orgRole ?? '')) {
       throw new HTTPException(403, {
         message: 'Only the source owner or an org owner/admin can change its visibility.',
@@ -461,8 +487,12 @@ async function loadSourceForCaller(
   sourceUuid: string,
   orgId: number,
   visibleUserIds: readonly number[] | null,
+  spaceId?: number,
 ): Promise<Source> {
   const conditions = [eq(sources.uuid, sourceUuid), eq(sources.orgId, orgId)];
+  if (spaceId !== undefined) {
+    conditions.push(eq(sources.spaceId, spaceId));
+  }
   if (visibleUserIds != null) {
     conditions.push(
       visibleUserIds.length === 0
@@ -484,4 +514,19 @@ async function loadSourceForCaller(
     });
   }
   return row;
+}
+
+async function resolveSpaceIdForCaller(
+  c: Parameters<typeof getDb>[0],
+  spaceUuid: string,
+): Promise<number> {
+  const [space] = await getDb(c)
+    .select({ id: memorySpaces.id, orgId: memorySpaces.orgId })
+    .from(memorySpaces)
+    .where(eq(memorySpaces.uuid, spaceUuid))
+    .limit(1);
+  if (!space || space.orgId !== c.var.activeOrgId) {
+    throw new HTTPException(404, { message: 'Space not found' });
+  }
+  return space.id;
 }

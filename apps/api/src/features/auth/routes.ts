@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { waitUntilLogged } from '../../lib/runtime';
-import { invalidateApiKeyCacheByHash, requireAuth, requireOrg } from './middleware';
+import { invalidateApiKeyCacheByHash, requireAuth } from './middleware';
 import { requirePrincipal } from './principal';
 import {
   createApiKey,
@@ -201,7 +201,7 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Create API key',
     security: [{ bearerAuth: [] }],
-    middleware: [requireAuth, requireOrg] as const,
+    middleware: [requireAuth, requirePrincipal] as const,
     request: {
       body: {
         content: { 'application/json': { schema: CreateApiKeySchema } },

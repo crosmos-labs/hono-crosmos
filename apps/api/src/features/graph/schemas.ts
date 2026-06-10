@@ -46,12 +46,50 @@ export const GraphStatsResponseSchema = z
 
 export const GraphViewportQuerySchema = z
   .object({
-    space_id: UuidSchema,
+    space_uuid: UuidSchema.optional(),
+    space_id: UuidSchema.optional(),
     limit: z.coerce.number().int().min(1).max(500).default(100),
     offset: z.coerce.number().int().min(0).default(0),
   })
+  .superRefine((query, ctx) => {
+    if (!query.space_uuid && !query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid is required',
+        path: ['space_uuid'],
+      });
+    }
+    if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid and space_id must match when both are provided',
+        path: ['space_id'],
+      });
+    }
+  })
+  .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
   .openapi('GraphViewportQuery');
 
 export const GraphStatsQuerySchema = z
-  .object({ space_id: UuidSchema })
+  .object({
+    space_uuid: UuidSchema.optional(),
+    space_id: UuidSchema.optional(),
+  })
+  .superRefine((query, ctx) => {
+    if (!query.space_uuid && !query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid is required',
+        path: ['space_uuid'],
+      });
+    }
+    if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid and space_id must match when both are provided',
+        path: ['space_id'],
+      });
+    }
+  })
+  .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
   .openapi('GraphStatsQuery');

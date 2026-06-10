@@ -85,12 +85,45 @@ export const SourceListResponseSchema = z
   .openapi('SourceListResponse');
 
 export const ListSourcesQuerySchema = z.object({
+  space_uuid: UuidSchema.optional(),
   space_id: UuidSchema.optional(),
   content_type: z.string().min(1).optional(),
   extraction_status: ExtractionStatusSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
-});
+}).superRefine((query, ctx) => {
+  if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'space_uuid and space_id must match when both are provided',
+      path: ['space_id'],
+    });
+  }
+}).transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id }));
+
+export const SourceScopedQuerySchema = z
+  .object({
+    space_uuid: UuidSchema.optional(),
+    space_id: UuidSchema.optional(),
+  })
+  .superRefine((query, ctx) => {
+    if (!query.space_uuid && !query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid is required',
+        path: ['space_uuid'],
+      });
+    }
+    if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid and space_id must match when both are provided',
+        path: ['space_id'],
+      });
+    }
+  })
+  .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
+  .openapi('SourceScopedQuery');
 
 /**
  * Structured error bodies used by ingestion routes. Matches the shapes in

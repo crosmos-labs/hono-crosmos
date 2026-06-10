@@ -10,6 +10,7 @@ import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { getJobStore } from '../../integrations/job-store';
 import { invalidateSpace } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
@@ -226,8 +227,7 @@ spaceRoutes.openapi(
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
 
-    // TODO(Phase 4): cancel ingestion jobs for this space via JobStore.
-    // Python: `await job_store.cancel_jobs_for_space(space.id)` runs before delete.
+    await getJobStore(db).cancelJobsForSpace(space.id);
 
     const deleted = await deleteSpace(db, { orgId: space.orgId, spaceId: space.id });
     if (!deleted) {

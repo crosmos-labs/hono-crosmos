@@ -35,7 +35,8 @@ export const EntityListResponseSchema = z
 
 export const EntityListQuerySchema = z
   .object({
-    space_id: UuidSchema,
+    space_uuid: UuidSchema.optional(),
+    space_id: UuidSchema.optional(),
     entity_type: z.string().optional(),
     q: z.string().optional(),
     sort_by: z.enum(['name', 'edge_count', 'created_at']).default('name'),
@@ -43,8 +44,45 @@ export const EntityListQuerySchema = z
     limit: z.coerce.number().int().min(1).max(200).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   })
+  .superRefine((query, ctx) => {
+    if (!query.space_uuid && !query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid is required',
+        path: ['space_uuid'],
+      });
+    }
+    if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid and space_id must match when both are provided',
+        path: ['space_id'],
+      });
+    }
+  })
+  .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
   .openapi('EntityListQuery');
 
 export const EntityDetailQuerySchema = z
-  .object({ space_id: UuidSchema })
+  .object({
+    space_uuid: UuidSchema.optional(),
+    space_id: UuidSchema.optional(),
+  })
+  .superRefine((query, ctx) => {
+    if (!query.space_uuid && !query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid is required',
+        path: ['space_uuid'],
+      });
+    }
+    if (query.space_uuid && query.space_id && query.space_uuid !== query.space_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'space_uuid and space_id must match when both are provided',
+        path: ['space_id'],
+      });
+    }
+  })
+  .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
   .openapi('EntityDetailQuery');
