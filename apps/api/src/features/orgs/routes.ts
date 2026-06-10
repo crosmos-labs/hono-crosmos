@@ -1,5 +1,11 @@
 import {
+  AcceptInviteResponseSchema,
+  AcceptInviteSchema,
+  CreateInviteSchema,
   EntitlementsResponseSchema,
+  InviteListResponseSchema,
+  InvitePreviewResponseSchema,
+  InviteResponseSchema,
   MemberListResponseSchema,
   MemberResponseSchema,
   OrganizationListResponseSchema,
@@ -10,10 +16,13 @@ import {
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import { and, count, eq } from 'drizzle-orm';
-import { organizationMembers, users } from '@crosmos/db';
+import { and, count, desc, eq, isNull } from 'drizzle-orm';
+import { organizationInvites, organizationMembers, organizations, users } from '@crosmos/db';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { getEmailSender } from '../../integrations/email';
+import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
+import { getBackgroundTasks } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { removeUserFromAllGroups } from '../visibility/service';
@@ -120,6 +129,45 @@ function memberToResponse(row: {
   };
 }
 
+function inviteStatus(invite: typeof organizationInvites.$inferSelect) {
+  if (invite.acceptedAt) return 'accepted' as const;
+  if (invite.expiresAt.getTime() < Date.now()) return 'expired' as const;
+  return 'pending' as const;
+}
+
+async function loadInviteByToken(db: ReturnType<typeof getDb>, token: string) {
+  const tokenHash = await sha256Hex(token);
+  const rows = await db
+    .select({ invite: organizationInvites, org: organizations, inviter: users })
+    .from(organizationInvites)
+    .innerJoin(organizations, eq(organizations.id, organizationInvites.orgId))
+    .innerJoin(users, eq(users.id, organizationInvites.invitedBy))
+    .where(eq(organizationInvites.tokenHash, tokenHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+function inviteToResponse(row: {
+  invite: typeof organizationInvites.$inferSelect;
+  inviter: typeof users.$inferSelect;
+}) {
+  return {
+    id: row.invite.uuid,
+    email: row.invite.email,
+    role: row.invite.role as 'admin' | 'member',
+    invited_by: row.inviter.uuid,
+    expires_at: row.invite.expiresAt.toISOString(),
+    status: inviteStatus(row.invite),
+  };
+}
+
+function inviteAcceptUrl(c: Parameters<typeof getDb>[0], token: string) {
+  const base = c.env.INVITE_ACCEPT_URL ?? `${c.env.APP_BASE_URL}/invites/accept`;
+  const url = new URL(base);
+  url.searchParams.set('token', token);
+  return url.toString();
+}
+
 // GET /api/v1/orgs — list user's orgs
 orgRoutes.openapi(
   createRoute({
@@ -168,6 +216,123 @@ orgRoutes.openapi(
 
     const cursor = hasMore && rows.length > 0 ? rows[rows.length - 1]!.id : null;
     return c.json({ orgs: rows, next_cursor: cursor }, 200);
+  },
+);
+
+// POST /api/v1/orgs/invites/accept
+orgRoutes.openapi(
+  createRoute({
+    method: 'post',
+    path: '/invites/accept',
+    tags: ['organizations'],
+    summary: 'Accept organization invite',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth] as const,
+    request: {
+      body: { content: { 'application/json': { schema: AcceptInviteSchema } } },
+    },
+    responses: {
+      200: {
+        description: 'Invite accepted',
+        content: { 'application/json': { schema: AcceptInviteResponseSchema } },
+      },
+      400: {
+        description: 'Invite rejected',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      409: {
+        description: 'Invite already accepted or user already member',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      410: {
+        description: 'Invite expired',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { token } = c.req.valid('json');
+    const db = getDb(c);
+    const row = await loadInviteByToken(db, token);
+    if (!row) throw new HTTPException(404, { message: 'Invite not found' });
+    const status = inviteStatus(row.invite);
+    if (status === 'expired') throw new HTTPException(410, { message: 'Invite is expired' });
+    if (status === 'accepted') throw new HTTPException(409, { message: 'Invite is accepted' });
+    if (row.invite.email.trim().toLowerCase() !== c.var.userEmail!.trim().toLowerCase()) {
+      throw new HTTPException(400, { message: 'This invite was issued to a different email address' });
+    }
+    const existing = await getMembership(db, row.invite.orgId, c.var.userId!);
+    if (existing) {
+      throw new HTTPException(409, { message: 'User is already a member of organization' });
+    }
+
+    await db.insert(organizationMembers).values({
+      orgId: row.invite.orgId,
+      userId: c.var.userId!,
+      role: row.invite.role,
+      invitedByUserId: row.invite.invitedBy,
+    });
+    await db
+      .update(organizationInvites)
+      .set({ acceptedAt: new Date() })
+      .where(eq(organizationInvites.id, row.invite.id));
+
+    return c.json(
+      {
+        org: orgToShallow(row.org),
+        role: row.invite.role as 'admin' | 'member',
+      },
+      200,
+    );
+  },
+);
+
+// GET /api/v1/orgs/invites/preview
+orgRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/invites/preview',
+    tags: ['organizations'],
+    summary: 'Preview organization invite',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth] as const,
+    request: {
+      query: z.object({ token: z.string().min(20).max(128) }),
+    },
+    responses: {
+      200: {
+        description: 'Invite preview',
+        content: { 'application/json': { schema: InvitePreviewResponseSchema } },
+      },
+      409: {
+        description: 'Invite already accepted',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      410: {
+        description: 'Invite expired',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { token } = c.req.valid('query');
+    const row = await loadInviteByToken(getDb(c), token);
+    if (!row) throw new HTTPException(404, { message: 'Invite not found' });
+    const status = inviteStatus(row.invite);
+    if (status === 'expired') throw new HTTPException(410, { message: 'Invite is expired' });
+    if (status === 'accepted') throw new HTTPException(409, { message: 'Invite is accepted' });
+    return c.json(
+      {
+        org_name: row.org.name,
+        inviter_name: row.inviter.name,
+        role: row.invite.role as 'admin' | 'member',
+        email: row.invite.email,
+        expires_at: row.invite.expiresAt.toISOString(),
+      },
+      200,
+    );
   },
 );
 
@@ -330,6 +495,183 @@ orgRoutes.openapi(
       .delete(organizationMembers)
       .where(eq(organizationMembers.id, target.member.id));
     await removeUserFromAllGroups(db, { orgId, userId: target.user.id });
+    return c.body(null, 204);
+  },
+);
+
+// POST /api/v1/orgs/{org_uuid}/invites
+orgRoutes.openapi(
+  createRoute({
+    method: 'post',
+    path: '/{org_uuid}/invites',
+    tags: ['organizations'],
+    summary: 'Create organization invite',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requireRole('owner', 'admin')] as const,
+    request: {
+      params: z.object({ org_uuid: z.string().uuid() }),
+      body: { content: { 'application/json': { schema: CreateInviteSchema } } },
+    },
+    responses: {
+      201: {
+        description: 'Invite created',
+        content: { 'application/json': { schema: InviteResponseSchema } },
+      },
+      409: {
+        description: 'Pending invite already exists',
+        content: { 'application/json': { schema: ErrorBody } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
+    assertActiveOrg(orgId, c.var.activeOrgId);
+    const org = await getOrganizationByIdOrThrow(db, orgId);
+
+    const normalizedEmail = body.email.trim().toLowerCase();
+    const [existing] = await db
+      .select()
+      .from(organizationInvites)
+      .where(
+        and(
+          eq(organizationInvites.orgId, orgId),
+          eq(organizationInvites.email, normalizedEmail),
+          isNull(organizationInvites.acceptedAt),
+        ),
+      )
+      .limit(1);
+    if (existing && inviteStatus(existing) === 'pending') {
+      throw new HTTPException(409, { message: 'A pending invite already exists' });
+    }
+    if (existing && inviteStatus(existing) === 'expired') {
+      await db.delete(organizationInvites).where(eq(organizationInvites.id, existing.id));
+    }
+
+    const rawToken = tokenUrlSafe(32);
+    const [invite] = await db
+      .insert(organizationInvites)
+      .values({
+        orgId,
+        email: normalizedEmail,
+        role: body.role,
+        tokenHash: await sha256Hex(rawToken),
+        invitedBy: c.var.userId!,
+      })
+      .returning();
+    if (!invite) throw new Error('Failed to create invite');
+
+    getBackgroundTasks(c).waitUntil(
+      getEmailSender(c.env).sendInvite({
+        to: invite.email,
+        orgName: org.name,
+        inviterName: c.var.userName!,
+        role: invite.role,
+        acceptUrl: inviteAcceptUrl(c, rawToken),
+        expiresAt: invite.expiresAt,
+      }),
+    );
+
+    return c.json(
+      inviteToResponse({
+        invite,
+        inviter: {
+          id: c.var.userId!,
+          uuid: c.var.userUuid!,
+          email: c.var.userEmail!,
+          name: c.var.userName!,
+          oauthProvider: null,
+          oauthProviderId: null,
+          isActive: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      }),
+      201,
+    );
+  },
+);
+
+// GET /api/v1/orgs/{org_uuid}/invites
+orgRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/{org_uuid}/invites',
+    tags: ['organizations'],
+    summary: 'List organization invites',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requireRole('owner', 'admin')] as const,
+    request: {
+      params: z.object({ org_uuid: z.string().uuid() }),
+    },
+    responses: {
+      200: {
+        description: 'Pending invites',
+        content: { 'application/json': { schema: InviteListResponseSchema } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid } = c.req.valid('param');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
+    assertActiveOrg(orgId, c.var.activeOrgId);
+
+    const rows = await db
+      .select({ invite: organizationInvites, inviter: users })
+      .from(organizationInvites)
+      .innerJoin(users, eq(users.id, organizationInvites.invitedBy))
+      .where(and(eq(organizationInvites.orgId, orgId), isNull(organizationInvites.acceptedAt)))
+      .orderBy(desc(organizationInvites.createdAt));
+
+    return c.json({ invites: rows.map(inviteToResponse) }, 200);
+  },
+);
+
+// DELETE /api/v1/orgs/{org_uuid}/invites/{invite_uuid}
+orgRoutes.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/{org_uuid}/invites/{invite_uuid}',
+    tags: ['organizations'],
+    summary: 'Revoke organization invite',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requireRole('owner', 'admin')] as const,
+    request: {
+      params: z.object({
+        org_uuid: z.string().uuid(),
+        invite_uuid: z.string().uuid(),
+      }),
+    },
+    responses: {
+      204: { description: 'Revoked' },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { org_uuid, invite_uuid } = c.req.valid('param');
+    const db = getDb(c);
+    const orgId = await resolveOrgIdFromUuid(db, org_uuid);
+    if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
+    assertActiveOrg(orgId, c.var.activeOrgId);
+    const deleted = await db
+      .delete(organizationInvites)
+      .where(
+        and(
+          eq(organizationInvites.orgId, orgId),
+          eq(organizationInvites.uuid, invite_uuid),
+        ),
+      )
+      .returning({ id: organizationInvites.id });
+    if (deleted.length === 0) {
+      throw new HTTPException(404, { message: 'Invite not found' });
+    }
     return c.body(null, 204);
   },
 );

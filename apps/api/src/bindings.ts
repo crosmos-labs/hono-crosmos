@@ -14,7 +14,17 @@ export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   RESEND_API_KEY: string;
+  RESEND_FROM_ADDRESS?: string;
+  INVITE_ACCEPT_URL?: string;
+  POLAR_ACCESS_TOKEN: string;
   POLAR_WEBHOOK_SECRET: string;
+  POLAR_ENVIRONMENT?: 'sandbox' | 'production';
+  POLAR_PRODUCT_ID_DEVELOPER?: string;
+  POLAR_PRODUCT_ID_PRO?: string;
+  BILLING_SUCCESS_URL?: string;
+  BILLING_CANCEL_URL?: string;
+  BILLING_METADATA_SECRET?: string;
+  BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
   OPENAI_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;

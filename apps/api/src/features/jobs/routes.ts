@@ -54,7 +54,6 @@ jobRoutes.openapi(
         source_ids: job.sourceIds,
         result: job.result,
         error_message: job.errorMessage,
-        current_stage: job.currentStage,
         created_at: job.createdAt.toISOString(),
         started_at: job.startedAt ? job.startedAt.toISOString() : null,
         completed_at: job.completedAt ? job.completedAt.toISOString() : null,

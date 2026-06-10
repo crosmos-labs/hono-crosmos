@@ -8,4 +8,12 @@
  */
 export interface EmailSender {
   sendWelcome(input: { to: string; name: string }): Promise<void>;
+  sendInvite(input: {
+    to: string;
+    orgName: string;
+    inviterName: string;
+    role: string;
+    acceptUrl: string;
+    expiresAt: Date;
+  }): Promise<void>;
 }

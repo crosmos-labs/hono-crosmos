@@ -28,6 +28,7 @@ export interface RankedCandidate {
   memoryId: number;
   content: string;
   memoryType: string;
+  ownerUserId: number | null;
   orgId: number;
   spaceId: number;
   importanceScore: number | null;
@@ -48,6 +49,7 @@ export interface CandidateMemory {
   memoryId: number;
   content: string;
   memoryType: string;
+  ownerUserId: number | null;
   orgId: number;
   spaceId: number;
   importanceScore: number | null;

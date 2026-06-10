@@ -87,3 +87,46 @@ export const MemberListResponseSchema = z
 export const UpdateMemberRoleSchema = z
   .object({ role: z.enum(['admin', 'member']) })
   .openapi('UpdateMemberRoleRequest');
+
+export const CreateInviteSchema = z
+  .object({
+    email: z.string().email(),
+    role: z.enum(['admin', 'member']).default('member'),
+  })
+  .openapi('CreateInviteRequest');
+
+export const InviteResponseSchema = z
+  .object({
+    id: UuidSchema,
+    email: z.string().email(),
+    role: z.enum(['admin', 'member']),
+    invited_by: UuidSchema,
+    expires_at: IsoDateTimeSchema,
+    status: z.enum(['pending', 'expired', 'accepted']),
+  })
+  .openapi('InviteResponse');
+
+export const InviteListResponseSchema = z
+  .object({ invites: z.array(InviteResponseSchema) })
+  .openapi('InviteListResponse');
+
+export const AcceptInviteSchema = z
+  .object({ token: z.string().min(20).max(128) })
+  .openapi('AcceptInviteRequest');
+
+export const AcceptInviteResponseSchema = z
+  .object({
+    org: OrganizationSchema,
+    role: z.enum(['admin', 'member']),
+  })
+  .openapi('AcceptInviteResponse');
+
+export const InvitePreviewResponseSchema = z
+  .object({
+    org_name: z.string(),
+    inviter_name: z.string().nullable(),
+    role: z.enum(['admin', 'member']),
+    email: z.string().email(),
+    expires_at: IsoDateTimeSchema,
+  })
+  .openapi('InvitePreviewResponse');

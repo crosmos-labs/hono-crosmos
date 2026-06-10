@@ -33,7 +33,6 @@ export const JobResponseSchema = z
     source_ids: z.array(z.number().int()),
     result: JobResultSchema.nullable(),
     error_message: z.string().nullable(),
-    current_stage: z.string().nullable(),
     created_at: IsoDateTimeSchema,
     started_at: IsoDateTimeSchema.nullable(),
     completed_at: IsoDateTimeSchema.nullable(),

@@ -17,6 +17,7 @@ export function toRankedCandidate(
     memoryId: m.id,
     content: m.content,
     memoryType: m.memoryType,
+    ownerUserId: m.ownerUserId,
     orgId: m.orgId,
     spaceId: m.spaceId,
     importanceScore: m.importanceScore,

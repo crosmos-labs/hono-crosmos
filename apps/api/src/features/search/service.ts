@@ -376,6 +376,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       memoryId,
       content: ranked.content,
       memoryType: ranked.memoryType,
+      ownerUserId: ranked.ownerUserId,
       orgId: ranked.orgId,
       spaceId: ranked.spaceId,
       importanceScore: ranked.importanceScore,

@@ -1,0 +1,378 @@
+import { billingEvents, organizations, type Database } from '@crosmos/db';
+import { and, eq, isNull } from 'drizzle-orm';
+import type { Env } from '../../bindings';
+import { invalidateEntitlements } from '../../lib/gate-cache';
+import {
+  constantTimeEqual,
+  planForProduct,
+  UnknownPolarProductError,
+  verifyCheckoutMetadata,
+} from './service';
+
+const MAX_BODY_BYTES = 64 * 1024;
+const MAX_TIMESTAMP_SKEW_SECONDS = 5 * 60;
+
+export class WebhookHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WebhookHttpError';
+  }
+}
+
+interface PolarWebhookPayload {
+  type?: string;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function utf8Bytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+function base64Bytes(value: string): Uint8Array | null {
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(normalized);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function toBase64(bytes: ArrayBuffer): string {
+  const data = new Uint8Array(bytes);
+  let binary = '';
+  for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]!);
+  return btoa(binary);
+}
+
+function signingKeys(secret: string): Uint8Array[] {
+  const keys = [utf8Bytes(secret)];
+  const raw = secret.startsWith('whsec_') ? secret.slice('whsec_'.length) : secret;
+  const decoded = base64Bytes(raw);
+  if (decoded && decoded.length > 0) keys.push(decoded);
+  return keys;
+}
+
+function signatures(header: string): string[] {
+  return header
+    .split(' ')
+    .flatMap((part) => {
+      const [version, sig] = part.split(',', 2);
+      return version === 'v1' && sig ? [sig] : [];
+    });
+}
+
+async function hmacBase64(keyBytes: Uint8Array, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return toBase64(
+    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)),
+  );
+}
+
+async function verifyWebhookSignature(input: {
+  body: string;
+  id: string;
+  timestamp: string;
+  signature: string;
+  secret: string;
+}): Promise<void> {
+  const ts = Number(input.timestamp);
+  if (!Number.isFinite(ts)) {
+    throw new WebhookHttpError(401, 'invalid_signature');
+  }
+  const skew = Math.abs(Math.floor(Date.now() / 1000) - ts);
+  if (skew > MAX_TIMESTAMP_SKEW_SECONDS) {
+    throw new WebhookHttpError(401, 'invalid_signature');
+  }
+
+  const signedContent = `${input.id}.${input.timestamp}.${input.body}`;
+  const candidates = signatures(input.signature);
+  if (candidates.length === 0) {
+    throw new WebhookHttpError(401, 'invalid_signature');
+  }
+  for (const key of signingKeys(input.secret)) {
+    const expected = await hmacBase64(key, signedContent);
+    if (candidates.some((sig) => constantTimeEqual(sig, expected))) return;
+  }
+  throw new WebhookHttpError(401, 'invalid_signature');
+}
+
+function eventType(payload: PolarWebhookPayload): string {
+  const raw = payload.type ?? payload.TYPE;
+  return typeof raw === 'string' ? raw : '';
+}
+
+function data(payload: PolarWebhookPayload): Record<string, unknown> | null {
+  return payload.data && typeof payload.data === 'object'
+    ? (payload.data as Record<string, unknown>)
+    : null;
+}
+
+function payloadMetadata(payload: PolarWebhookPayload): Record<string, unknown> | null {
+  const d = data(payload);
+  const meta = d?.metadata;
+  return meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : null;
+}
+
+function payloadCustomerId(payload: PolarWebhookPayload): string | null {
+  const d = data(payload);
+  if (!d) return null;
+  const customerId = d.customer_id ?? d.customerId;
+  if (typeof customerId === 'string' && customerId) return customerId;
+  if (eventType(payload).startsWith('customer.')) {
+    const id = d.id;
+    if (typeof id === 'string' && id) return id;
+  }
+  return null;
+}
+
+async function resolveOrgId(
+  db: Database,
+  env: Env,
+  payload: PolarWebhookPayload,
+): Promise<number | null> {
+  const metadata = payloadMetadata(payload);
+  if (metadata) {
+    const verified = await verifyCheckoutMetadata(env, metadata);
+    if (verified) return verified.orgId;
+  }
+
+  const customerId = payloadCustomerId(payload);
+  if (!customerId) return null;
+  const rows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.polarCustomerId, customerId))
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
+function parseDate(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value !== 'string') return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function stringField(record: Record<string, unknown>, snake: string, camel?: string) {
+  const value = record[snake] ?? (camel ? record[camel] : undefined);
+  return typeof value === 'string' && value ? value : null;
+}
+
+async function dispatchActive(
+  db: Database,
+  env: Env,
+  payload: PolarWebhookPayload,
+  orgId: number,
+): Promise<void> {
+  const d = data(payload);
+  if (!d) return;
+  const productId = stringField(d, 'product_id', 'productId');
+  if (!productId) return;
+
+  let plan: 'developer' | 'pro';
+  try {
+    plan = planForProduct(env, productId);
+  } catch (err) {
+    if (err instanceof UnknownPolarProductError) return;
+    throw err;
+  }
+
+  const subscriptionId = stringField(d, 'id');
+  const customerId = stringField(d, 'customer_id', 'customerId');
+  const currentPeriodEnd = parseDate(d.current_period_end ?? d.currentPeriodEnd);
+  const patch: Partial<typeof organizations.$inferInsert> = {
+    plan,
+    subscriptionStatus: 'active',
+    planPending: null,
+    updatedAt: new Date(),
+  };
+  if (subscriptionId) patch.polarSubscriptionId = subscriptionId;
+  if (currentPeriodEnd) patch.currentPeriodEnd = currentPeriodEnd;
+
+  const [org] = await db
+    .select({ polarCustomerId: organizations.polarCustomerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) return;
+  if (customerId && !org.polarCustomerId) patch.polarCustomerId = customerId;
+
+  await db.update(organizations).set(patch).where(eq(organizations.id, orgId));
+}
+
+async function bindCustomer(
+  db: Database,
+  payload: PolarWebhookPayload,
+  orgId: number,
+): Promise<void> {
+  const customerId = payloadCustomerId(payload);
+  if (!customerId) return;
+  await db
+    .update(organizations)
+    .set({ polarCustomerId: customerId, updatedAt: new Date() })
+    .where(
+      and(eq(organizations.id, orgId), isNull(organizations.polarCustomerId)),
+    );
+}
+
+async function dispatchEvent(
+  db: Database,
+  env: Env,
+  payload: PolarWebhookPayload,
+  orgId: number | null,
+): Promise<void> {
+  if (orgId == null) return;
+  const type = eventType(payload);
+  if (
+    type === 'subscription.created' ||
+    type === 'subscription.active' ||
+    type === 'subscription.updated' ||
+    type === 'order.paid'
+  ) {
+    await dispatchActive(db, env, payload, orgId);
+    return;
+  }
+
+  if (type === 'subscription.past_due') {
+    await db
+      .update(organizations)
+      .set({ subscriptionStatus: 'past_due', updatedAt: new Date() })
+      .where(eq(organizations.id, orgId));
+    await bindCustomer(db, payload, orgId);
+    return;
+  }
+
+  if (type === 'subscription.canceled') {
+    const d = data(payload);
+    const currentPeriodEnd = parseDate(d?.current_period_end ?? d?.currentPeriodEnd);
+    await db
+      .update(organizations)
+      .set({
+        subscriptionStatus: 'canceled',
+        currentPeriodEnd: currentPeriodEnd ?? undefined,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, orgId));
+    await bindCustomer(db, payload, orgId);
+    return;
+  }
+
+  if (type === 'subscription.revoked') {
+    await db
+      .update(organizations)
+      .set({
+        plan: 'free',
+        subscriptionStatus: 'revoked',
+        polarSubscriptionId: null,
+        currentPeriodEnd: null,
+        planPending: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, orgId));
+    return;
+  }
+
+  if (type === 'order.refunded') {
+    await db
+      .update(organizations)
+      .set({
+        plan: 'free',
+        subscriptionStatus: 'revoked',
+        polarSubscriptionId: null,
+        currentPeriodEnd: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, orgId));
+    return;
+  }
+
+  if (type === 'customer.state_changed') {
+    await bindCustomer(db, payload, orgId);
+  }
+}
+
+export async function handlePolarWebhook(
+  db: Database,
+  env: Env,
+  input: {
+    body: string;
+    headers: Headers;
+  },
+): Promise<{ received: true }> {
+  if (utf8Bytes(input.body).byteLength > MAX_BODY_BYTES) {
+    throw new WebhookHttpError(413, 'payload_too_large');
+  }
+  if (!env.POLAR_WEBHOOK_SECRET) {
+    throw new WebhookHttpError(503, 'webhook_not_configured');
+  }
+
+  const webhookId = input.headers.get('webhook-id');
+  const timestamp = input.headers.get('webhook-timestamp');
+  const signature = input.headers.get('webhook-signature');
+  if (!webhookId || !timestamp || !signature) {
+    throw new WebhookHttpError(400, 'missing_webhook_headers');
+  }
+  await verifyWebhookSignature({
+    body: input.body,
+    id: webhookId,
+    timestamp,
+    signature,
+    secret: env.POLAR_WEBHOOK_SECRET,
+  });
+
+  let payload: PolarWebhookPayload;
+  try {
+    payload = JSON.parse(input.body) as PolarWebhookPayload;
+  } catch {
+    throw new WebhookHttpError(400, 'invalid_json');
+  }
+  const type = eventType(payload);
+  const orgId = await resolveOrgId(db, env, payload);
+
+  await db
+    .insert(billingEvents)
+    .values({
+      polarEventId: webhookId,
+      orgId,
+      eventType: type,
+      payload,
+    })
+    .onConflictDoNothing({ target: billingEvents.polarEventId });
+
+  const [eventRow] = await db
+    .select()
+    .from(billingEvents)
+    .where(eq(billingEvents.polarEventId, webhookId))
+    .limit(1);
+  if (!eventRow || eventRow.processedAt) return { received: true };
+
+  try {
+    await dispatchEvent(db, env, payload, orgId);
+    await db
+      .update(billingEvents)
+      .set({ processedAt: new Date(), error: null })
+      .where(eq(billingEvents.id, eventRow.id));
+    if (orgId != null) await invalidateEntitlements(env, orgId);
+  } catch (err) {
+    await db
+      .update(billingEvents)
+      .set({ error: String(err).slice(0, 1000) })
+      .where(eq(billingEvents.id, eventRow.id));
+    throw new WebhookHttpError(500, 'dispatch_failed');
+  }
+
+  return { received: true };
+}

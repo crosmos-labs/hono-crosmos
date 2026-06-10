@@ -138,6 +138,56 @@ oauthServerRoutes.openapi(
   },
 );
 
+const ClientLookupResponse = ClientRegistrationResponse.omit({
+  client_secret: true,
+  client_id_issued_at: true,
+  client_secret_expires_at: true,
+}).openapi('ClientLookupResponse');
+
+oauthServerRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/oauth/client/{client_id}',
+    tags: ['oauth-server'],
+    summary: 'Lookup OAuth client',
+    request: {
+      params: z.object({ client_id: z.string().min(1) }),
+    },
+    responses: {
+      200: {
+        description: 'Registered client metadata',
+        content: { 'application/json': { schema: ClientLookupResponse } },
+      },
+      404: {
+        description: 'Client not found',
+        content: {
+          'application/json': {
+            schema: z.object({ error: z.string() }).openapi('ClientLookupError'),
+          },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const { client_id } = c.req.valid('param');
+    const client = await getClient(getDb(c), client_id);
+    if (!client) {
+      return c.json({ error: 'Client not found' }, 404);
+    }
+    return c.json(
+      {
+        client_id: client.clientId,
+        redirect_uris: client.redirectUris ?? [],
+        client_name: client.clientName,
+        grant_types: client.grantTypes ?? [],
+        response_types: client.responseTypes ?? [],
+        token_endpoint_auth_method: client.tokenEndpointAuthMethod,
+      },
+      200,
+    );
+  },
+);
+
 // ── Authorize (302 → Google) and Callback (302 → client) ───────────────
 // These are URL-redirect endpoints, not JSON. Use plain Hono — OpenAPIHono
 // is awkward for redirects.

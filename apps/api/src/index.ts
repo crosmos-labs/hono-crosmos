@@ -5,6 +5,8 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from './bindings';
 import { authRoutes } from './features/auth/routes';
+import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
+import { runBillingReconciliation } from './features/billing/reconcile';
 import { conversationRoutes } from './features/conversations/routes';
 import { entityRoutes } from './features/entities/routes';
 import { graphRoutes } from './features/graph/routes';
@@ -89,6 +91,8 @@ app.route('/api/v1/search', searchRoutes);
 app.route('/api/v1/conversations', conversationRoutes);
 app.route('/api/v1/jobs', jobRoutes);
 app.route('/api/v1/usage', usageRoutes);
+app.route('/api/v1/billing', billingRoutes);
+app.route('/webhooks', billingWebhookRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);
 
@@ -113,4 +117,7 @@ app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default {
   fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: HonoEnv['Bindings']) {
+    await runBillingReconciliation(env);
+  },
 };

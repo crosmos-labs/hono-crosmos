@@ -33,6 +33,9 @@ mode = "smart"
 [dev]
 port = 8787
 
+[triggers]
+crons = ["17 3 * * *"]
+
 # Hyperdrive: NeonDB connection pooling
 # Replace `id` after running: wrangler hyperdrive create crosmos-db --connection-string=...
 [[hyperdrive]]
@@ -86,6 +89,9 @@ ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
 APP_BASE_URL = "https://hono.crosmos.dev"
 RETRIEVAL_RERANKER_ENABLED = "true"
+
+[env.production.triggers]
+crons = ["17 3 * * *"]
 
 # Smart Placement for production (env config is not inherited from top-level).
 [env.production.placement]

@@ -1,6 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
 import { createLogger, durationMs } from '@crosmos/observability';
+import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -87,10 +89,13 @@ interface SearchCandidateOut {
   created_at: string;
   recorded_at: string;
   event_time: string | null;
+  owner_id: string | null;
+  owner_name: string | null;
 }
 
 function buildResponse(
   uuidById: Map<number, string>,
+  ownerById: Map<number, { uuid: string; name: string }>,
   queryText: string,
   result: RetrievalResult,
   tookMs: number,
@@ -120,6 +125,8 @@ function buildResponse(
       created_at: c.createdAt.toISOString(),
       recorded_at: c.recordedAt.toISOString(),
       event_time: c.eventTime ? c.eventTime.toISOString() : null,
+      owner_id: c.ownerUserId != null ? ownerById.get(c.ownerUserId)?.uuid ?? null : null,
+      owner_name: c.ownerUserId != null ? ownerById.get(c.ownerUserId)?.name ?? null : null,
     };
     // include_source=true → key present (value may be null); false → omit key.
     if (includeSource) out.source = c.sourceChunk ?? null;
@@ -328,8 +335,29 @@ searchRoutes.openapi(
       // Map int id → uuid from the already-loaded scoped memories (no extra
       // query). Result candidates are a subset of candidates.memories.
       const uuidById = new Map(candidates.memories.map((m) => [m.id, m.uuid]));
+      const ownerIds = [
+        ...new Set(
+          result.candidates
+            .map((candidate) => candidate.ownerUserId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+      const ownerRows =
+        ownerIds.length > 0
+          ? await db
+              .select({ id: users.id, uuid: users.uuid, name: users.name })
+              .from(users)
+              .where(inArray(users.id, ownerIds))
+          : [];
+      const ownerById = new Map(
+        ownerRows.map((owner) => [
+          owner.id,
+          { uuid: owner.uuid, name: owner.name },
+        ]),
+      );
       const response = buildResponse(
         uuidById,
+        ownerById,
         body.query,
         result,
         performance.now() - t0,

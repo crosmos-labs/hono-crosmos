@@ -12,7 +12,7 @@ export type { EmailSender } from './port';
  */
 export function getEmailSender(env: Env): EmailSender {
   if (env.RESEND_API_KEY) {
-    return new ResendEmailSender(env.RESEND_API_KEY);
+    return new ResendEmailSender(env.RESEND_API_KEY, env.RESEND_FROM_ADDRESS);
   }
   return new NoopEmailSender();
 }

@@ -58,6 +58,8 @@ export const MemoryCandidateSchema = z
     created_at: z.string(), // iso8601
     recorded_at: z.string(), // iso8601
     event_time: z.string().nullable(), // iso8601 | null
+    owner_id: UuidSchema.nullable(),
+    owner_name: z.string().nullable(),
   })
   .openapi('MemoryCandidate');
 
