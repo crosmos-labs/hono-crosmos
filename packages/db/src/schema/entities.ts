@@ -37,7 +37,7 @@ export const entities = pgTable(
       .references(() => memorySpaces.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     entityType: text('entity_type'),
-    embedding: vector('embedding', { dimensions: 1536 }),
+    embedding: vector('embedding', { dimensions: 1024 }),
     meta: jsonb('meta'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()

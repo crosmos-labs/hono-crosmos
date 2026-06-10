@@ -3,6 +3,11 @@ export interface Env {
   HYPERDRIVE: Hyperdrive;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
+  // Workers AI — embeddings (bge-m3) + cross-encoder reranker (bge-reranker-base).
+  AI: Ai;
+  // Vectorize indexes (used when VECTOR_STORE=vectorize).
+  MEMORIES_INDEX: VectorizeIndex;
+  ENTITIES_INDEX: VectorizeIndex;
 
   // Vars
   ENVIRONMENT: 'development' | 'production';
@@ -26,6 +31,11 @@ export interface Env {
   BILLING_METADATA_SECRET?: string;
   BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
+  // Provider selection. Defaults: workers-ai / workers-ai / vectorize.
+  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai';
+  RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
+  VECTOR_STORE?: 'vectorize' | 'pg';
+  // Only needed for the non-default (fallback) providers.
   OPENAI_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it

@@ -57,16 +57,36 @@ id = "526c4c65675d478b827a2b0566bba1b6"
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs-dev"
 
+# Workers AI: embeddings (bge-m3) + cross-encoder reranker (bge-reranker-base).
+[ai]
+binding = "AI"
+
+# Vectorize: vector storage for the retrieval read path (VECTOR_STORE=vectorize).
+# Create with:
+#   wrangler vectorize create crosmos-memories-dev --dimensions=1024 --metric=cosine
+#   wrangler vectorize create crosmos-entities-dev --dimensions=1024 --metric=cosine
+[[vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories-dev"
+
+[[vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities-dev"
+
 [vars]
 ENVIRONMENT = "development"
 OAUTH_SERVER_BASE_URL = "http://localhost:8787"
 APP_BASE_URL = "http://localhost:3000"
 # Retrieval cross-encoder reranker toggle. Anything other than "false" = on.
 RETRIEVAL_RERANKER_ENABLED = "true"
+# Provider selection (defaults if unset: workers-ai / workers-ai / vectorize).
+EMBEDDINGS_PROVIDER = "workers-ai"
+RERANKER_PROVIDER = "workers-ai"
+VECTOR_STORE = "vectorize"
 
-# Retrieval secrets (set via `wrangler secret put` or .dev.vars):
-#   OPENAI_API_KEY        — query embeddings (text-embedding-3-small)
-#   ZEROENTROPY_API_KEY   — cross-encoder reranker (zerank-2); omit to fall back to RRF
+# Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
+#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small)
+#   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
 [env.production.observability]
@@ -89,6 +109,24 @@ ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
 APP_BASE_URL = "https://hono.crosmos.dev"
 RETRIEVAL_RERANKER_ENABLED = "true"
+EMBEDDINGS_PROVIDER = "workers-ai"
+RERANKER_PROVIDER = "workers-ai"
+VECTOR_STORE = "vectorize"
+
+# Workers AI binding (not inherited from top-level).
+[env.production.ai]
+binding = "AI"
+
+# Vectorize (prod indexes). Create with:
+#   wrangler vectorize create crosmos-memories --dimensions=1024 --metric=cosine
+#   wrangler vectorize create crosmos-entities --dimensions=1024 --metric=cosine
+[[env.production.vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories"
+
+[[env.production.vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities"
 
 [env.production.triggers]
 crons = ["17 3 * * *"]

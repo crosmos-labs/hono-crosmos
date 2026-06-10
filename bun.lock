@@ -20,6 +20,7 @@
         "@crosmos/observability": "workspace:*",
         "@crosmos/runtime": "workspace:*",
         "@crosmos/types": "workspace:*",
+        "@crosmos/vector": "workspace:*",
         "@hono/swagger-ui": "^0.5.0",
         "@hono/zod-openapi": "^0.18.3",
         "drizzle-orm": "^0.36.4",
@@ -43,6 +44,7 @@
         "@crosmos/observability": "workspace:*",
         "@crosmos/runtime": "workspace:*",
         "@crosmos/types": "workspace:*",
+        "@crosmos/vector": "workspace:*",
         "drizzle-orm": "^0.36.4",
         "postgres": "^3.4.5",
         "zod": "^3.23.8",
@@ -96,6 +98,18 @@
         "typescript": "^5.6.3",
       },
     },
+    "packages/vector": {
+      "name": "@crosmos/vector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@crosmos/db": "workspace:*",
+        "drizzle-orm": "^0.36.4",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20241224.0",
+        "typescript": "^5.6.3",
+      },
+    },
   },
   "packages": {
     "@asteasolutions/zod-to-openapi": ["@asteasolutions/zod-to-openapi@7.3.4", "", { "dependencies": { "openapi3-ts": "^4.1.2" }, "peerDependencies": { "zod": "^3.20.2" } }, "sha512-/2rThQ5zPi9OzVwes6U7lK1+Yvug0iXu25olp7S0XsYmOqnyMfxH7gdSQjn/+DSOHRg7wnotwGJSyL+fBKdnEA=="],
@@ -129,6 +143,8 @@
     "@crosmos/runtime": ["@crosmos/runtime@workspace:packages/runtime"],
 
     "@crosmos/types": ["@crosmos/types@workspace:packages/types"],
+
+    "@crosmos/vector": ["@crosmos/vector@workspace:packages/vector"],
 
     "@cspotcode/source-map-support": ["@cspotcode/source-map-support@0.8.1", "", { "dependencies": { "@jridgewell/trace-mapping": "0.3.9" } }, "sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw=="],
 

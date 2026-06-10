@@ -3,9 +3,10 @@ import type { EmbedOptions, Embedder, EmbeddingUsage } from './port';
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 
 /**
- * OpenAI `text-embedding-3-small` at 1536 dimensions. Matches the
- * `Vector(1536)` column shape in the schema — see
- * .codex/stack-and-practices.md.
+ * OpenAI `text-embedding-3-small` at 1536 dimensions. Fallback provider
+ * (`EMBEDDINGS_PROVIDER=openai`); the default is Workers AI bge-m3 at 1024. Note
+ * the schema columns / Vectorize index default to 1024 — using this provider
+ * requires matching the stored-vector dimension (re-ingest at 1536).
  *
  * `text-embedding-3-small` is symmetric: document and search modes share one
  * vector space, so the `mode` option on the interface is ignored here. Callers

@@ -6,10 +6,9 @@
 OPENROUTER_API_KEY=sk-or-v1-xxx
 OPENAI_API_KEY=sk-xxx
 
-# Embeddings (OpenAI, text-embedding-3-small, 1536 dims).
-# Reuses OPENAI_API_KEY above — no separate key needed.
-
-# Reranker (ZeroEntropy, zerank-2).
-ZEROENTROPY_API_KEY=ze-xxx
+# Embeddings default to Cloudflare Workers AI (@cf/baai/bge-m3, 1024 dims) via
+# the AI binding — no key needed. Set EMBEDDINGS_PROVIDER=openai (wrangler.toml)
+# to use OpenAI text-embedding-3-small (1536 dims) instead, which reuses
+# OPENAI_API_KEY above.
 
 SENTRY_DSN=

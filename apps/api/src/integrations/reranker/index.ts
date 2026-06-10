@@ -1,4 +1,4 @@
-import { ZeroEntropyReranker } from '@crosmos/ai';
+import { WorkersAiReranker, ZeroEntropyReranker } from '@crosmos/ai';
 import type { Reranker } from '@crosmos/ai';
 import { createLogger } from '@crosmos/observability';
 import type { Env } from '../../bindings';
@@ -9,19 +9,37 @@ export type { Reranker } from '@crosmos/ai';
 /**
  * Cross-encoder reranker for retrieval, or `null` when reranking is disabled.
  *
- * Mirrors Python's `dependencies.py`: the reranker is included only when
- * `RETRIEVAL_RERANKER_ENABLED` is on. When on but no API key is configured we
- * return `null` (logged) rather than throwing — retrieval still works via the
- * RRF rank-remap fallback (`ce_enabled = reranker is not None && …`).
+ * Selected by `RERANKER_PROVIDER`:
+ *   - `workers-ai` (default) — Cloudflare `@cf/baai/bge-reranker-base` via the
+ *     `AI` binding. Edge-native, no API key.
+ *   - `zeroentropy` — ZeroEntropy `zerank-2` over HTTP. Requires
+ *     `ZEROENTROPY_API_KEY`; if missing we return `null` (logged) rather than
+ *     throwing — retrieval still works via the RRF rank-remap fallback.
+ *
+ * The outer `RETRIEVAL_RERANKER_ENABLED` toggle gates construction entirely
+ * (mirrors Python's `dependencies.py`).
  */
 export function getReranker(env: Env): Reranker | null {
   if (!isRerankerEnabled(env.RETRIEVAL_RERANKER_ENABLED)) return null;
-  if (!env.ZEROENTROPY_API_KEY) {
+
+  const provider = env.RERANKER_PROVIDER ?? 'workers-ai';
+  if (provider === 'zeroentropy') {
+    if (!env.ZEROENTROPY_API_KEY) {
+      createLogger({
+        service: 'api',
+        environment: env.ENVIRONMENT,
+      }).warn('retrieval.reranker_missing_api_key', { stage: 'reranker_init' });
+      return null;
+    }
+    return new ZeroEntropyReranker({ apiKey: env.ZEROENTROPY_API_KEY });
+  }
+
+  if (!env.AI) {
     createLogger({
       service: 'api',
       environment: env.ENVIRONMENT,
-    }).warn('retrieval.reranker_missing_api_key', { stage: 'reranker_init' });
+    }).warn('retrieval.reranker_missing_ai_binding', { stage: 'reranker_init' });
     return null;
   }
-  return new ZeroEntropyReranker({ apiKey: env.ZEROENTROPY_API_KEY });
+  return new WorkersAiReranker({ ai: env.AI });
 }

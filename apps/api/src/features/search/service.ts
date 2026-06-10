@@ -11,6 +11,7 @@ import {
   type Reranker,
 } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
+import type { VectorStore } from '@crosmos/vector';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { attachSourceText, type RetrievalCandidates } from './candidates';
@@ -56,6 +57,7 @@ export interface RetrieveDeps {
   db: Database;
   embedder: Embedder;
   reranker: Reranker | null;
+  vectorStore: VectorStore;
 }
 
 export interface RetrieveInput {
@@ -92,8 +94,12 @@ function failureFields(err: unknown): {
 
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const { query, scope, candidates, deps } = input;
-  const { db, embedder, reranker } = deps;
+  const { db, embedder, reranker, vectorStore } = deps;
   const logger = input.logger;
+
+  // Visible working set, keyed by id — the semantic signal resolves ANN hits
+  // against this (which enforces visibility), and it's reused for graph below.
+  const memoryById = new Map(candidates.memories.map((m) => [m.id, m]));
 
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
   const temporalParseStart = performance.now();
@@ -174,7 +180,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     await Promise.all([
       timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
         const { vector } = await embedPromise;
-        return semanticSearch(db, vector, scope, query.candidatePool);
+        return semanticSearch(vectorStore, vector, scope, query.candidatePool, memoryById);
       }),
       timeSignal(logger, SourceSignal.KEYWORD, () =>
         keywordSearch(query.text, db, scope, query.candidatePool),
@@ -187,6 +193,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         const { vector } = await embedPromise;
         return graphSearchWithStore(
           db,
+          vectorStore,
           query.text,
           vector,
           candidates.memories,
@@ -399,10 +406,12 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
 
   let top: CandidateMemory[];
   if (query.diversify) {
-    const embeddingsLookup = new Map<number, number[]>();
-    for (const m of candidates.memories) {
-      if (m.embedding !== null) embeddingsLookup.set(m.id, m.embedding);
-    }
+    // MMR needs raw vectors for the scored pool. Pull them from the vector
+    // store (pg: column read; vectorize: batched getByIds).
+    const embeddingsLookup = await vectorStore.fetchVectors(
+      'memories',
+      scored.map((c) => c.memoryId),
+    );
     top = mmrRerank(scored, embeddingsLookup, query.topK);
   } else {
     top = scored.slice(0, query.topK);

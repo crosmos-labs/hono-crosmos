@@ -41,10 +41,26 @@ max_batch_timeout = 0
 max_retries = 3
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
+# Workers AI: embeddings (bge-m3).
+[ai]
+binding = "AI"
+
+# Vectorize: vector storage (VECTOR_STORE=vectorize). Shared with the API worker.
+[[vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories-dev"
+
+[[vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities-dev"
+
 [vars]
 ENVIRONMENT = "development"
 # Default LLM provider for ingestion. Switch to "openai" to call OpenAI directly.
 LLM_PROVIDER = "openrouter"
+# Provider selection (defaults if unset: workers-ai / vectorize). Must match the API.
+EMBEDDINGS_PROVIDER = "workers-ai"
+VECTOR_STORE = "vectorize"
 
 [env.production]
 [env.production.observability]
@@ -65,6 +81,21 @@ head_sampling_rate = 1
 [env.production.vars]
 ENVIRONMENT = "production"
 LLM_PROVIDER = "openrouter"
+EMBEDDINGS_PROVIDER = "workers-ai"
+VECTOR_STORE = "vectorize"
+
+# Workers AI binding (not inherited from top-level).
+[env.production.ai]
+binding = "AI"
+
+# Vectorize (prod indexes, shared with the API worker).
+[[env.production.vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories"
+
+[[env.production.vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities"
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"

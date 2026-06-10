@@ -21,6 +21,7 @@ import {
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
 } from './constants';
+import type { VectorStore } from '@crosmos/vector';
 import type { Embedder } from './integrations/embeddings';
 import { EmbeddingRequestError } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
@@ -49,6 +50,7 @@ export interface ProcessIngestionDeps {
   db: Database;
   llm: LLM;
   embedder: Embedder;
+  vectorStore: VectorStore;
   logger: Logger;
 }
 
@@ -79,7 +81,7 @@ export async function processIngestion(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
 ): Promise<void> {
-  const { db, llm, embedder, logger } = deps;
+  const { db, llm, embedder, vectorStore, logger } = deps;
   const jobStart = performance.now();
   const scope: TenantScope = {
     orgId: msg.org_id,
@@ -152,6 +154,7 @@ export async function processIngestion(
           sourceId,
           llm,
           embedder,
+          vectorStore,
           logger: sourceLogger,
         });
         break;

@@ -20,8 +20,9 @@ import { users } from './users';
 /**
  * Atomic facts extracted from sources. Embedding-bearing. Soft-deleted via
  * `forgotten_at` — ingestion never physically deletes. The embedding column
- * is `vector(1536)` to match OpenAI `text-embedding-3-small`; changing the
- * embedding model means a schema change here.
+ * is `vector(1024)` to match Cloudflare Workers AI `@cf/baai/bge-m3`; changing
+ * the embedding model means a schema change here. Only populated when
+ * VECTOR_STORE=pg — under Vectorize, vectors live in the Vectorize index.
  *
  * See .codex/code-architecture.md.
  */
@@ -42,7 +43,7 @@ export const memories = pgTable(
     visibility: memoryVisibility('visibility').notNull().default('private'),
     content: text('content').notNull(),
     memoryType: memoryType('memory_type').notNull(),
-    embedding: vector('embedding', { dimensions: 1536 }),
+    embedding: vector('embedding', { dimensions: 1024 }),
     importanceScore: doublePrecision('importance_score'),
     meta: jsonb('meta'),
     eventTime: timestamp('event_time', { withTimezone: true }),

@@ -23,7 +23,8 @@ import {
 } from '@crosmos/db';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { and, cosineDistance, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, inArray, sql } from 'drizzle-orm';
+import type { VectorStore } from '@crosmos/vector';
 import {
   EMBEDDING_DIMENSIONS,
   EXISTING_MEMORY_LOOKUP_LIMIT,
@@ -62,6 +63,7 @@ export interface IngestSourceInput {
   sourceId: number;
   llm: LLM;
   embedder: Embedder;
+  vectorStore: VectorStore;
   modelOverride?: string;
   /** Caller-supplied pronoun-resolution context (overrides meta.lookback_context). */
   context?: string;
@@ -92,7 +94,7 @@ function failureFields(err: unknown): {
 }
 
 export async function ingestSource(input: IngestSourceInput): Promise<IngestResult> {
-  const { db, scope, sourceId, llm, embedder, logger } = input;
+  const { db, scope, sourceId, llm, embedder, vectorStore, logger } = input;
 
   // Stage 0 — load + preprocess
   const loadStart = performance.now();
@@ -132,20 +134,33 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         embedding_count: 1,
         duration_ms: durationMs(embedStart),
       });
-      const distance = cosineDistance(memoriesTable.embedding, vector);
-      const rows = await db
-        .select({ content: memoriesTable.content })
-        .from(memoriesTable)
-        .where(
-          and(
-            eq(memoriesTable.spaceId, scope.spaceId),
-            isNotNull(memoriesTable.embedding),
-            sql`${memoriesTable.forgottenAt} IS NULL`,
-          ),
-        )
-        .orderBy(distance)
-        .limit(EXISTING_MEMORY_LOOKUP_LIMIT);
-      existingMemories = rows.map((r) => r.content);
+      const matches = await vectorStore.queryNearest(
+        'memories',
+        vector,
+        { orgId: scope.orgId, spaceId: scope.spaceId },
+        { topK: EXISTING_MEMORY_LOOKUP_LIMIT },
+      );
+      const ids = matches.map((m) => m.id);
+      if (ids.length === 0) {
+        existingMemories = [];
+      } else {
+        // Load content for the ANN hits, dropping any that were forgotten
+        // since indexing (the vector store may still return them). Preserve
+        // similarity order from the ANN result.
+        const rows = await db
+          .select({ id: memoriesTable.id, content: memoriesTable.content })
+          .from(memoriesTable)
+          .where(
+            and(
+              inArray(memoriesTable.id, ids),
+              sql`${memoriesTable.forgottenAt} IS NULL`,
+            ),
+          );
+        const contentById = new Map(rows.map((r) => [r.id, r.content]));
+        existingMemories = ids
+          .map((id) => contentById.get(id))
+          .filter((c): c is string => c !== undefined);
+      }
       logger?.info('ingestion.stage_completed', {
         stage: 'existing_memory_lookup',
         duration_ms: durationMs(lookupStart),
@@ -302,7 +317,10 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         visibility,
         content: f.content,
         memoryType: f.memoryType,
-        embedding: vectors[i]!,
+        // Vectors are stored in the configured vector store. For the pg backend
+        // that IS this column; for vectorize the column stays null and the
+        // vector is upserted to the index below.
+        embedding: vectorStore.persistsInColumn ? vectors[i]! : null,
         importanceScore: f.importanceScore,
         eventTime: f.eventTime,
         recordedAt: learnedTime,
@@ -312,6 +330,20 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   if (memoryRows.length !== facts.length) {
     throw new Error(
       `Memory insert returned ${memoryRows.length} rows for ${facts.length} facts`,
+    );
+  }
+
+  // Upsert vectors to the vector store (no-op for the pg backend, which already
+  // wrote them to the column above). memoryRows[i] ↔ vectors[i] by insert order.
+  if (!vectorStore.persistsInColumn) {
+    await vectorStore.upsert(
+      'memories',
+      memoryRows.map((m, i) => ({
+        id: m.id,
+        vector: vectors[i]!,
+        orgId: scope.orgId,
+        spaceId: scope.spaceId,
+      })),
     );
   }
 
@@ -331,7 +363,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // Stage 8 — entity resolution + memory_entities + edges
   const uniqueEntities = collectUniqueEntities(facts);
   const entityResolutionStart = performance.now();
-  const resolved = await resolveEntities(db, scope, uniqueEntities, embedder, logger);
+  const resolved = await resolveEntities(db, scope, uniqueEntities, embedder, vectorStore, logger);
   const nameToId = buildNameToIdMap(resolved);
   logger?.info('ingestion.stage_completed', {
     stage: 'entity_resolution',

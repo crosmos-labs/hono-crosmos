@@ -22,7 +22,8 @@ import {
 } from '@crosmos/db';
 import { durationMs, type Logger } from '@crosmos/observability';
 import { type TenantScope } from '@crosmos/types';
-import { and, cosineDistance, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { VectorStore } from '@crosmos/vector';
 import {
   CANDIDATE_POOL_LIMIT,
   CANDIDATE_POOL_THRESHOLD,
@@ -51,36 +52,42 @@ function casefold(s: string): string {
 }
 
 /**
- * Stage A: pull a wide candidate pool from the existing graph using cosine
- * distance over embeddings. Scoped by org+space. Returns the dedup'd pool —
- * one row per entity_id even if multiple extracted names matched it.
+ * Stage A: pull a wide candidate pool from the existing graph via ANN cosine
+ * search over the vector store. Scoped by org+space. `CANDIDATE_POOL_THRESHOLD`
+ * is a cosine-distance ceiling (0.5), i.e. a cosine-similarity floor of
+ * `1 - 0.5`. Returns the dedup'd pool — one row per entity_id even if multiple
+ * extracted names matched it. Names are loaded from Postgres (the vector store
+ * holds only vectors).
  */
 async function fetchCandidatePool(
   db: Database,
   scope: TenantScope,
+  vectorStore: VectorStore,
   embeddings: number[][],
 ): Promise<CandidateRow[]> {
-  const seen = new Map<number, CandidateRow>();
+  const ids = new Set<number>();
   for (const emb of embeddings) {
-    const distance = cosineDistance(entities.embedding, emb);
-    const rows = await db
-      .select({ id: entities.id, name: entities.name })
-      .from(entities)
-      .where(
-        and(
-          eq(entities.orgId, scope.orgId),
-          eq(entities.spaceId, scope.spaceId),
-          isNotNull(entities.embedding),
-          sql`${distance} <= ${CANDIDATE_POOL_THRESHOLD}`,
-        ),
-      )
-      .orderBy(distance)
-      .limit(CANDIDATE_POOL_LIMIT);
-    for (const r of rows) {
-      if (!seen.has(r.id)) seen.set(r.id, { id: r.id, name: r.name });
-    }
+    const matches = await vectorStore.queryNearest(
+      'entities',
+      emb,
+      { orgId: scope.orgId, spaceId: scope.spaceId },
+      { topK: CANDIDATE_POOL_LIMIT, minScore: 1 - CANDIDATE_POOL_THRESHOLD },
+    );
+    for (const m of matches) ids.add(m.id);
   }
-  return Array.from(seen.values());
+  if (ids.size === 0) return [];
+
+  const rows = await db
+    .select({ id: entities.id, name: entities.name })
+    .from(entities)
+    .where(
+      and(
+        eq(entities.orgId, scope.orgId),
+        eq(entities.spaceId, scope.spaceId),
+        inArray(entities.id, [...ids]),
+      ),
+    );
+  return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
 /**
@@ -176,6 +183,7 @@ export async function resolveEntities(
   scope: TenantScope,
   extracted: NormalizedEntity[],
   embedder: Embedder,
+  vectorStore: VectorStore,
   logger?: Logger,
 ): Promise<ResolvedEntity[]> {
   if (extracted.length === 0) return [];
@@ -191,7 +199,7 @@ export async function resolveEntities(
   });
 
   const candidatePoolStart = performance.now();
-  const pool = await fetchCandidatePool(db, scope, vectors);
+  const pool = await fetchCandidatePool(db, scope, vectorStore, vectors);
   logger?.info('ingestion.stage_completed', {
     stage: 'entity_candidate_pool',
     duration_ms: durationMs(candidatePoolStart),
@@ -209,7 +217,15 @@ export async function resolveEntities(
       out.push({ extracted: e, entityId: fuzzy.entityId, isNew: false });
       continue;
     }
-    const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, emb);
+    // pg backend stores the vector in the column; vectorize keeps it null on
+    // the row and gets the vector upserted to the index after insert.
+    const columnEmbedding = vectorStore.persistsInColumn ? emb : null;
+    const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, columnEmbedding);
+    if (upserted.isNew && !vectorStore.persistsInColumn && emb) {
+      await vectorStore.upsert('entities', [
+        { id: upserted.entityId, vector: emb, orgId: scope.orgId, spaceId: scope.spaceId },
+      ]);
+    }
     out.push({
       extracted: e,
       entityId: upserted.entityId,

@@ -2,15 +2,16 @@
  * Embedding provider — the interface callers use for memory, entity, and
  * query vectors.
  *
- * The pipeline stores 1536-dim vectors (matching `Vector(1536)` on
- * `memories.embedding` and `entities.embedding`). If you ever switch to a
- * model with a different dimension, the DB migration must change too.
+ * The default provider (Cloudflare `@cf/baai/bge-m3`) returns 1024-dim vectors,
+ * matching `vector(1024)` on `memories.embedding` and `entities.embedding`. If
+ * you switch to a model with a different dimension (e.g. the OpenAI fallback at
+ * 1536), the DB columns / Vectorize index dimension must change too.
  *
  * `mode` distinguishes asymmetric retrieval models (one vector space for
- * documents, another for queries). For OpenAI `text-embedding-3-small` both
- * modes use the same vector space, so the mode is informational — but the
- * field is on the interface so future providers (e.g. Voyage, Cohere v3)
- * can honor it without an API break.
+ * documents, another for queries). For both bge-m3 and OpenAI
+ * `text-embedding-3-small` the modes share one vector space, so the mode is
+ * informational — but the field is on the interface so future providers (e.g.
+ * Voyage, Cohere v3) can honor it without an API break.
  */
 export type EmbeddingMode = 'document' | 'search';
 

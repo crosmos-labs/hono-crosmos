@@ -1,49 +1,42 @@
 /**
- * Semantic signal — HNSW cosine search over `memories.embedding`. Port of
- * `app/engine/retrieval/semantic.py`.
+ * Semantic signal — ANN cosine search via the configured vector store
+ * (pgvector or Vectorize). Port of `app/engine/retrieval/semantic.py`.
  *
- * Scoped by `space_id` only (a space belongs to exactly one org) — matches
- * Python; do not add an org_id clause it doesn't have. Results are
- * distance-ordered, so once a score drops below the threshold all subsequent
- * ones do: BREAK (truncate), not filter.
+ * The vector store returns candidate ids (filtered by org+space); we resolve
+ * each against the already-loaded, visibility-filtered working set
+ * (`memoryById` from `candidates.ts`). That intersection enforces visibility —
+ * the Vectorize backend can't express the per-user OR in its filter, so a
+ * returned id that isn't in the visible set is dropped here. Results are
+ * similarity-ordered, so `queryNearest` already truncates below
+ * `SEMANTIC_MIN_SCORE`.
  */
-import { type Database, memories } from '@crosmos/db';
+import type { Memory } from '@crosmos/db';
+import type { VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
-import { and, cosineDistance, isNotNull, isNull, sql } from 'drizzle-orm';
-import { scopeMemories } from '../../../lib/scope';
 import { SEMANTIC_MIN_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { type RankedCandidate, SourceSignal } from '../types';
 
 export async function semanticSearch(
-  db: Database,
+  vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
   limit: number,
+  memoryById: Map<number, Memory>,
 ): Promise<RankedCandidate[]> {
-  const distance = cosineDistance(memories.embedding, queryEmbedding);
-  const rows = await db
-    // Parenthesize the distance: Postgres `-` binds tighter than pgvector's
-    // `<=>`, so `1.0 - embedding <=> $1` would parse as `(1.0 - embedding) <=> $1`
-    // → "operator does not exist: numeric - vector".
-    .select({ memory: memories, score: sql<number>`1.0 - (${distance})` })
-    .from(memories)
-    .where(
-      and(
-        scopeMemories(scope),
-        isNull(memories.forgottenAt),
-        isNotNull(memories.embedding),
-      ),
-    )
-    .orderBy(distance) // ascending distance = descending similarity
-    .limit(limit);
+  const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
+    topK: limit,
+    minScore: SEMANTIC_MIN_SCORE,
+  });
 
   const candidates: RankedCandidate[] = [];
   let rank = 1;
-  for (const row of rows) {
-    const score = Number(row.score);
-    if (score < SEMANTIC_MIN_SCORE) break;
-    candidates.push(toRankedCandidate(row.memory, rank, score, SourceSignal.SEMANTIC));
+  for (const match of matches) {
+    const memory = memoryById.get(match.id);
+    // Not in the visible working set (other-user private, or forgotten since
+    // indexing) → skip. Enforces visibility for the Vectorize backend.
+    if (memory === undefined) continue;
+    candidates.push(toRankedCandidate(memory, rank, match.score, SourceSignal.SEMANTIC));
     rank++;
   }
   return candidates;

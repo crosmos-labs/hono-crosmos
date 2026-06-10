@@ -13,6 +13,7 @@ import {
 } from '../../integrations/rate-limit';
 import { getEmbedder } from '../../integrations/embeddings';
 import { getReranker } from '../../integrations/reranker';
+import { getVectorStore } from '../../integrations/vector-store';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
@@ -196,8 +197,13 @@ searchRoutes.openapi(
       stage: 'entitlements',
     }, () => getCachedEntitlements(c, orgId));
 
+    // KV writes commit cross-region (~350ms from this Smart-Placed worker), so
+    // the rate-limit + concurrency counters push their writes here instead of
+    // blocking the response. The worker stays alive until they settle.
+    const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
+
     // 2. Per-org plan rate limit.
-    const limiter = getRateLimiter(c.env);
+    const limiter = getRateLimiter(c.env, defer);
     try {
       await logger.time('retrieval.stage_completed', {
         stage: 'plan_rate_limit',
@@ -257,7 +263,7 @@ searchRoutes.openapi(
     }
 
     // 6. Per-user concurrency cap. (5. queue-depth gate dropped inline — §4.)
-    const concurrency = getConcurrencyLimiter(c.env);
+    const concurrency = getConcurrencyLimiter(c.env, defer);
     const userKey = String(userId);
     const acquired = await logger.time(
       'retrieval.stage_completed',
@@ -311,6 +317,7 @@ searchRoutes.openapi(
         db,
         embedder: getEmbedder(c.env),
         reranker: getReranker(c.env),
+        vectorStore: getVectorStore(c.env, db),
       };
       const result = await withTimeout(
         retrieve({
@@ -429,8 +436,11 @@ searchRoutes.openapi(
             };
       throw new HTTPException(500, { res: jsonError(detail, 500) });
     } finally {
-      // The concurrency slot MUST be released on every exit path.
-      await concurrency.release(userKey);
+      // The concurrency slot MUST be released on every exit path. Schedule it
+      // off the critical path: the release's KV write (~350ms cross-region)
+      // must not block the response. `waitUntil` keeps the worker alive until
+      // it settles; `release` itself never throws (it logs + swallows).
+      defer(concurrency.release(userKey));
     }
   },
 );

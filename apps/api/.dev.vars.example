@@ -6,6 +6,14 @@ RESEND_API_KEY=re_xxx
 SENTRY_DSN=
 POLAR_WEBHOOK_SECRET=
 
+# Retrieval providers default to Cloudflare (Workers AI + Vectorize) via the
+# bindings in wrangler.toml — no keys needed for the default path.
+# These are only required when flipping to the fallback providers:
+#   EMBEDDINGS_PROVIDER=openai      -> OPENAI_API_KEY
+#   RERANKER_PROVIDER=zeroentropy   -> ZEROENTROPY_API_KEY
+# OPENAI_API_KEY=sk-xxx
+# ZEROENTROPY_API_KEY=ze-xxx
+
 # Used by drizzle-kit for migrations. Local dev points at docker-compose Postgres;
 # in prod, set this to the direct NeonDB URL when running migrations from your laptop/CI.
 DATABASE_URL=postgresql://crosmos:crosmos@localhost:5433/crosmos

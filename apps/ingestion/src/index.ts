@@ -5,6 +5,7 @@ import type { Env } from './bindings';
 import { getDb } from './db';
 import { getEmbedder } from './integrations/embeddings';
 import { getLLM } from './integrations/llm';
+import { getVectorStore } from './integrations/vector-store';
 import { handleIngestionDelivery } from './queue-consumer';
 
 /**
@@ -45,6 +46,7 @@ const handler: ExportedHandler<Env> = {
           logger: rootLogger,
           createLLM: () => getLLM(env),
           createEmbedder: () => getEmbedder(env),
+          createVectorStore: () => getVectorStore(env, db),
           nowMs: () => systemClock.nowMs(),
         },
       );

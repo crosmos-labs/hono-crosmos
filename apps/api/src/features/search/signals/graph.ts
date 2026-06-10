@@ -7,6 +7,7 @@
  * across them. See .codex/pipelines.md.
  */
 import { type Database, type Entity, type Memory, edges } from '@crosmos/db';
+import type { VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { graphEdgeVisibilityClause } from '../../../lib/scope';
@@ -25,7 +26,6 @@ import {
 import { toRankedCandidate } from '../mapping';
 import { intersectionSize, tokenize } from '../tokenize';
 import { type RankedCandidate, SourceSignal } from '../types';
-import { seedCosineScores } from '../vector';
 
 const SEC_PER_DAY = 86400;
 
@@ -92,54 +92,51 @@ function edgeRecencyFactor(
   return Math.max(GRAPH_EDGE_RECENCY_FLOOR, Math.min(1.0, decay));
 }
 
-/** Top-k indices (by score desc) among entries with score >= threshold. */
-function topKAboveThreshold(
-  scores: number[],
-  threshold: number,
-  k: number,
-): Array<{ index: number; score: number }> {
-  const kept = scores
-    .map((score, index) => ({ index, score }))
-    .filter((x) => x.score >= threshold);
-  kept.sort((a, b) => b.score - a.score);
-  return kept.slice(0, k);
-}
-
-/** Seed via memory-embedding similarity; propagate to that memory's entities. */
-function seedByMemory(
+/**
+ * Seed via memory-embedding similarity; propagate to that memory's entities.
+ * ANN query against the vector store (top-`GRAPH_SEED_LIMIT` above
+ * `GRAPH_SEED_THRESHOLD`), then propagate each hit's similarity to the entities
+ * linked to that memory (max). Only in-scope memories (present in
+ * `memoryToEntities`) contribute. Approximate under Vectorize vs. the exact
+ * in-memory cosine the pg path would do — accepted for the latency win.
+ */
+async function seedByMemory(
+  vectorStore: VectorStore,
   queryEmbedding: number[],
-  memories: Memory[],
+  scope: TenantScope,
+  memoryMap: Map<number, Memory>,
   memoryToEntities: Map<number, number[]>,
-): Map<number, number> {
-  const valid = memories.filter((m) => m.embedding !== null);
-  if (valid.length === 0) return new Map();
-  const scores = seedCosineScores(queryEmbedding, valid.map((m) => m.embedding!));
-  if (scores === null) return new Map();
-
-  const top = topKAboveThreshold(scores, GRAPH_SEED_THRESHOLD, GRAPH_SEED_LIMIT);
+): Promise<Map<number, number>> {
+  const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
+    topK: GRAPH_SEED_LIMIT,
+    minScore: GRAPH_SEED_THRESHOLD,
+  });
   const entityScores = new Map<number, number>();
-  for (const { index, score } of top) {
-    const memory = valid[index]!;
-    for (const eid of memoryToEntities.get(memory.id) ?? []) {
+  for (const { id, score } of matches) {
+    if (!memoryMap.has(id)) continue; // not in the visible working set
+    for (const eid of memoryToEntities.get(id) ?? []) {
       if (score > (entityScores.get(eid) ?? 0.0)) entityScores.set(eid, score);
     }
   }
   return entityScores;
 }
 
-/** Seed via entity-embedding similarity. */
-function seedByEntityEmbedding(
+/** Seed via entity-embedding similarity (ANN query against the vector store). */
+async function seedByEntityEmbedding(
+  vectorStore: VectorStore,
   queryEmbedding: number[],
-  entities: Entity[],
-): Map<number, number> {
-  const valid = entities.filter((e) => e.embedding !== null);
-  if (valid.length === 0) return new Map();
-  const scores = seedCosineScores(queryEmbedding, valid.map((e) => e.embedding!));
-  if (scores === null) return new Map();
-
-  const top = topKAboveThreshold(scores, GRAPH_SEED_THRESHOLD, GRAPH_SEED_LIMIT);
+  scope: TenantScope,
+  allowedEntityIds: Set<number>,
+): Promise<Map<number, number>> {
+  const matches = await vectorStore.queryNearest('entities', queryEmbedding, scope, {
+    topK: GRAPH_SEED_LIMIT,
+    minScore: GRAPH_SEED_THRESHOLD,
+  });
   const out = new Map<number, number>();
-  for (const { index, score } of top) out.set(valid[index]!.id, score);
+  for (const { id, score } of matches) {
+    if (!allowedEntityIds.has(id)) continue;
+    out.set(id, score);
+  }
   return out;
 }
 
@@ -170,6 +167,7 @@ function seedByEntityName(
 
 export async function graphSearchWithStore(
   db: Database,
+  vectorStore: VectorStore,
   queryText: string,
   queryEmbedding: number[],
   memories: Memory[],
@@ -194,12 +192,14 @@ export async function graphSearchWithStore(
           new Set([...memoryToEntities.values()].flat()).has(entity.id),
         );
 
-  // Seed: entity relevance = max score across the three strategies.
-  const seedResults = [
-    seedByMemory(queryEmbedding, memories, memoryToEntities),
-    seedByEntityEmbedding(queryEmbedding, seedEntities),
-    seedByEntityName(queryText, seedEntities),
-  ];
+  // Seed: entity relevance = max score across the three strategies. The two
+  // embedding seeds are ANN queries (run in parallel); the name seed is local.
+  const seedEntityIdSet = new Set(seedEntities.map((e) => e.id));
+  const [memSeed, entSeed] = await Promise.all([
+    seedByMemory(vectorStore, queryEmbedding, scope, memoryMap, memoryToEntities),
+    seedByEntityEmbedding(vectorStore, queryEmbedding, scope, seedEntityIdSet),
+  ]);
+  const seedResults = [memSeed, entSeed, seedByEntityName(queryText, seedEntities)];
   const entityRelevance = new Map<number, number>();
   for (const sd of seedResults) {
     for (const [eid, score] of sd) {

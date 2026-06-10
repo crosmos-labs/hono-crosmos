@@ -2,6 +2,7 @@ import type { Database } from '@crosmos/db';
 import type { Logger } from '@crosmos/observability';
 import type { QueueDelivery } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
+import type { VectorStore } from '@crosmos/vector';
 import type { Embedder } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
 import { processIngestion } from './process-ingestion';
@@ -11,6 +12,7 @@ export interface IngestionQueueConsumerDeps {
   logger: Logger;
   createLLM(): LLM;
   createEmbedder(): Embedder;
+  createVectorStore(): VectorStore;
   nowMs(): number;
 }
 
@@ -47,10 +49,12 @@ export async function handleIngestionDelivery(
     // source. Reinstantiating per source would lose attribution.
     const llm = deps.createLLM();
     const embedder = deps.createEmbedder();
+    const vectorStore = deps.createVectorStore();
     await processIngestion(body, {
       db: deps.db,
       llm,
       embedder,
+      vectorStore,
       logger,
     });
     delivery.ack();
