@@ -72,6 +72,13 @@ entrypoint = "IngestionWorker"
 [ai]
 binding = "AI"
 
+# Analytics Engine: metrics sink (counters + latencies). Queryable via the
+# Analytics Engine SQL API / dashboard; alerts configured there. No provisioning
+# command — the dataset is created on first write.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_api_dev"
+
 # Vectorize: vector storage for the retrieval read path (VECTOR_STORE=vectorize).
 # Create with:
 #   wrangler vectorize create crosmos-memories-dev --dimensions=1024 --metric=cosine
@@ -127,6 +134,11 @@ VECTOR_STORE = "vectorize"
 # Workers AI binding (not inherited from top-level).
 [env.production.ai]
 binding = "AI"
+
+# Analytics Engine (prod metrics sink). Not inherited from top-level.
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_api"
 
 # Vectorize (prod indexes). Create with:
 #   wrangler vectorize create crosmos-memories --dimensions=1024 --metric=cosine

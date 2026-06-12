@@ -27,6 +27,9 @@ export interface Env {
   // Vectorize indexes (used when VECTOR_STORE=vectorize).
   MEMORIES_INDEX: VectorizeIndex;
   ENTITIES_INDEX: VectorizeIndex;
+  // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
+  // local dev / tests, where createMetrics() degrades to a no-op.
+  ANALYTICS?: AnalyticsEngineDataset;
 
   // Vars
   ENVIRONMENT: 'development' | 'production';
