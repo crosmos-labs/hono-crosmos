@@ -1,4 +1,8 @@
-import { OpenAIEmbedder, WorkersAiEmbedder } from '@crosmos/ai';
+import {
+  assertEmbeddingSpace,
+  OpenAIEmbedder,
+  WorkersAiEmbedder,
+} from '@crosmos/ai';
 import type { Embedder } from '@crosmos/ai';
 import type { Env } from '../../bindings';
 
@@ -21,10 +25,12 @@ export function getEmbedder(env: Env): Embedder {
     if (!env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is required when EMBEDDINGS_PROVIDER=openai');
     }
-    return new OpenAIEmbedder({ apiKey: env.OPENAI_API_KEY });
+    // assertEmbeddingSpace: must match ingestion's provider + the Vectorize
+    // index dimension, or retrieval silently breaks. See @crosmos/ai.
+    return assertEmbeddingSpace(new OpenAIEmbedder({ apiKey: env.OPENAI_API_KEY }));
   }
   if (!env.AI) {
     throw new Error('AI binding is required for embeddings (EMBEDDINGS_PROVIDER=workers-ai)');
   }
-  return new WorkersAiEmbedder({ ai: env.AI });
+  return assertEmbeddingSpace(new WorkersAiEmbedder({ ai: env.AI }));
 }
