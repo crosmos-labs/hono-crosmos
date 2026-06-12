@@ -15,6 +15,7 @@
  */
 import {
   chunks,
+  edges,
   memories as memoriesTable,
   memoryEntities,
   chunkMemories,
@@ -23,7 +24,7 @@ import {
 } from '@crosmos/db';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { and, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { VectorStore } from '@crosmos/vector';
 import {
   EMBEDDING_DIMENSIONS,
@@ -93,10 +94,69 @@ function failureFields(err: unknown): {
   return { error_category: 'internal', dependency: 'pipeline' };
 }
 
+/**
+ * Idempotency purge — delete any derived artifacts left by a PRIOR ingestion
+ * attempt for this source before re-creating them. `ingestSource` is not
+ * atomic across its stages, and the per-source retry loop (and the queue
+ * backstop reclaiming a job whose run died mid-source) both re-run it from the
+ * top. Without this, a failure after Stage 7 (persist) duplicates memories and
+ * vectors on the next attempt, because each run inserts rows with fresh serial
+ * IDs that the vector store can't dedupe.
+ *
+ * A source fully owns its chunks → memories (+ their vectors) → memory_entities
+ * / edges. Entities are shared and resolved idempotently by name, so they (and
+ * their vectors) are intentionally left intact. On a clean first attempt the
+ * source has no chunks yet, so this is a single empty indexed SELECT.
+ */
+async function purgeSourceArtifacts(
+  db: Database,
+  vectorStore: VectorStore,
+  sourceId: number,
+): Promise<number> {
+  const chunkRows = await db
+    .select({ id: chunks.id })
+    .from(chunks)
+    .where(eq(chunks.sourceId, sourceId));
+  if (chunkRows.length === 0) return 0; // clean slate — happy path, nothing to undo
+  const chunkIds = chunkRows.map((c) => c.id);
+
+  const memRows = await db
+    .select({ memoryId: chunkMemories.memoryId })
+    .from(chunkMemories)
+    .where(inArray(chunkMemories.chunkId, chunkIds));
+  const memoryIds = [...new Set(memRows.map((m) => m.memoryId))];
+
+  if (memoryIds.length > 0) {
+    // edges.memory_id is ON DELETE SET NULL, so deleting memories would orphan
+    // the edges rather than remove them — delete them explicitly first.
+    await db.delete(edges).where(inArray(edges.memoryId, memoryIds));
+    // Deleting memories cascades chunk_memories + memory_entities.
+    await db.delete(memoriesTable).where(inArray(memoriesTable.id, memoryIds));
+    if (!vectorStore.persistsInColumn) {
+      await vectorStore.deleteByIds('memories', memoryIds);
+    }
+  }
+  // Remove the chunk(s) themselves (cascades any remaining chunk_memories).
+  await db.delete(chunks).where(eq(chunks.sourceId, sourceId));
+  return memoryIds.length;
+}
+
 export async function ingestSource(input: IngestSourceInput): Promise<IngestResult> {
   const { db, scope, sourceId, llm, embedder, vectorStore, logger } = input;
 
-  // Stage 0 — load + preprocess
+  // Stage 0 — load + preprocess. First purge any partial artifacts from a prior
+  // failed/interrupted attempt so re-running this source can't duplicate
+  // memories or vectors (the pipeline isn't atomic across stages).
+  const purgeStart = performance.now();
+  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId);
+  if (purged > 0) {
+    logger?.info('ingestion.stage_completed', {
+      stage: 'purge_prior_artifacts',
+      duration_ms: durationMs(purgeStart),
+      memory_count: purged,
+    });
+  }
+
   const loadStart = performance.now();
   const source = await loadSource(db, sourceId);
   const contentType = (source.contentType ?? 'text').toLowerCase();
@@ -291,47 +351,65 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     }
   }
 
-  // Stage 7 — persist memories + source_memories
+  // Stage 7 — persist chunk + memories + chunk_memories atomically, THEN upsert
+  // vectors. The three inserts run in one transaction so a memory row can never
+  // exist without its chunk_memories link — that link is what
+  // `purgeSourceArtifacts` walks to find and clean a prior attempt's memories.
+  // Vectors are upserted after commit (Vectorize isn't part of the PG
+  // transaction); if that upsert fails, the next attempt's purge finds the
+  // committed memories via the link and removes them + these vectors before
+  // re-inserting, so a retry never duplicates.
   const persistStart = performance.now();
-  const [chunk] = await db
-    .insert(chunks)
-    .values({
-      orgId: scope.orgId,
-      spaceId: scope.spaceId,
-      sourceId,
-      sequence: 0,
-      content,
-      tokenCount: source.tokenCount,
-      chunker: contentType === 'conversation' ? 'conversation' : 'legacy',
-    })
-    .returning();
-  if (!chunk) throw new Error('Failed to insert chunk');
-
-  const memoryRows: Memory[] = await db
-    .insert(memoriesTable)
-    .values(
-      facts.map((f, i) => ({
+  const memoryRows: Memory[] = await db.transaction(async (tx) => {
+    const [chunk] = await tx
+      .insert(chunks)
+      .values({
         orgId: scope.orgId,
         spaceId: scope.spaceId,
-        ownerUserId,
-        visibility,
-        content: f.content,
-        memoryType: f.memoryType,
-        // Vectors are stored in the configured vector store. For the pg backend
-        // that IS this column; for vectorize the column stays null and the
-        // vector is upserted to the index below.
-        embedding: vectorStore.persistsInColumn ? vectors[i]! : null,
-        importanceScore: f.importanceScore,
-        eventTime: f.eventTime,
-        recordedAt: learnedTime,
+        sourceId,
+        sequence: 0,
+        content,
+        tokenCount: source.tokenCount,
+        chunker: contentType === 'conversation' ? 'conversation' : 'legacy',
+      })
+      .returning();
+    if (!chunk) throw new Error('Failed to insert chunk');
+
+    const rows: Memory[] = await tx
+      .insert(memoriesTable)
+      .values(
+        facts.map((f, i) => ({
+          orgId: scope.orgId,
+          spaceId: scope.spaceId,
+          ownerUserId,
+          visibility,
+          content: f.content,
+          memoryType: f.memoryType,
+          // Vectors are stored in the configured vector store. For the pg
+          // backend that IS this column; for vectorize the column stays null
+          // and the vector is upserted to the index after commit.
+          embedding: vectorStore.persistsInColumn ? vectors[i]! : null,
+          importanceScore: f.importanceScore,
+          eventTime: f.eventTime,
+          recordedAt: learnedTime,
+        })),
+      )
+      .returning();
+    if (rows.length !== facts.length) {
+      throw new Error(
+        `Memory insert returned ${rows.length} rows for ${facts.length} facts`,
+      );
+    }
+
+    await tx.insert(chunkMemories).values(
+      rows.map((m) => ({
+        chunkId: chunk.id,
+        memoryId: m.id,
+        extractionTimestamp: learnedTime,
       })),
-    )
-    .returning();
-  if (memoryRows.length !== facts.length) {
-    throw new Error(
-      `Memory insert returned ${memoryRows.length} rows for ${facts.length} facts`,
     );
-  }
+    return rows;
+  });
 
   // Upsert vectors to the vector store (no-op for the pg backend, which already
   // wrote them to the column above). memoryRows[i] ↔ vectors[i] by insert order.
@@ -346,14 +424,6 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       })),
     );
   }
-
-  await db.insert(chunkMemories).values(
-    memoryRows.map((m) => ({
-      chunkId: chunk.id,
-      memoryId: m.id,
-      extractionTimestamp: learnedTime,
-    })),
-  );
   logger?.info('ingestion.stage_completed', {
     stage: 'persist_memories',
     duration_ms: durationMs(persistStart),

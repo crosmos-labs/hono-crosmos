@@ -133,9 +133,17 @@ export async function processIngestion(
       return 'processed';
     }
 
-    // Idempotency gate 2 — source already past pending → skip
+    // Idempotency gate 2 — only skip sources that reached a TERMINAL state.
+    // Crucially, `processing` is NOT terminal: it marks a source left mid-flight
+    // by a previous run that died (isolate eviction) and was reclaimed here via
+    // the job lease. The old code skipped it, orphaning the source forever — so
+    // we re-process it instead. `ingestSource` purges any partial artifacts up
+    // front, so re-running is safe (no duplicate memories/vectors). The job-level
+    // lease guarantees only one live run owns this job, and the LLM/embedder
+    // timeouts make a wedged prior run resolve well before the lease expires, so
+    // we aren't racing a concurrent processor.
     const sourceStatus = await getSourceExtractionStatus(db, sourceId);
-    if (sourceStatus !== 'pending') {
+    if (sourceStatus !== 'pending' && sourceStatus !== 'processing') {
       logger.info('ingestion.source_already_processed', {
         source_id: sourceId,
         status: sourceStatus,
