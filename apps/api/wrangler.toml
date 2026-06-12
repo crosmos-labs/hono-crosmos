@@ -163,8 +163,10 @@ binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs"
 
 # Service binding to the ingestion worker (fast-path RPC). Not inherited from
-# the top-level config, so it's repeated here for production.
+# the top-level config, so it's repeated here for production. NOTE: named
+# environments suffix the worker name, so the prod ingestion worker is
+# `crosmos-ingestion-production` (not `crosmos-ingestion`).
 [[env.production.services]]
 binding = "INGESTION_SERVICE"
-service = "crosmos-ingestion"
+service = "crosmos-ingestion-production"
 entrypoint = "IngestionWorker"

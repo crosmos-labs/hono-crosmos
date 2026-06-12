@@ -47,6 +47,11 @@ export type ClaimResult = 'claimed' | 'terminal' | 'not_found' | 'in_flight';
  * concurrent caller gets the row back via RETURNING — the rest get a non-claim
  * result and bow out. No double-processing of a healthy in-flight job; reliable
  * recovery of an abandoned one once the lease lapses.
+ *
+ * The "healthy in-flight" guarantee depends on the lease HEARTBEAT: a running
+ * job re-stamps `started_at` per source via `updateJobStatus('processing')`, so
+ * `started_at < leaseCutoff` is only ever true for a job that has made no
+ * progress for `leaseMs`. See the load-bearing note in `updateJobStatus`.
  */
 export async function claimJob(
   db: Database,
@@ -107,6 +112,13 @@ export async function updateJobStatus(
 ): Promise<void> {
   const now = new Date();
   const values: Record<string, unknown> = { status };
+  // LOAD-BEARING — DO NOT REMOVE: re-stamping `started_at` on every
+  // `processing` write is the lease HEARTBEAT that `claimJob` reads. Because
+  // `processIngestion` calls this once per source, a healthy long job keeps
+  // advancing `started_at`, so the queue backstop never reclaims it mid-run.
+  // The lease (`JOB_LEASE_MS`) is therefore "no progress for N minutes", NOT
+  // "whole job under N minutes". Drop this line and large batches (up to
+  // MAX_SOURCES_PER_REQUEST) start getting double-claimed. See claimJob.
   if (status === 'processing') values.startedAt = now;
   if (status === 'completed' || status === 'failed' || status === 'partial') {
     values.completedAt = now;

@@ -144,6 +144,10 @@ export async function processIngestion(
       continue;
     }
 
+    // Per-source progress write — this is ALSO the lease heartbeat: it
+    // re-stamps `started_at`, keeping the queue backstop from reclaiming a job
+    // that's still making progress. Keep it inside the loop. See `claimJob` and
+    // the load-bearing note in `updateJobStatus`.
     await updateJobStatus(db, msg.job_id, 'processing', {
       stage: `source ${i + 1}/${msg.source_ids.length}`,
     });
