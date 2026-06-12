@@ -16,6 +16,9 @@ const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 const MODEL = 'text-embedding-3-small';
 const DIMENSIONS = 1536;
 
+/** Bound a single embeddings request so a hung connection can't wedge the job. */
+const EMBED_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface OpenAIEmbedderConfig {
   apiKey: string;
 }
@@ -48,18 +51,34 @@ export class OpenAIEmbedder implements Embedder {
       };
     }
 
-    const res = await fetch(OPENAI_EMBEDDINGS_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        input: texts,
-        dimensions: DIMENSIONS,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(OPENAI_EMBEDDINGS_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          input: texts,
+          dimensions: DIMENSIONS,
+        }),
+        signal: AbortSignal.timeout(EMBED_REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Timeout / transient network failure → retryable (504) so the per-source
+      // retry + queue backstop take over instead of the call hanging.
+      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+      throw new EmbeddingRequestError(
+        `OpenAI embeddings request ${
+          isTimeout
+            ? `timed out after ${EMBED_REQUEST_TIMEOUT_MS}ms`
+            : `failed: ${err instanceof Error ? err.message : String(err)}`
+        }`,
+        504,
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new EmbeddingRequestError(
