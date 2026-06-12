@@ -1,8 +1,27 @@
+import type { IngestionJobMessage } from '@crosmos/types';
+
+/**
+ * RPC surface of the ingestion worker (apps/ingestion `IngestionWorker`),
+ * reached over a service binding. `ingest` is the low-latency fast path: it
+ * starts the job immediately instead of waiting out Cloudflare Queues'
+ * cold-queue delivery delay. Fire-and-forget — the durable queue copy is the
+ * backstop, so callers should invoke this via `waitUntil` and never block on it.
+ */
+export interface IngestionRpc {
+  ingest(message: IngestionJobMessage): Promise<void>;
+}
+
 export interface Env {
   // Bindings
   HYPERDRIVE: Hyperdrive;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
+  // Service binding to the ingestion worker — direct RPC fast path that
+  // sidesteps queue delivery latency. INGESTION_QUEUE remains the backstop.
+  // Typed as the RPC surface only (not `Service<typeof IngestionWorker>`) to
+  // avoid coupling apps/api to apps/ingestion source — same stance as the
+  // job-store mirror. The runtime stub also exposes fetch/connect; unused here.
+  INGESTION_SERVICE: IngestionRpc;
   // Workers AI — embeddings (bge-m3) + cross-encoder reranker (bge-reranker-base).
   AI: Ai;
   // Vectorize indexes (used when VECTOR_STORE=vectorize).

@@ -40,6 +40,20 @@ export const MAX_PENDING_JOBS_PER_USER = 5_000;
 export const STUCK_JOB_TIMEOUT_MINUTES = 10;
 export const MONITOR_INTERVAL_SECONDS = 60;
 
+// Job lease (claim) — a job is claimed by transitioning pending -> processing
+// with a fresh `started_at`. A second trigger may only re-claim a `processing`
+// job once its lease has expired (i.e. it looks abandoned). The lease must
+// exceed the worst-case wall-clock of a single healthy job so the queue
+// backstop never double-runs a job that's still legitimately in flight. Reuses
+// the existing stuck-job timeout so both notions of "abandoned" agree.
+export const JOB_LEASE_MS = STUCK_JOB_TIMEOUT_MINUTES * 60_000;
+// When the queue backstop finds a job still healthily in flight (claimed by the
+// direct RPC path), it re-queues the message with this delay to re-check later
+// rather than acking (which would drop the only durable copy). Polls until the
+// job reaches a terminal state or its lease expires. Paired with a high
+// `max_retries` in wrangler.toml so the poll window outlasts JOB_LEASE_MS.
+export const BACKSTOP_RETRY_DELAY_SECONDS = 60;
+
 // Session ingestion
 export const SESSION_SEGMENT_SIZE = 4;
 export const SESSION_LOOKBACK_WINDOW = 4;

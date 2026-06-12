@@ -18,6 +18,7 @@ import type {
   TenantScope,
 } from '@crosmos/types';
 import {
+  JOB_LEASE_MS,
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
 } from './constants';
@@ -28,7 +29,7 @@ import type { LLM } from './integrations/llm';
 import { LLMRequestError } from './integrations/llm';
 import { ingestSource, type IngestResult } from './ingestion/pipeline';
 import {
-  getJobStatus,
+  claimJob,
   isJobCancelled,
   updateJobStatus,
 } from './job-store';
@@ -39,12 +40,21 @@ import {
 } from './source-status';
 import { recordIngestionTokens } from './usage';
 
-const TERMINAL_STATUSES: ReadonlySet<IngestionJobStatus> = new Set([
-  'completed',
-  'partial',
-  'failed',
-  'cancelled',
-]);
+/**
+ * What `processIngestion` did with this delivery. Drives the queue consumer's
+ * ack/retry decision:
+ *  - `processed`         — we owned and ran the job to a terminal state → ack.
+ *  - `skipped_terminal`  — already finished by another trigger → ack (no-op).
+ *  - `skipped_not_found` — job row is gone → ack (nothing to recover).
+ *  - `skipped_in_flight` — another trigger holds a live lease → the durable
+ *                          copy must survive, so the queue consumer re-queues
+ *                          with a delay and re-checks later.
+ */
+export type IngestionOutcome =
+  | 'processed'
+  | 'skipped_terminal'
+  | 'skipped_not_found'
+  | 'skipped_in_flight';
 
 export interface ProcessIngestionDeps {
   db: Database;
@@ -80,7 +90,7 @@ async function sleep(ms: number): Promise<void> {
 export async function processIngestion(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
-): Promise<void> {
+): Promise<IngestionOutcome> {
   const { db, llm, embedder, vectorStore, logger } = deps;
   const jobStart = performance.now();
   const scope: TenantScope = {
@@ -89,20 +99,19 @@ export async function processIngestion(
     userId: msg.user_id,
   };
 
-  // Idempotency gate 1 — terminal jobs are no-ops on redelivery
-  const initial = await getJobStatus(db, msg.job_id);
-  if (initial === null) {
-    logger.warn('ingestion.job_not_found');
-    return;
-  }
-  if (TERMINAL_STATUSES.has(initial)) {
-    logger.info('ingestion.job_already_terminal', {
-      status: initial,
-    });
-    return;
+  // Idempotency gate 1 — atomically claim the job. This single CAS subsumes the
+  // old "read status, then write processing" sequence: it rejects terminal jobs
+  // (redelivery / the other trigger already finished) AND jobs another trigger
+  // is actively running (live lease), while still recovering jobs abandoned
+  // mid-run (expired lease). Only a `claimed` result means we may proceed.
+  const claim = await claimJob(db, msg.job_id, JOB_LEASE_MS);
+  if (claim !== 'claimed') {
+    logger.info('ingestion.job_claim_skipped', { reason: claim });
+    if (claim === 'not_found') return 'skipped_not_found';
+    if (claim === 'in_flight') return 'skipped_in_flight';
+    return 'skipped_terminal';
   }
 
-  await updateJobStatus(db, msg.job_id, 'processing');
   logger.info('ingestion.job_started', {
     source_count: msg.source_ids.length,
   });
@@ -120,7 +129,8 @@ export async function processIngestion(
         completed_source_count: i,
         source_count: msg.source_ids.length,
       });
-      return;
+      // We owned the job; cancellation is a terminal outcome for this delivery.
+      return 'processed';
     }
 
     // Idempotency gate 2 — source already past pending → skip
@@ -256,4 +266,5 @@ export async function processIngestion(
     edge_count: edgeCount,
     token_count: totalTokens,
   });
+  return 'processed';
 }

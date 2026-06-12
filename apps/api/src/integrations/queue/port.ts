@@ -20,6 +20,15 @@ export interface QueueService {
   /** Enqueue one ingestion job. Fire-and-forget from the caller's view. */
   enqueue(message: IngestionJobMessage): Promise<void>;
 
+  /**
+   * Best-effort low-latency trigger: ask the consumer to start this job NOW,
+   * bypassing the queue's cold-delivery latency. Call AFTER `enqueue` (the
+   * queue copy is the durable backstop) and dispatch via `waitUntil` — never
+   * block a response on it. Backends without a push path (or test doubles)
+   * no-op; the enqueued message still gets the job done.
+   */
+  kick(message: IngestionJobMessage): Promise<void>;
+
   /** Approximate count of pending+processing jobs — for backpressure. */
   queueDepth(): Promise<number>;
 }

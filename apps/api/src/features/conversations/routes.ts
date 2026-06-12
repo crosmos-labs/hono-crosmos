@@ -5,6 +5,7 @@ import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
 import { getRateLimiter } from '../../integrations/rate-limit';
+import { waitUntilLogged } from '../../lib/runtime';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
@@ -163,13 +164,8 @@ conversationRoutes.openapi(
     }));
 
     const enqueuedAtMs = Date.now();
-    await logger.time('ingestion.enqueue_stage_completed', {
-      stage: 'queue_enqueue',
-      space_id: space.id,
-      error_category: 'external_service',
-      dependency: 'queue',
-    }, () => queue.enqueue({
-      task: 'process_ingestion',
+    const jobMessage = {
+      task: 'process_ingestion' as const,
       job_id: jobId,
       correlation_id: correlationId,
       org_id: space.orgId,
@@ -177,7 +173,24 @@ conversationRoutes.openapi(
       user_id: userId,
       source_ids: created.map((s) => s.id),
       enqueued_at_ms: enqueuedAtMs,
-    }));
+    };
+    // Durable enqueue first (the backstop), then the low-latency direct kick.
+    await logger.time('ingestion.enqueue_stage_completed', {
+      stage: 'queue_enqueue',
+      space_id: space.id,
+      error_category: 'external_service',
+      dependency: 'queue',
+    }, () => queue.enqueue(jobMessage));
+    // Best-effort: start ingestion now over the service binding so we don't eat
+    // the queue's cold-delivery latency. Off the response path; the enqueued
+    // copy still runs the job if this fails.
+    waitUntilLogged(
+      c,
+      logger,
+      'ingestion.kick_failed',
+      queue.kick(jobMessage),
+      { space_id: space.id, job_id: jobId },
+    );
     logger.info('ingestion.enqueue_accepted', {
       space_id: space.id,
       source_count: created.length,

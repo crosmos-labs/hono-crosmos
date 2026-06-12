@@ -57,6 +57,17 @@ id = "526c4c65675d478b827a2b0566bba1b6"
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs-dev"
 
+# Service binding: direct RPC to the ingestion worker (the low-latency fast
+# path that sidesteps queue cold-delivery latency). `entrypoint` targets the
+# exported `IngestionWorker` class. The INGESTION_QUEUE producer above stays as
+# the durable backstop; both coordinate via the atomic job claim.
+# Local dev: run the ingestion worker too (e.g. `wrangler dev` in apps/ingestion)
+# so this binding resolves.
+[[services]]
+binding = "INGESTION_SERVICE"
+service = "crosmos-ingestion"
+entrypoint = "IngestionWorker"
+
 # Workers AI: embeddings (bge-m3) + cross-encoder reranker (bge-reranker-base).
 [ai]
 binding = "AI"
@@ -150,3 +161,10 @@ id = "25fed42f4fb242acb470f7578a60b854"
 [[env.production.queues.producers]]
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs"
+
+# Service binding to the ingestion worker (fast-path RPC). Not inherited from
+# the top-level config, so it's repeated here for production.
+[[env.production.services]]
+binding = "INGESTION_SERVICE"
+service = "crosmos-ingestion"
+entrypoint = "IngestionWorker"

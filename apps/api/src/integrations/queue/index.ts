@@ -14,5 +14,6 @@ export function getQueueService(env: Env, db: Database): QueueService {
   return new CloudflareQueueService(
     env.INGESTION_QUEUE as Queue<IngestionJobMessage>,
     db,
+    env.INGESTION_SERVICE,
   );
 }

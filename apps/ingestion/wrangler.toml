@@ -34,11 +34,17 @@ localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 [[queues.consumers]]
 queue = "ingestion-jobs-dev"
 max_batch_size = 1
-# 0s = deliver as soon as a message is available, no batch-fill wait. (CF Queues
-# still have an inherent low-volume delivery-latency floor — the deeper fix is
-# an RPC/service-binding path; see retrieval optimisation notes.)
+# 0s = deliver as soon as a message is available, no batch-fill wait. CF Queues
+# still have a cold-queue delivery-latency floor (tens of seconds when idle) —
+# that's why the API worker ALSO kicks ingestion directly over a service binding
+# (IngestionWorker.ingest). This queue is now the durable BACKSTOP behind that
+# fast path; both paths coordinate via the atomic job claim.
 max_batch_timeout = 0
-max_retries = 3
+# Backstop retries serve two roles: ordinary failure retries AND polling a job
+# that's still healthily in flight on the RPC path (see BACKSTOP_RETRY_DELAY_SECONDS
+# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (10m) so a
+# silently-dead RPC run is reclaimed before the message DLQs: 15 * 60s = 15m.
+max_retries = 15
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
 # Workers AI: embeddings (bge-m3).
@@ -104,9 +110,13 @@ id = "334924fce954497fbcc866b74395bca1"
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
 max_batch_size = 1
-# 0s = deliver as soon as a message is available, no batch-fill wait. (CF Queues
-# still have an inherent low-volume delivery-latency floor — the deeper fix is
-# an RPC/service-binding path; see retrieval optimisation notes.)
+# 0s = deliver as soon as a message is available, no batch-fill wait. CF Queues
+# still have a cold-queue delivery-latency floor (tens of seconds when idle) —
+# that's why the API worker ALSO kicks ingestion directly over a service binding
+# (IngestionWorker.ingest). This queue is now the durable BACKSTOP behind that
+# fast path; both paths coordinate via the atomic job claim.
 max_batch_timeout = 0
-max_retries = 3
+# See dev consumer above: max_retries * BACKSTOP_RETRY_DELAY_SECONDS must
+# outlast JOB_LEASE_MS so a silently-dead RPC run is reclaimed before DLQ.
+max_retries = 15
 dead_letter_queue = "ingestion-jobs-dlq"

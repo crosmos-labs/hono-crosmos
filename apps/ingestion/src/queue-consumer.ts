@@ -3,6 +3,7 @@ import type { Logger } from '@crosmos/observability';
 import type { QueueDelivery } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { VectorStore } from '@crosmos/vector';
+import { BACKSTOP_RETRY_DELAY_SECONDS } from './constants';
 import type { Embedder } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
 import { processIngestion } from './process-ingestion';
@@ -50,14 +51,29 @@ export async function handleIngestionDelivery(
     const llm = deps.createLLM();
     const embedder = deps.createEmbedder();
     const vectorStore = deps.createVectorStore();
-    await processIngestion(body, {
+    const outcome = await processIngestion(body, {
       db: deps.db,
       llm,
       embedder,
       vectorStore,
       logger,
     });
-    delivery.ack();
+
+    // The queue is the durable backstop behind the direct RPC fast path.
+    // `skipped_in_flight` means the RPC trigger holds a live lease and is
+    // (presumably) still running — we must NOT ack, or we'd drop the only
+    // durable copy of this job. Re-queue with a delay to re-check later; we'll
+    // either find it terminal (ack) or recover it once the lease expires
+    // (claim + process). Every other outcome is settled → ack.
+    if (outcome === 'skipped_in_flight') {
+      logger.info('ingestion.job_backstop_requeued', {
+        delay_seconds: BACKSTOP_RETRY_DELAY_SECONDS,
+        attempt: delivery.attempts,
+      });
+      delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
+    } else {
+      delivery.ack();
+    }
   } catch (err) {
     // Outer failure path — DB went away mid-run, factory threw, etc.
     // Don't ack; let the queue runtime retry or DLQ according to its policy.

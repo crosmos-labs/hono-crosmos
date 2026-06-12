@@ -7,11 +7,16 @@ export interface Clock {
   monotonicMs(): number;
 }
 
+export interface QueueRetryOptions {
+  /** Delay before the message becomes eligible for redelivery, in seconds. */
+  delaySeconds?: number;
+}
+
 export interface QueueDelivery<T> {
   readonly body: T;
   readonly attempts: number;
   ack(): void;
-  retry(): void;
+  retry(opts?: QueueRetryOptions): void;
 }
 
 export function createBackgroundTasks(
