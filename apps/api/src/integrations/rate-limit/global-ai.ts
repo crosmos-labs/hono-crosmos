@@ -21,9 +21,19 @@ import type { Env } from '../../bindings';
  * A KV hiccup must never block all search across the platform. Read-then-write
  * is non-atomic, so the count is approximate (±a few on the boundary) — fine for
  * a coarse safety ceiling.
+ *
+ * **Latency.** The counter READ gates the decision synchronously (edge-cached,
+ * fast), but the WRITE is pushed off the critical path via the optional `defer`
+ * (the request's `waitUntil`) — a KV write is ~350ms cross-region from the
+ * Smart-Placed worker, and search latency is the priority. The window still
+ * advances because every call schedules its write. Same stance as the per-org
+ * KvRateLimiter.
  */
 
 const GLOBAL_AI_KEY_PREFIX = 'rl:global-ai:';
+
+/** Schedules a fire-and-forget task (typically `executionCtx.waitUntil`). */
+export type DeferFn = (task: Promise<unknown>) => void;
 
 export interface GlobalAiThrottleOptions {
   /** Max AI fan-outs allowed account-wide per window. */
@@ -47,6 +57,7 @@ export interface GlobalAiThrottleResult {
 export async function checkGlobalAiThrottle(
   env: Env,
   opts: GlobalAiThrottleOptions,
+  defer?: DeferFn,
 ): Promise<GlobalAiThrottleResult> {
   const kv = env.API_KEY_CACHE;
   if (!kv) return { allowed: true, count: 0 };
@@ -59,9 +70,19 @@ export async function checkGlobalAiThrottle(
     const current = raw ? Number(raw) : 0;
     const next = current + 1;
     // Keep the key alive a little past the window so late requests still count.
-    await kv.put(key, String(next), {
-      expirationTtl: Math.max(60, opts.windowSeconds * 2),
-    });
+    // Defer the write off the critical path when a scheduler is supplied; only
+    // await it (to avoid losing the increment to teardown) when one isn't.
+    const write = kv
+      .put(key, String(next), { expirationTtl: Math.max(60, opts.windowSeconds * 2) })
+      .catch((err) =>
+        createLogger({ service: 'api', environment: env.ENVIRONMENT }).warn(
+          'ratelimit.global_ai_kv_failure',
+          { stage: 'global_ai_write', scope: 'global' },
+          err,
+        ),
+      );
+    if (defer) defer(write);
+    else await write;
     return { allowed: next <= opts.limit, count: next };
   } catch (err) {
     // Fail open: a KV hiccup must not block all search.

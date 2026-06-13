@@ -215,15 +215,15 @@ searchRoutes.openapi(
 
     // 2. Per-org plan rate limit.
     //
-    // FIX (deferred-write bypass): search is on the expensive AI-cost path, and
-    // deferring the counter write (for latency) lets M simultaneous searches all
-    // read the same pre-increment count and admit — bypassing the per-org cap.
-    // Here we DON'T pass `defer`, so the limiter AWAITS the increment before
-    // deciding, making the per-org cap accurate on this path. The added cost is
-    // ~one KV write (~350ms) — acceptable because (a) the per-org AI spend is
-    // what we're protecting and (b) the global-AI throttle below already caps
-    // aggregate load. Concurrency + global throttle still defer / are coarse.
-    const limiter = getRateLimiter(c.env);
+    // The counter WRITE is deferred (passes `defer`) so it stays off the
+    // critical path — a KV write is ~350ms cross-region from this Smart-Placed
+    // worker, and search latency is the priority. The reads (edge-cached, fast)
+    // still gate synchronously. Tradeoff: under high concurrency the per-org cap
+    // can admit a few extra requests at the boundary (the ±1-2 fuzz that the KV
+    // limiter design explicitly accepts, decisions.md §7); the coarse per-org
+    // RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
+    // global-AI throttle below is what actually bounds aggregate AI cost.
+    const limiter = getRateLimiter(c.env, defer);
     try {
       await logger.time('retrieval.stage_completed', {
         stage: 'plan_rate_limit',
@@ -328,7 +328,7 @@ searchRoutes.openapi(
       }, () => checkGlobalAiThrottle(c.env, {
         limit: GLOBAL_AI_RPM_CEILING,
         windowSeconds: GLOBAL_AI_WINDOW_SECONDS,
-      }));
+      }, defer));
       if (!globalAi.allowed) {
         logger.warn('retrieval.request_rejected', {
           stage: 'global_ai_throttle',
