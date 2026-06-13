@@ -30,3 +30,22 @@ Job-store/candidates/entity-detail scope defense-in-depth; unbounded string inpu
 
 ## Refuted (checked, not real)
 Polar webhook double-dispatch (every effect idempotent); OAuth callback DB-DoS / welcome-email spam (gated behind a real Google-signed id_token); OAuth error-leak as high (only standardized OAuth/jose text, no secrets/PII).
+
+---
+
+## Remediation status (shipped 2026-06-13, deployed to prod)
+Commits `b3e8dba` (foundations) → `dd27af9` (P0/P1/P2) → `b55d221` (DO limiter + canonical validation). Both workers deployed to production and verified live.
+
+**Done & verified in prod:**
+- Both P0s (membership invalidation; entity-vector re-upsert). Ingestion e2e re-tested: 3 entities / 1 memory / 2 edges, searchable; source delete removes the memory.
+- Per-IP limiter on all unauthenticated auth/OAuth routes — **Durable Object** backed (see below), verified precise (30/30→429 standard, 5/5→429 strict).
+- Canonical error envelope (`detail` always string + `code` + `request_id` + `fields`) across onError / 404 / validation (via shared `createApiApp()` factory) / HTTPException. JWT-oracle messages collapsed. Verified live.
+- 10MB body cap (413). Atomic space-quota + pending-jobs cap. Refresh-token atomic rotation + reuse detection. Owner-rank guard. Source/space delete vector purge. Daily retention cron. Billing monotonic guard. Pagination + COUNT (entities/graph/members). Defense-in-depth scoping (jobs/candidates/entity-detail). Generic OAuth errors. String-input caps.
+- Structured `auth.failed` logs, global `http.request` access log, metric emission sites — all wired.
+
+**Rate-limiter primitive — important finding.** KV is eventually consistent (read-after-write lag) so a KV counter **cannot bound a burst** — verified live (36 rapid requests, 0 limited). The experimental `[[unsafe.bindings]] type="ratelimit"` binding also did **not** enforce its `simple` limit under a named environment (returned `{success:true}` for all 37 requests). The working primitive is a **SQLite-backed Durable Object** (`RateLimiterDO`, one instance per `${bucket}:${ip}` key) — strongly consistent, enforces precisely. Note: the per-org KV plan limiter and the global-AI KV throttle share KV's burst weakness (coarse by design / accepted ±fuzz); migrate them to the DO pattern if precise per-org enforcement is ever needed.
+
+## Follow-ups (require account/dashboard action — not code)
+1. **Enable Analytics Engine** on the Cloudflare account (dashboard → Workers → Analytics Engine), then uncomment the 4 `analytics_engine_datasets` blocks in the two `wrangler.toml` files and redeploy. Until then, metrics `count()` calls no-op gracefully — **all signals are still captured as structured logs** (CF Workers Logs), so observability is functional; this only lights up the queryable counters.
+2. **Configure alerts** (per the Monitoring plan above) once metrics flow — or build them on the structured logs now (CF Logs → Logpush/alerts).
+3. The test org's (`divyansh`, id 1) monthly `daily_usage.tokens_ingested` was reset to 0 to run the ingestion e2e test — it was synthetic test data; left reset.
