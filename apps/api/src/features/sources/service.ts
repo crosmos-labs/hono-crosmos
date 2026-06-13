@@ -204,16 +204,79 @@ export async function countSourcesByOrg(
   return rows[0]?.c ?? 0;
 }
 
+export interface DeleteSourceResult {
+  deleted: boolean;
+  /**
+   * Integer ids of the memories removed by this delete. Their vectors must be
+   * purged from the external vector store (Vectorize) by the caller — the DB
+   * delete can't reach into the index. Entities are intentionally excluded:
+   * they are shared/deduplicated per space (resolved idempotently by name), so a
+   * single source delete does not remove them (mirrors the ingestion pipeline's
+   * `purgeSourceArtifacts`, which only deletes memory vectors).
+   */
+  memoryIds: number[];
+}
+
+/**
+ * Delete a source AND the memories it produced.
+ *
+ * IMPORTANT: `memories` has no FK to `sources`/`chunks`, so deleting the source
+ * row only cascades `sources → chunks → chunk_memories` — it would leave the
+ * memory rows (and their vectors) orphaned. Orphaned memory rows with no vector
+ * are worse than a pure storage leak: retrieval still loads them as candidates
+ * but they have no embedding. So we replicate the ingestion pipeline's
+ * `purgeSourceArtifacts` cleanup order: delete edges referencing those memories
+ * (edges.memory_id is ON DELETE SET NULL, so they'd otherwise be orphaned, not
+ * removed), delete the memories, then delete the source (its cascade clears the
+ * chunks + junction rows). The returned `memoryIds` are then purged from the
+ * external vector store by the caller.
+ */
 export async function deleteSource(
   db: Database,
   scope: TenantScope,
   sourceId: number,
-): Promise<boolean> {
+): Promise<DeleteSourceResult> {
+  // Resolve the source's memories via chunks → chunk_memories, scoped via
+  // `scopeSources` so a cross-tenant id can't enumerate/delete foreign rows.
+  const chunkRows = await db
+    .select({ id: chunks.id })
+    .from(chunks)
+    .innerJoin(sources, eq(sources.id, chunks.sourceId))
+    .where(and(scopeSources(scope), eq(sources.id, sourceId)));
+  const chunkIds = chunkRows.map((r) => r.id);
+
+  let memoryIds: number[] = [];
+  if (chunkIds.length > 0) {
+    const memRows = await db
+      .select({ memoryId: chunkMemories.memoryId })
+      .from(chunkMemories)
+      .where(inArray(chunkMemories.chunkId, chunkIds));
+    memoryIds = [...new Set(memRows.map((r) => r.memoryId))];
+  }
+
+  if (memoryIds.length > 0) {
+    // edges.memory_id is ON DELETE SET NULL — delete them explicitly (matches
+    // the pipeline) so deleting memories doesn't leave dangling edges.
+    await db.delete(edges).where(inArray(edges.memoryId, memoryIds));
+    // Scope the memory delete defensively to the source's org+space.
+    await db
+      .delete(memories)
+      .where(
+        and(
+          eq(memories.orgId, scope.orgId),
+          eq(memories.spaceId, scope.spaceId),
+          inArray(memories.id, memoryIds),
+        ),
+      );
+  }
+
   const rows = await db
     .delete(sources)
     .where(and(scopeSources(scope), eq(sources.id, sourceId)))
     .returning({ id: sources.id });
-  return rows.length > 0;
+  const deleted = rows.length > 0;
+  // If nothing was deleted (404/cross-tenant), don't report ids to purge.
+  return { deleted, memoryIds: deleted ? memoryIds : [] };
 }
 
 export async function setSourceVisibility(

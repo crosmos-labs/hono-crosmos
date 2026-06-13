@@ -51,6 +51,13 @@ dead_letter_queue = "ingestion-jobs-dev-dlq"
 [ai]
 binding = "AI"
 
+# Analytics Engine: ingestion metrics sink (outcome/latency/tokens). Created on
+# first write; queried/alerted via the Analytics Engine SQL API.
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_ingestion_dev"
+
 # Vectorize: vector storage (VECTOR_STORE=vectorize). Shared with the API worker.
 [[vectorize]]
 binding = "MEMORIES_INDEX"
@@ -93,6 +100,12 @@ VECTOR_STORE = "vectorize"
 # Workers AI binding (not inherited from top-level).
 [env.production.ai]
 binding = "AI"
+
+# Analytics Engine (prod ingestion metrics sink). Not inherited from top-level.
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[env.production.analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_ingestion"
 
 # Vectorize (prod indexes, shared with the API worker).
 [[env.production.vectorize]]

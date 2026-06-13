@@ -221,7 +221,16 @@ export async function resolveEntities(
     // the row and gets the vector upserted to the index after insert.
     const columnEmbedding = vectorStore.persistsInColumn ? emb : null;
     const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, columnEmbedding);
-    if (upserted.isNew && !vectorStore.persistsInColumn && emb) {
+    // Index-backed stores (vectorize): upsert the vector for EVERY resolved
+    // entity in this run, not only freshly-inserted ones. The row commits in
+    // autocommit above; if a prior run's vector upsert failed AFTER the row
+    // committed (Workers-AI/Vectorize 429/503 — the documented prod ceiling),
+    // `purgeSourceArtifacts` preserves the entity, so the retry sees
+    // `isNew=false` and would otherwise NEVER re-upsert — leaving the entity
+    // permanently invisible to ANN resolution. Vectorize upsert is idempotent,
+    // so re-upserting an existing vector is safe and cheap. The pg backend
+    // persists the vector in-column, so it's excluded here.
+    if (!vectorStore.persistsInColumn && emb) {
       await vectorStore.upsert('entities', [
         { id: upserted.entityId, vector: emb, orgId: scope.orgId, spaceId: scope.spaceId },
       ]);

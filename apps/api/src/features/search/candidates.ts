@@ -6,8 +6,8 @@
  */
 import { type Database, type Memory, type Entity, memories, entities, memoryEntities, chunkMemories, chunks, sources } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { scopeEntities, scopeMemories } from '../../lib/scope';
+import { and, asc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { scopeEntities, scopeMemories, sourceVisibilityClause } from '../../lib/scope';
 import type { RankedCandidate } from './types';
 
 export interface RetrievalCandidates {
@@ -87,17 +87,37 @@ export async function loadRetrievalCandidates(
 
 /**
  * Attach source text + source id to the top candidates. Resolves via
- * `chunk_memories → chunks → sources`, matching Python's citation path.
- * `org_id` scopes the join defensively. One source per memory (lowest source
- * id, then chunk sequence) keeps the response deterministic.
+ * `chunk_memories → chunks → sources`, matching Python's citation path. One
+ * source per memory (lowest source id, then chunk sequence) keeps the response
+ * deterministic.
+ *
+ * **Scoping (defense in depth).** Pass the full `TenantScope` so the source join
+ * is filtered by `(org_id, space_id)` AND the per-user `sourceVisibilityClause`
+ * — not org alone. The candidate memory ids are already visibility-scoped, but a
+ * memory can be cited by a source in another space or a private source the caller
+ * can't read; scoping the source side prevents that text from leaking into the
+ * `source` field. A bare `orgId: number` is still accepted (legacy callers) but
+ * only applies org scoping — prefer passing the scope.
  */
 export async function attachSourceText(
   db: Database,
-  orgId: number,
+  scopeOrOrgId: TenantScope | number,
   candidateLookup: Map<number, RankedCandidate>,
 ): Promise<void> {
   const ids = [...candidateLookup.keys()];
   if (ids.length === 0) return;
+
+  // Build the source-side scope conditions from whichever form we were given.
+  const sourceConditions: (SQL | undefined)[] = [];
+  if (typeof scopeOrOrgId === 'number') {
+    sourceConditions.push(eq(sources.orgId, scopeOrOrgId));
+  } else {
+    sourceConditions.push(
+      eq(sources.orgId, scopeOrOrgId.orgId),
+      eq(sources.spaceId, scopeOrOrgId.spaceId),
+      sourceVisibilityClause(scopeOrOrgId),
+    );
+  }
 
   const rows = await db
     .select({
@@ -108,7 +128,7 @@ export async function attachSourceText(
     .from(chunkMemories)
     .innerJoin(chunks, eq(chunks.id, chunkMemories.chunkId))
     .innerJoin(sources, eq(sources.id, chunks.sourceId))
-    .where(and(eq(sources.orgId, orgId), inArray(chunkMemories.memoryId, ids)))
+    .where(and(...sourceConditions, inArray(chunkMemories.memoryId, ids)))
     .orderBy(asc(chunkMemories.memoryId), asc(sources.id), asc(chunks.sequence));
 
   const seen = new Set<number>();

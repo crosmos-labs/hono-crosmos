@@ -18,10 +18,12 @@ import {
   UserSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { perIpRateLimit } from '../../integrations/rate-limit/ip';
 import { waitUntilLogged } from '../../lib/runtime';
 import { invalidateApiKeyCacheByHash, requireAuth } from './middleware';
 import { requirePrincipal } from './principal';
@@ -40,12 +42,12 @@ import {
   resolveOrgIdFromUuid,
 } from '../orgs/service';
 import {
-  isRefreshTokenRevoked,
   revokeRefreshToken,
+  revokeRefreshTokenIfActive,
 } from './refresh-tokens';
 import { getUserById, updateUserName } from './users';
 
-export const authRoutes = new OpenAPIHono<HonoEnv>();
+export const authRoutes = createApiApp();
 
 const ErrorBody = z
   .object({ detail: z.string() })
@@ -345,6 +347,9 @@ authRoutes.openapi(
     path: '/refresh',
     tags: ['auth'],
     summary: 'Exchange refresh token for new pair',
+    middleware: [
+      perIpRateLimit({ bucket: 'auth-refresh', tier: 'standard' }),
+    ] as const,
     request: {
       body: {
         content: { 'application/json': { schema: RefreshRequestSchema } },
@@ -372,34 +377,34 @@ authRoutes.openapi(
 
     const db = getDb(c);
 
-    if (await isRefreshTokenRevoked(db, claims.jti)) {
-      throw new HTTPException(401, { message: 'Refresh token revoked' });
-    }
-
     const user = await getUserById(db, claims.userId);
     if (!user) throw new HTTPException(401, { message: 'User not found' });
     if (!user.isActive) {
       throw new HTTPException(401, { message: 'User account inactive' });
     }
 
-    // Rotate refresh token: revoke the one we just used.
-    waitUntilLogged(
-      c,
+    // Rotate refresh token ATOMICALLY before minting the new pair. The
+    // conditional revoke is a single race-free check-and-set: it succeeds only
+    // if this jti was not already revoked. Two concurrent /refresh calls with
+    // the same token therefore cannot both pass — exactly one wins, the other
+    // observes the already-revoked row and is rejected as a reuse attempt
+    // (prevents forking a token family into two live lineages).
+    const rotated = await revokeRefreshTokenIfActive(db, {
+      jti: claims.jti,
+      userId: claims.userId,
+      expiresAt: claims.expiresAt,
+    });
+    if (!rotated) {
       createLogger({
         service: 'api',
         environment: c.env.ENVIRONMENT,
-        base: {
-          user_id: claims.userId,
-        },
-      }),
-      'auth.refresh_revoke_failed',
-      revokeRefreshToken(db, {
-        jti: claims.jti,
-        userId: claims.userId,
-        expiresAt: claims.expiresAt,
-      }),
-      { stage: 'refresh_revoke' },
-    );
+        base: { user_id: claims.userId },
+      }).warn('auth.refresh_reuse_detected', {
+        reason: 'refresh_token_reuse',
+        scope: 'auth',
+      });
+      throw new HTTPException(401, { message: 'Refresh token revoked' });
+    }
 
     let membership = null;
     if (active_org_id) {
@@ -436,6 +441,9 @@ authRoutes.openapi(
     path: '/logout',
     tags: ['auth'],
     summary: 'Revoke refresh token (idempotent)',
+    middleware: [
+      perIpRateLimit({ bucket: 'auth-logout', tier: 'standard' }),
+    ] as const,
     request: {
       body: {
         content: { 'application/json': { schema: LogoutRequestSchema } },

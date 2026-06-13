@@ -6,26 +6,28 @@ import {
 } from './schemas';
 import type { MemorySpace } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
+import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { invalidateSpace } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
-import { checkCountQuota, QuotaExceededError } from '../orgs/entitlements';
+import { getEntitlements } from '../orgs/entitlements';
 import { getOrganizationByIdOrThrow } from '../orgs/service';
 import {
-  countSpaces,
-  createSpace,
+  createSpaceAtomic,
   deleteSpace,
   getSpaceByUuid,
   listSpaces,
+  SPACE_QUOTA_EXCEEDED,
 } from './service';
 
-export const spaceRoutes = new OpenAPIHono<HonoEnv>();
+export const spaceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SpaceErrorBody');
 
@@ -98,33 +100,38 @@ spaceRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
 
-    const existingCount = await countSpaces(db, orgId);
-    try {
-      await checkCountQuota(db, orgId, 'max_memory_spaces', existingCount);
-    } catch (err) {
-      if (err instanceof QuotaExceededError) {
-        return c.json(
-          {
-            detail: {
-              error: 'quota_exceeded' as const,
-              key: err.key,
-              limit: err.limit,
-              used: err.used,
-            },
-          },
-          429,
-        );
-      }
-      throw err;
-    }
+    // Resolve the plan cap, then enforce it ATOMICALLY inside the insert (a
+    // count-then-create was a TOCTOU race: concurrent creates all read the same
+    // pre-insert count and overran the cap). `createSpaceAtomic` counts + inserts
+    // under an org row lock and returns the sentinel when at/over the cap.
+    const ent = await getEntitlements(db, orgId);
+    const rawLimit = ent.max_memory_spaces;
+    const limit = typeof rawLimit === 'number' ? rawLimit : -1;
 
-    const space = await createSpace(db, {
+    const space = await createSpaceAtomic(db, {
       userId: c.var.userId!,
       orgId,
       name: body.name,
       description: body.description ?? null,
       meta: body.meta ?? null,
+      limit,
     });
+    if (space === SPACE_QUOTA_EXCEEDED) {
+      // Structured quota body (schema-backed `QuotaExceededBodySchema`), kept
+      // consistent with the sibling source/conversation quota responses.
+      // `used === limit` since the cap is enforced at the boundary.
+      return c.json(
+        {
+          detail: {
+            error: 'quota_exceeded' as const,
+            key: 'max_memory_spaces',
+            limit,
+            used: limit,
+          },
+        },
+        429,
+      );
+    }
     return c.json(await toResponse(c, space), 201);
   },
 );
@@ -229,25 +236,79 @@ spaceRoutes.openapi(
 
     await getJobStore(db).cancelJobsForSpace(space.id);
 
-    const deleted = await deleteSpace(db, { orgId: space.orgId, spaceId: space.id });
+    const { deleted, memoryIds, entityIds } = await deleteSpace(db, {
+      orgId: space.orgId,
+      spaceId: space.id,
+    });
     if (!deleted) {
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
+
+    const logger = createLogger({
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      base: {
+        org_id: space.orgId,
+        space_id: space.id,
+      },
+    });
+
     // Drop the cached gate entry — this space no longer exists.
     waitUntilLogged(
       c,
-      createLogger({
-        service: 'api',
-        environment: c.env.ENVIRONMENT,
-        base: {
-          org_id: space.orgId,
-          space_id: space.id,
-        },
-      }),
+      logger,
       'gate_cache.space_invalidation_failed',
       invalidateSpace(c.env, space_uuid),
       { stage: 'gate_cache_invalidation' },
     );
+
+    // The DB cascade removed all of the space's memories + entities, but cannot
+    // reach the external vector index (Vectorize). Purge their vectors best-
+    // effort, off the response path, in bounded chunks. No-op when vectors live
+    // in the pg column (the cascade already removed them).
+    const vectorStore = getVectorStore(c.env, db);
+    if (!vectorStore.persistsInColumn) {
+      logger.info('spaces.vector_purge_scheduled', {
+        deleted_count: memoryIds.length + entityIds.length,
+        vector_count: memoryIds.length + entityIds.length,
+      });
+      if (memoryIds.length > 0) {
+        waitUntilLogged(
+          c,
+          logger,
+          'spaces.vector_purge_failed',
+          deleteVectorsChunked(vectorStore, 'memories', memoryIds),
+          { scope: 'memories', vector_count: memoryIds.length },
+        );
+      }
+      if (entityIds.length > 0) {
+        waitUntilLogged(
+          c,
+          logger,
+          'spaces.vector_purge_failed',
+          deleteVectorsChunked(vectorStore, 'entities', entityIds),
+          { scope: 'entities', vector_count: entityIds.length },
+        );
+      }
+    }
     return c.body(null, 204);
   },
 );
+
+/** Max vector ids per `deleteByIds` call (bounds the upstream request size). */
+const VECTOR_DELETE_CHUNK = 1000;
+
+/**
+ * Purge vectors from the external store in bounded chunks so a large space
+ * delete doesn't issue one unbounded request. Best-effort: the caller wraps this
+ * in `waitUntilLogged`, so a rejection is logged rather than failing the request.
+ */
+async function deleteVectorsChunked(
+  vectorStore: VectorStore,
+  collection: 'memories' | 'entities',
+  ids: number[],
+): Promise<void> {
+  for (let i = 0; i < ids.length; i += VECTOR_DELETE_CHUNK) {
+    await vectorStore.deleteByIds(collection, ids.slice(i, i + VECTOR_DELETE_CHUNK));
+  }
+}

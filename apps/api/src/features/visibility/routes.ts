@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -43,7 +44,7 @@ import {
   updateVisibilityGroup,
 } from './service';
 
-export const visibilityRoutes = new OpenAPIHono<HonoEnv>();
+export const visibilityRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.unknown() }).openapi('VisibilityErrorBody');
 

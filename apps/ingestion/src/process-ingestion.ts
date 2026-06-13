@@ -10,7 +10,7 @@
  * completed / partial / failed / cancelled.
  */
 import type { Database } from '@crosmos/db';
-import { durationMs, type Logger } from '@crosmos/observability';
+import { createMetrics, durationMs, type Logger } from '@crosmos/observability';
 import type {
   IngestionJobMessage,
   IngestionJobResult,
@@ -37,6 +37,7 @@ import {
   getSourceExtractionStatus,
   markSourcesFailed,
   markSourcesStatus,
+  markUnprocessedSourcesCancelled,
 } from './source-status';
 import { recordIngestionTokens } from './usage';
 
@@ -62,6 +63,13 @@ export interface ProcessIngestionDeps {
   embedder: Embedder;
   vectorStore: VectorStore;
   logger: Logger;
+  /**
+   * Analytics Engine dataset for outcome metrics. Optional — unbound in local
+   * dev / tests, where `createMetrics` degrades to a no-op.
+   */
+  analytics?: AnalyticsEngineDataset;
+  /** Deployment environment, used as a metrics tag. */
+  environment?: string;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -85,6 +93,31 @@ function failureFields(err: unknown): {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Emit the terminal `ingestion_outcome` metric. Best-effort: `createMetrics`
+ * is a no-op when ANALYTICS is unbound and never throws, so this never affects
+ * control flow.
+ */
+function emitOutcomeMetric(
+  deps: ProcessIngestionDeps,
+  outcome: {
+    finalStatus: IngestionJobStatus;
+    durationMs: number;
+    failedSourceCount: number;
+    tokenCount: number;
+    errorCategory?: string;
+  },
+): void {
+  createMetrics(deps.analytics, {
+    service: 'ingestion',
+    environment: deps.environment,
+  }).count('ingestion_outcome', {
+    tags: [outcome.finalStatus, outcome.errorCategory],
+    values: [outcome.durationMs, outcome.failedSourceCount, outcome.tokenCount],
+    index: 'ingestion_outcome',
+  });
 }
 
 export async function processIngestion(
@@ -119,23 +152,74 @@ export async function processIngestion(
   const failedSourceIds: number[] = [];
   const sourceErrors: Record<string, string> = {};
   const results: IngestResult[] = [];
+  // Representative error category for the rolled-up outcome metric. An external
+  // (LLM/embedder) failure dominates over an internal one for alerting.
+  let rolledUpErrorCategory: 'external_service' | 'internal' | undefined;
 
   for (let i = 0; i < msg.source_ids.length; i++) {
     const sourceId = msg.source_ids[i]!;
 
     // Cancellation check between sources
     if (await isJobCancelled(db, msg.job_id)) {
+      const remaining = msg.source_ids.slice(i);
       logger.info('ingestion.job_cancelled_mid_run', {
         completed_source_count: i,
+        cancelled_count: remaining.length,
         source_count: msg.source_ids.length,
       });
+
+      // Account for the LLM/embedder usage already burned by completed sources
+      // BEFORE bailing out — skipping this leaks free quota on every cancel.
+      const cancelledTokens = llm.totalTokens + embedder.totalTokens;
+      if (cancelledTokens > 0) {
+        try {
+          await recordIngestionTokens(db, scope, cancelledTokens);
+        } catch (err) {
+          logger.warn('ingestion.record_tokens_failed', {}, err);
+        }
+      }
+
+      // Drive the still-non-terminal (unprocessed) sources to a TERMINAL state
+      // so source-status reads and monitoring don't show them stuck `pending`
+      // forever. The helper only transitions `pending`/`processing` rows, so a
+      // source a PRIOR run already completed keeps its real status. There is no
+      // `cancelled` value in the extraction-status enum, so it uses the closest
+      // terminal state (`failed`) plus a reason in `meta`.
+      if (remaining.length > 0) {
+        try {
+          await markUnprocessedSourcesCancelled(
+            db,
+            scope,
+            remaining,
+            'Ingestion job cancelled before this source was processed',
+          );
+        } catch (err) {
+          logger.warn('ingestion.cancel_mark_sources_failed', {}, err);
+        }
+      }
+
+      emitOutcomeMetric(deps, {
+        finalStatus: 'cancelled',
+        durationMs: durationMs(jobStart),
+        failedSourceCount: remaining.length,
+        tokenCount: cancelledTokens,
+      });
+
       // We owned the job; cancellation is a terminal outcome for this delivery.
       return 'processed';
     }
 
-    // Idempotency gate 2 — source already past pending → skip
+    // Idempotency gate 2 — only skip sources that reached a TERMINAL state.
+    // Crucially, `processing` is NOT terminal: it marks a source left mid-flight
+    // by a previous run that died (isolate eviction) and was reclaimed here via
+    // the job lease. The old code skipped it, orphaning the source forever — so
+    // we re-process it instead. `ingestSource` purges any partial artifacts up
+    // front, so re-running is safe (no duplicate memories/vectors). The job-level
+    // lease guarantees only one live run owns this job, and the LLM/embedder
+    // timeouts make a wedged prior run resolve well before the lease expires, so
+    // we aren't racing a concurrent processor.
     const sourceStatus = await getSourceExtractionStatus(db, sourceId);
-    if (sourceStatus !== 'pending') {
+    if (sourceStatus !== 'pending' && sourceStatus !== 'processing') {
       logger.info('ingestion.source_already_processed', {
         source_id: sourceId,
         status: sourceStatus,
@@ -199,11 +283,31 @@ export async function processIngestion(
     } else {
       const message =
         lastErr instanceof Error ? lastErr.message : String(lastErr);
+      const fields = failureFields(lastErr);
       sourceLogger.error('ingestion.source_failed', {
         duration_ms: durationMs(sourceStart),
         error_message: message,
-        ...failureFields(lastErr),
+        ...fields,
       }, lastErr);
+      // An external (LLM/embedder) failure dominates for outcome alerting.
+      if (fields.error_category === 'external_service') {
+        rolledUpErrorCategory = 'external_service';
+      } else if (rolledUpErrorCategory === undefined) {
+        rolledUpErrorCategory = 'internal';
+      }
+      // Lightweight AI-dependency error metric at this clean catch site.
+      if (
+        lastErr instanceof LLMRequestError ||
+        lastErr instanceof EmbeddingRequestError
+      ) {
+        createMetrics(deps.analytics, {
+          service: 'ingestion',
+          environment: deps.environment,
+        }).count('ingestion_ai_error', {
+          tags: [fields.dependency, String(lastErr.status), lastErr.retryable],
+          index: 'ingestion_ai_error',
+        });
+      }
       sourceErrors[String(sourceId)] = message;
       await markSourcesFailed(db, scope, [sourceId], message);
       failedSourceIds.push(sourceId);
@@ -269,6 +373,13 @@ export async function processIngestion(
     entity_count: entityCount,
     edge_count: edgeCount,
     token_count: totalTokens,
+  });
+  emitOutcomeMetric(deps, {
+    finalStatus,
+    durationMs: durationMs(jobStart),
+    failedSourceCount: failed,
+    tokenCount: totalTokens,
+    errorCategory: failed > 0 ? rolledUpErrorCategory : undefined,
   });
   return 'processed';
 }

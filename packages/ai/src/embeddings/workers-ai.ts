@@ -16,6 +16,27 @@ import { EmbeddingRequestError } from './openai';
 const MODEL = '@cf/baai/bge-m3';
 const DIMENSIONS = 1024;
 
+/**
+ * Bound on a single embedding call. The `AI` binding's `run()` doesn't accept
+ * an AbortSignal, so we race it against a timer — on timeout we stop waiting
+ * (the underlying call may finish in the background, harmlessly) and throw a
+ * retryable error rather than letting a stuck call wedge the ingestion job.
+ * Mirrors the LLM client's timeout; defense-in-depth for the embedder path.
+ */
+const EMBED_REQUEST_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new EmbeddingRequestError(`${label} timed out after ${ms}ms`, 504)),
+        ms,
+      ),
+    ),
+  ]);
+}
+
 export interface WorkersAiEmbedderConfig {
   /** The `AI` binding from the Worker env (`env.AI`). */
   ai: Ai;
@@ -52,13 +73,18 @@ export class WorkersAiEmbedder implements Embedder {
     let output: BgeEmbeddingOutput;
     try {
       // `Ai.run` is heavily overloaded in workers-types; cast the result to the
-      // documented bge-m3 sync output shape (`{ shape, data }`).
-      output = (await this.config.ai.run(MODEL, {
-        text: texts,
-      })) as unknown as BgeEmbeddingOutput;
+      // documented bge-m3 sync output shape (`{ shape, data }`). Raced against a
+      // timeout so a stuck call can't wedge the job (see withTimeout).
+      output = (await withTimeout(
+        this.config.ai.run(MODEL, { text: texts }),
+        EMBED_REQUEST_TIMEOUT_MS,
+        `Workers AI embeddings (${MODEL})`,
+      )) as unknown as BgeEmbeddingOutput;
     } catch (err) {
-      // Surface as the same error type the OpenAI adapter throws so ret/ logging
-      // logic upstream is identical. 503 = retryable per `EmbeddingRequestError`.
+      // Already-typed errors (e.g. the timeout, status 504) pass through so we
+      // don't relabel them; everything else surfaces as the same error type the
+      // OpenAI adapter throws. 503 = retryable per `EmbeddingRequestError`.
+      if (err instanceof EmbeddingRequestError) throw err;
       throw new EmbeddingRequestError(
         `Workers AI embeddings (${MODEL}) failed: ${
           err instanceof Error ? err.message : String(err)

@@ -27,6 +27,13 @@ export interface Env {
   // Vectorize indexes (used when VECTOR_STORE=vectorize).
   MEMORIES_INDEX: VectorizeIndex;
   ENTITIES_INDEX: VectorizeIndex;
+  // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
+  // local dev / tests, where createMetrics() degrades to a no-op.
+  ANALYTICS?: AnalyticsEngineDataset;
+  // Durable-Object rate limiter (class RateLimiterDO) for per-IP limits on
+  // pre-org-context auth/OAuth routes (see integrations/rate-limit/ip.ts).
+  // Optional: unbound in local dev, where the limiter fails open.
+  RATE_LIMITER?: DurableObjectNamespace;
 
   // Vars
   ENVIRONMENT: 'development' | 'production';
@@ -51,15 +58,22 @@ export interface Env {
   BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
   // Provider selection. Defaults: workers-ai / workers-ai / vectorize.
-  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai';
+  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
   RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
   VECTOR_STORE?: 'vectorize' | 'pg';
+  // Deployment vector-space dimension (= Vectorize index dimension). Default
+  // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small (indexes
+  // must be recreated at that dimension). Must match the ingestion worker.
+  EMBEDDING_DIMENSIONS?: string;
   // Only needed for the non-default (fallback) providers.
   OPENAI_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it
   // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
   RETRIEVAL_RERANKER_ENABLED?: string;
+  // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
+  ADMIN_TOOLS?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).

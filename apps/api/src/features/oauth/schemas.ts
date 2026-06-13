@@ -12,7 +12,7 @@ export const OAuthProvidersSchema = z
   .openapi('OAuthProviders');
 
 export const OAuthAuthorizeQuerySchema = z.object({
-  redirect_uri: z.string().url(),
+  redirect_uri: z.string().url().max(2048),
 });
 
 export const OAuthAuthorizeResponseSchema = z
@@ -24,8 +24,9 @@ export const OAuthAuthorizeResponseSchema = z
 
 export const OAuthCallbackRequestSchema = z
   .object({
-    code: z.string(),
-    state: z.string(),
-    redirect_uri: z.string().url(),
+    // Opaque provider authorization code and signed state JWT; capped to bound abuse.
+    code: z.string().min(1).max(2048),
+    state: z.string().min(1).max(2048),
+    redirect_uri: z.string().url().max(2048),
   })
   .openapi('OAuthCallbackRequest');

@@ -15,6 +15,10 @@ export interface IngestionQueueConsumerDeps {
   createEmbedder(): Embedder;
   createVectorStore(): VectorStore;
   nowMs(): number;
+  /** Analytics Engine dataset for outcome metrics (optional / no-op if unset). */
+  analytics?: AnalyticsEngineDataset;
+  /** Deployment environment, used as a metrics tag. */
+  environment?: string;
 }
 
 /**
@@ -57,6 +61,8 @@ export async function handleIngestionDelivery(
       embedder,
       vectorStore,
       logger,
+      analytics: deps.analytics,
+      environment: deps.environment,
     });
 
     // The queue is the durable backstop behind the direct RPC fast path.

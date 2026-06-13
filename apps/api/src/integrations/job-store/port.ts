@@ -42,11 +42,36 @@ export interface JobStore {
   }): Promise<void>;
 
   /**
+   * Like `create`, but ATOMICALLY enforces the per-user pending cap: the row is
+   * inserted only if the user currently has fewer than `maxActive`
+   * pending+processing jobs, evaluated in the same statement. Returns `true` on
+   * insert, `false` when the cap blocked it (no row written). This closes the
+   * count-then-enqueue TOCTOU race where concurrent submits all pass a stale
+   * count. `maxActive < 0` means unlimited.
+   */
+  createWithActiveCap(
+    input: {
+      jobId: string;
+      orgId: number;
+      spaceId: number;
+      userId: number;
+      sourceIds: number[];
+    },
+    maxActive: number,
+  ): Promise<boolean>;
+
+  /**
    * Fetch by id. If `userId` is provided, enforces ownership — returns `null`
    * for cross-user reads (matches Python so `GET /jobs/{job_id}` 404s instead
-   * of 403, avoiding existence leaks).
+   * of 403, avoiding existence leaks). If `orgId` is provided, ALSO enforces
+   * the active org: a user who belongs to multiple orgs can't read a job from a
+   * non-active org. `orgId` is optional so existing callers compile unchanged;
+   * callers that have the active org in scope should pass it.
    */
-  get(jobId: string, opts?: { userId?: number }): Promise<JobRow | null>;
+  get(
+    jobId: string,
+    opts?: { userId?: number; orgId?: number },
+  ): Promise<JobRow | null>;
 
   updateStatus(
     jobId: string,

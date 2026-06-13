@@ -63,3 +63,33 @@ export async function markSourcesFailed(
     .set(values)
     .where(and(scopeSources(scope), inArray(sources.id, sourceIds)));
 }
+
+/**
+ * Drive sources to a terminal `failed` state ONLY if they're still non-terminal
+ * (`pending` or `processing`). Used when a job is cancelled mid-run to settle
+ * its un-processed sources without clobbering ones a prior run already finished
+ * (`completed`/`failed`). There's no `cancelled` value in the extraction-status
+ * enum, so `failed` + a reason in `meta` is the closest terminal state.
+ */
+export async function markUnprocessedSourcesCancelled(
+  db: Database,
+  scope: TenantScope,
+  sourceIds: number[],
+  reason: string,
+): Promise<void> {
+  if (sourceIds.length === 0) return;
+  await db
+    .update(sources)
+    .set({
+      extractionStatus: 'failed',
+      updatedAt: new Date(),
+      meta: sql`coalesce(${sources.meta}, '{}'::jsonb) || ${JSON.stringify({ error_message: reason, cancelled: true })}::jsonb`,
+    })
+    .where(
+      and(
+        scopeSources(scope),
+        inArray(sources.id, sourceIds),
+        inArray(sources.extractionStatus, ['pending', 'processing']),
+      ),
+    );
+}

@@ -78,6 +78,23 @@ export const RETRIEVAL_USER_COUNTER_TTL_SECONDS = 30;
 export const CANDIDATE_POOL = 50;
 
 /**
+ * Account-wide ceiling on AI fan-out (embeddings + reranker) per minute, across
+ * ALL orgs. This is a NOISY-NEIGHBOUR safety ceiling, not a per-user/per-org
+ * limit — those are the plan rate limit + concurrency cap. It exists because the
+ * shared Cloudflare Workers AI quota is account-global: one org bursting can
+ * 429/503 every other tenant (see memory: retrieval ceiling = Workers AI). Sized
+ * generously so it only trips on genuine aggregate overload, well above normal
+ * peak. The global throttle fails OPEN — a KV hiccup must never block all search.
+ */
+export const GLOBAL_AI_RPM_CEILING = 3000;
+
+/** Window length (seconds) for the global AI throttle's fixed window. */
+export const GLOBAL_AI_WINDOW_SECONDS = 60;
+
+/** `Retry-After` (seconds) returned when the global AI ceiling is hit. */
+export const GLOBAL_AI_RETRY_AFTER_SECONDS = 5;
+
+/**
  * Whether the cross-encoder reranker is constructed for retrieval. Mirrors
  * Python's `settings.retrieval_reranker_enabled` (env `RETRIEVAL_RERANKER_ENABLED`,
  * default on). Anything other than the literal string `"false"` keeps it on.

@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger, durationMs } from '@crosmos/observability';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -21,7 +22,7 @@ import {
 } from './schemas';
 import { formatMessages } from './sessions';
 
-export const conversationRoutes = new OpenAPIHono<HonoEnv>();
+export const conversationRoutes = createApiApp();
 
 const ErrorBody = z
   .object({ detail: z.string() })

@@ -6,6 +6,18 @@ import type {
 } from './port';
 
 /**
+ * Hard ceiling on a single chat-completion request. Without this, a provider
+ * that accepts the connection but never responds (observed with OpenRouter
+ * under concurrent load) wedges the `fetch` forever — the call never resolves
+ * or rejects, so the source never retries or fails and the whole ingestion job
+ * freezes until the isolate is evicted. A bounded timeout turns that hang into
+ * a retryable error (status 504 → `LLMRequestError.retryable`), so the existing
+ * per-source retry + queue backstop can recover. Generous (extraction is
+ * normally ~1–2s) but finite.
+ */
+const LLM_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
  * Shared implementation for any provider that speaks the OpenAI
  * `/chat/completions` wire format. OpenAI itself and OpenRouter both do —
  * they differ only in `baseUrl`, `Authorization` header, default model id,
@@ -101,15 +113,35 @@ export class OpenAICompatLLM implements LLM {
   }
 
   private async request(body: unknown): Promise<ChatCompletionResponse> {
-    const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json',
-        ...this.config.extraHeaders,
-      },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+          ...this.config.extraHeaders,
+        },
+        body: JSON.stringify(body),
+        // Bound the request so a hung connection can't wedge the job. See
+        // LLM_REQUEST_TIMEOUT_MS.
+        signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Timeout (AbortSignal.timeout → TimeoutError) and transient network
+      // failures both surface here. Map to a retryable LLMRequestError (504)
+      // so the per-source retry + queue backstop take over instead of the call
+      // hanging or failing non-retryably.
+      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+      throw new LLMRequestError(
+        `${this.config.providerLabel} request ${
+          isTimeout
+            ? `timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`
+            : `failed: ${err instanceof Error ? err.message : String(err)}`
+        }`,
+        504,
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new LLMRequestError(

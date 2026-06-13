@@ -104,6 +104,39 @@ export async function isJobCancelled(
   return (await getJobStatus(db, jobId)) === 'cancelled';
 }
 
+/**
+ * Conditionally reset a wedged job back to `pending` so the queue backstop can
+ * re-claim it promptly, instead of waiting out the full lease (`JOB_LEASE_MS`).
+ *
+ * Used on the RPC fast-path failure: if the background run threw AFTER claiming
+ * the job, the row sits in `processing` and recovery would otherwise depend on
+ * the lease lapsing. This is a guarded CAS — it only flips a row that is STILL
+ * `processing` (i.e. we presumably still own the claim). It will NOT clobber a
+ * job another trigger has already driven terminal or re-claimed-and-finished,
+ * because those rows are no longer `processing` (terminal) — and a job the
+ * backstop legitimately re-claimed mid-flight only happens after the lease has
+ * expired, by which point this RPC run is long gone. `started_at` is cleared so
+ * the very next claim sees a `pending` row.
+ *
+ * Returns true if a row was reset.
+ */
+export async function resetJobForRetry(
+  db: Database,
+  jobId: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(ingestionJobs)
+    .set({ status: 'pending', startedAt: null, currentStage: null })
+    .where(
+      and(
+        eq(ingestionJobs.id, jobId),
+        eq(ingestionJobs.status, 'processing'),
+      ),
+    )
+    .returning({ id: ingestionJobs.id });
+  return rows.length > 0;
+}
+
 export async function updateJobStatus(
   db: Database,
   jobId: string,

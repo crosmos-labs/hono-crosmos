@@ -1,6 +1,7 @@
 import { memorySpaces, sources, type Source } from '@crosmos/db';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -8,12 +9,14 @@ import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
 import { getRateLimiter } from '../../integrations/rate-limit';
+import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { waitUntilLogged } from '../../lib/runtime';
 import type { TenantScope } from '../../lib/scope';
 import { UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from './gates';
+import { MAX_PENDING_JOBS_PER_USER } from './constants';
 import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
@@ -36,7 +39,7 @@ import {
 } from './service';
 import { resolveReadVisibility } from '../visibility/service';
 
-export const sourceRoutes = new OpenAPIHono<HonoEnv>();
+export const sourceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SourceErrorBody');
 
@@ -193,18 +196,49 @@ sourceRoutes.openapi(
 
     const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
-    await logger.time('ingestion.enqueue_stage_completed', {
+    // Enforce the per-user pending cap ATOMICALLY at job creation — the gate's
+    // pre-check in `preflight` is a fast advisory reject, but it's a TOCTOU race
+    // under concurrency, so the guarded insert here is the authoritative cap.
+    const jobCreated = await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'job_create',
       space_id: space.id,
       error_category: 'internal',
       dependency: 'database',
-    }, () => jobStore.create({
+    }, () => jobStore.createWithActiveCap({
       jobId,
       orgId: space.orgId,
       spaceId: space.id,
       userId,
       sourceIds: created.map((s) => s.id),
-    }));
+    }, MAX_PENDING_JOBS_PER_USER));
+    if (!jobCreated) {
+      // Lost the cap race: the guarded insert wrote no job. Roll back the sources
+      // we just inserted so they don't dangle without a job, then 429 (same shape
+      // as the advisory gate's pending-cap rejection).
+      await db
+        .delete(sources)
+        .where(
+          and(
+            eq(sources.orgId, space.orgId),
+            eq(sources.spaceId, space.id),
+            inArray(sources.id, created.map((s) => s.id)),
+          ),
+        );
+      logger.warn('ingestion.request_rejected', {
+        stage: 'pending_cap',
+        space_id: space.id,
+        status_code: 429,
+      });
+      throw new HTTPException(429, {
+        res: new Response(
+          JSON.stringify({
+            detail:
+              'Too many pending jobs. Wait for existing jobs to complete.',
+          }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        ),
+      });
+    }
 
     const enqueuedAtMs = Date.now();
     const jobMessage = {
@@ -238,6 +272,10 @@ sourceRoutes.openapi(
       space_id: space.id,
       source_count: created.length,
       duration_ms: durationMs(enqueueStart),
+      // Tie the API request_id (in `logger`'s base) to the ingestion
+      // correlation_id so a trace spans the producer hop → the worker run.
+      job_id: jobId,
+      correlation_id: correlationId,
     });
 
     return c.json(
@@ -347,6 +385,7 @@ sourceRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const requestId = c.var.requestId ?? crypto.randomUUID();
     const spaceId = await resolveSpaceIdForCaller(c, space_id);
 
     const visibleUserIds = await resolveReadVisibility(db, { orgId, userId });
@@ -362,11 +401,34 @@ sourceRoutes.openapi(
       spaceId: source.spaceId,
       userId,
     };
-    const deleted = await deleteSource(db, scope, source.id);
+    const { deleted, memoryIds } = await deleteSource(db, scope, source.id);
     if (!deleted) {
       throw new HTTPException(404, {
         message: `Source ${source_uuid} not found`,
       });
+    }
+
+    // The DB cascade removed the source's memories but cannot reach the external
+    // vector index (Vectorize). Purge their vectors best-effort, off the response
+    // path — orphaned vectors otherwise leak storage and decay ANN recall. No-op
+    // when vectors live in the pg column (cascade already handled them).
+    const vectorStore = getVectorStore(c.env, db);
+    if (!vectorStore.persistsInColumn && memoryIds.length > 0) {
+      const logger = createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { request_id: requestId, org_id: orgId, source_id: source.id },
+      });
+      logger.info('sources.vector_purge_scheduled', {
+        deleted_count: memoryIds.length,
+      });
+      waitUntilLogged(
+        c,
+        logger,
+        'sources.vector_purge_failed',
+        deleteVectorsChunked(vectorStore, 'memories', memoryIds),
+        { vector_count: memoryIds.length },
+      );
     }
     return c.body(null, 204);
   },
@@ -527,6 +589,24 @@ async function loadSourceForCaller(
     });
   }
   return row;
+}
+
+/** Max vector ids per `deleteByIds` call (bounds the upstream request size). */
+const VECTOR_DELETE_CHUNK = 1000;
+
+/**
+ * Purge vectors from the external store in bounded chunks so a large delete
+ * doesn't issue one unbounded request. Best-effort: the caller wraps this in
+ * `waitUntilLogged`, so a rejection is logged rather than failing the request.
+ */
+async function deleteVectorsChunked(
+  vectorStore: VectorStore,
+  collection: 'memories' | 'entities',
+  ids: number[],
+): Promise<void> {
+  for (let i = 0; i < ids.length; i += VECTOR_DELETE_CHUNK) {
+    await vectorStore.deleteByIds(collection, ids.slice(i, i + VECTOR_DELETE_CHUNK));
+  }
 }
 
 async function resolveSpaceIdForCaller(

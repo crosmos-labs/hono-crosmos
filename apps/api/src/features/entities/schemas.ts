@@ -37,8 +37,8 @@ export const EntityListQuerySchema = z
   .object({
     space_uuid: UuidSchema.optional(),
     space_id: UuidSchema.optional(),
-    entity_type: z.string().optional(),
-    q: z.string().optional(),
+    entity_type: z.string().max(100).optional(),
+    q: z.string().max(200).optional(),
     sort_by: z.enum(['name', 'edge_count', 'created_at']).default('name'),
     order: z.enum(['asc', 'desc']).default('asc'),
     limit: z.coerce.number().int().min(1).max(200).default(50),

@@ -36,7 +36,11 @@ export const TokenPairSchema = z
   .openapi('TokenPair');
 
 export const RefreshRequestSchema = z
-  .object({ refresh_token: z.string(), active_org_id: UuidSchema.nullable().optional() })
+  .object({
+    // Opaque signed JWT; cap well above real token sizes to bound abuse.
+    refresh_token: z.string().min(1).max(512),
+    active_org_id: UuidSchema.nullable().optional(),
+  })
   .openapi('RefreshRequest');
 
 export const LogoutRequestSchema = RefreshRequestSchema.openapi('LogoutRequest');
