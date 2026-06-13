@@ -41,8 +41,11 @@ jobRoutes.openapi(
     const { job_id } = c.req.valid('param');
     const db = getDb(c);
     const userId = c.var.userId!;
+    const orgId = c.var.activeOrgId!;
 
-    const job = await getJobStore(db).get(job_id, { userId });
+    // Scope by both user AND active org (defense-in-depth: a job lookup must
+    // never cross the tenant boundary even if user↔job attribution changes).
+    const job = await getJobStore(db).get(job_id, { userId, orgId });
     if (!job) {
       throw new HTTPException(404, { message: `Job ${job_id} not found` });
     }

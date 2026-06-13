@@ -1,7 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
-import { createLogger, durationMs } from '@crosmos/observability';
+import { createLogger, createMetrics, durationMs } from '@crosmos/observability';
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -11,6 +11,7 @@ import {
   getRateLimiter,
   RateLimitError,
 } from '../../integrations/rate-limit';
+import { checkGlobalAiThrottle } from '../../integrations/rate-limit/global-ai';
 import { getEmbedder } from '../../integrations/embeddings';
 import { getReranker } from '../../integrations/reranker';
 import { getVectorStore } from '../../integrations/vector-store';
@@ -26,6 +27,9 @@ import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
+  GLOBAL_AI_RETRY_AFTER_SECONDS,
+  GLOBAL_AI_RPM_CEILING,
+  GLOBAL_AI_WINDOW_SECONDS,
   RETRIEVAL_MAX_CONCURRENT_PER_USER,
   RETRIEVAL_RESULT_TIMEOUT_SECONDS,
   RETRIEVAL_USER_COUNTER_TTL_SECONDS,
@@ -189,6 +193,12 @@ searchRoutes.openapi(
       graph_enabled: body.graph,
     });
 
+    // Lightweight metrics emitter (no-op if ANALYTICS unbound; never throws).
+    const metrics = createMetrics(c.env.ANALYTICS, {
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+    });
+
     // Fetch org entitlements ONCE per request (KV-cached), then share with the
     // rate-limit gate, the quota gate, and the orchestrator (was 3 separate
     // fetches). The space-access check below guarantees space.orgId === orgId,
@@ -203,7 +213,16 @@ searchRoutes.openapi(
     const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
 
     // 2. Per-org plan rate limit.
-    const limiter = getRateLimiter(c.env, defer);
+    //
+    // FIX (deferred-write bypass): search is on the expensive AI-cost path, and
+    // deferring the counter write (for latency) lets M simultaneous searches all
+    // read the same pre-increment count and admit — bypassing the per-org cap.
+    // Here we DON'T pass `defer`, so the limiter AWAITS the increment before
+    // deciding, making the per-org cap accurate on this path. The added cost is
+    // ~one KV write (~350ms) — acceptable because (a) the per-org AI spend is
+    // what we're protecting and (b) the global-AI throttle below already caps
+    // aggregate load. Concurrency + global throttle still defer / are coarse.
+    const limiter = getRateLimiter(c.env);
     try {
       await logger.time('retrieval.stage_completed', {
         stage: 'plan_rate_limit',
@@ -214,6 +233,7 @@ searchRoutes.openapi(
           stage: 'plan_rate_limit',
           status_code: 429,
         });
+        metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
@@ -252,6 +272,7 @@ searchRoutes.openapi(
           stage: 'monthly_quota',
           status_code: 429,
         });
+        metrics.count('search_throttled', { tags: ['monthly_quota'] });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
@@ -284,6 +305,7 @@ searchRoutes.openapi(
         space_id: space.id,
         status_code: 429,
       });
+      metrics.count('search_throttled', { tags: ['concurrency'] });
       throw new HTTPException(429, {
         res: jsonError(
           'Too many concurrent searches. Wait for existing searches to complete.',
@@ -294,6 +316,39 @@ searchRoutes.openapi(
 
     const t0 = performance.now();
     try {
+      // 7. GLOBAL (account-wide) AI throttle — right before the embedder +
+      // reranker fan-out. The Workers AI quota is account-global, so this is the
+      // only gate that sees aggregate load and protects tenants from each other
+      // (the plan limit + concurrency cap are per-org/per-user). Fail-open. Run
+      // inside the try so the `finally` still releases the concurrency slot.
+      const globalAi = await logger.time('retrieval.stage_completed', {
+        stage: 'global_ai_throttle',
+        space_id: space.id,
+      }, () => checkGlobalAiThrottle(c.env, {
+        limit: GLOBAL_AI_RPM_CEILING,
+        windowSeconds: GLOBAL_AI_WINDOW_SECONDS,
+      }));
+      if (!globalAi.allowed) {
+        logger.warn('retrieval.request_rejected', {
+          stage: 'global_ai_throttle',
+          space_id: space.id,
+          status_code: 429,
+          count: globalAi.count,
+        });
+        metrics.count('search_throttled', { tags: ['global_ai'] });
+        throw new HTTPException(429, {
+          res: jsonError(
+            {
+              error: 'ai_capacity',
+              detail:
+                'Search is temporarily at capacity. Please retry shortly.',
+            },
+            429,
+            { 'Retry-After': String(GLOBAL_AI_RETRY_AFTER_SECONDS) },
+          ),
+        });
+      }
+
       const visibleUserIds = await logger.time('retrieval.stage_completed', {
         stage: 'visibility_scope',
         space_id: space.id,
@@ -377,6 +432,11 @@ searchRoutes.openapi(
         result_count: response.total,
         top_k: body.limit,
       });
+      metrics.count('search', {
+        tags: ['ok'],
+        values: [durationMs(t0), response.total],
+        index: 'search',
+      });
 
       // Write-side bookkeeping runs OFF the critical path via waitUntil — the
       // user never waits on it. `touch` bumps access_frequency (org+space
@@ -420,20 +480,24 @@ searchRoutes.openapi(
         status_code: 500,
         ...failureFields(err),
       }, err);
-      // Outside production, surface the real error in the response body so it
-      // can be debugged without a logging pipeline. Production keeps the
-      // generic message — no stack/internal leak. Flip the `ENVIRONMENT` var
-      // away from "production" (e.g. in the dashboard) to enable this on a
-      // deployed worker, then flip it back.
-      const detail =
-        c.env.ENVIRONMENT === 'production'
-          ? 'Search failed unexpectedly.'
-          : {
-              error: 'retrieval_failed',
-              message: err instanceof Error ? err.message : String(err),
-              name: err instanceof Error ? err.name : typeof err,
-              stack: err instanceof Error ? err.stack : undefined,
-            };
+      metrics.count('search', { tags: ['error'], index: 'search' });
+      // Verbose error detail is opt-in via an EXPLICIT `DEBUG_ERRORS === 'true'`
+      // flag — NOT merely "non-production". A staging/preview env that isn't
+      // literally "production" must not leak internals by default. We NEVER
+      // include a stack trace in the response (it can expose code paths / paths);
+      // the full error (incl. stack) is already in the structured log above,
+      // correlated by request_id. `request_id` is returned so a caller can quote
+      // it for support without us leaking the message.
+      const debugErrors =
+        (c.env as { DEBUG_ERRORS?: string }).DEBUG_ERRORS === 'true';
+      const detail = debugErrors
+        ? {
+            error: 'retrieval_failed',
+            message: err instanceof Error ? err.message : String(err),
+            name: err instanceof Error ? err.name : typeof err,
+            request_id: requestId,
+          }
+        : { error: 'retrieval_failed', request_id: requestId };
       throw new HTTPException(500, { res: jsonError(detail, 500) });
     } finally {
       // The concurrency slot MUST be released on every exit path. Schedule it

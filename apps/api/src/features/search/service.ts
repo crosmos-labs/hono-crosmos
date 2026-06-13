@@ -264,7 +264,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   if (candidateLookup.size > 0) {
     const attachSourceStart = performance.now();
     try {
-      await attachSourceText(db, scope.orgId, candidateLookup);
+      await attachSourceText(db, scope, candidateLookup);
       logger?.info('retrieval.stage_completed', {
         stage: 'source_text_attach',
         duration_ms: durationMs(attachSourceStart),

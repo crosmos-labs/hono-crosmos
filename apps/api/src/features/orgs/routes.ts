@@ -6,6 +6,7 @@ import {
   InviteListResponseSchema,
   InvitePreviewResponseSchema,
   InviteResponseSchema,
+  MemberListQuerySchema,
   MemberListResponseSchema,
   MemberResponseSchema,
   OrganizationListResponseSchema,
@@ -16,13 +17,21 @@ import {
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import { and, count, desc, eq, isNull } from 'drizzle-orm';
+import { createLogger } from '@crosmos/observability';
+import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
 import { organizationInvites, organizationMembers, organizations, users } from '@crosmos/db';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getEmailSender } from '../../integrations/email';
+import {
+  enforcePlanRateLimit,
+  getRateLimiter,
+  RateLimitError,
+} from '../../integrations/rate-limit';
 import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
-import { getBackgroundTasks } from '../../lib/runtime';
+import { apiError, AppError } from '../../lib/errors';
+import { invalidateMembership } from '../../lib/gate-cache';
+import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { removeUserFromAllGroups } from '../visibility/service';
@@ -127,6 +136,36 @@ function memberToResponse(row: {
     role: row.member.role,
     joined_at: row.member.joinedAt.toISOString(),
   };
+}
+
+// Opaque keyset cursor over (joinedAt, userId). base64url of `${epochMs}:${userId}`.
+interface MemberCursor {
+  joinedAtMs: number;
+  userId: number;
+}
+
+function encodeMemberCursor(c: MemberCursor): string {
+  // Payload is ASCII (`${epochMs}:${userId}`), so btoa is safe. URL-safe base64
+  // to match the token encoding used elsewhere (lib/crypto.ts).
+  return btoa(`${c.joinedAtMs}:${c.userId}`)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function decodeMemberCursor(raw: string): MemberCursor | null {
+  try {
+    const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = atob(b64);
+    const sep = decoded.indexOf(':');
+    if (sep < 0) return null;
+    const joinedAtMs = Number(decoded.slice(0, sep));
+    const userId = Number(decoded.slice(sep + 1));
+    if (!Number.isFinite(joinedAtMs) || !Number.isInteger(userId)) return null;
+    return { joinedAtMs, userId };
+  } catch {
+    return null;
+  }
 }
 
 function inviteStatus(invite: typeof organizationInvites.$inferSelect) {
@@ -347,6 +386,7 @@ orgRoutes.openapi(
     middleware: [requireAuth, requirePrincipal] as const,
     request: {
       params: z.object({ org_uuid: z.string().uuid() }),
+      query: MemberListQuerySchema,
     },
     responses: {
       200: {
@@ -358,6 +398,7 @@ orgRoutes.openapi(
   }),
   async (c) => {
     const { org_uuid } = c.req.valid('param');
+    const { limit, cursor } = c.req.valid('query');
     const db = getDb(c);
     const orgId = await resolveOrgIdFromUuid(db, org_uuid);
     if (orgId == null) {
@@ -365,15 +406,48 @@ orgRoutes.openapi(
     }
     assertActiveOrg(orgId, c.var.activeOrgId);
 
+    // Keyset pagination on (joinedAt, userId). A bad cursor is rejected rather
+    // than silently ignored so clients notice corrupted tokens.
+    let after: MemberCursor | null = null;
+    if (cursor != null) {
+      after = decodeMemberCursor(cursor);
+      if (after == null) {
+        throw new HTTPException(400, { message: 'Invalid cursor' });
+      }
+    }
+
+    const keyset = after
+      ? or(
+          gt(organizationMembers.joinedAt, new Date(after.joinedAtMs)),
+          and(
+            eq(organizationMembers.joinedAt, new Date(after.joinedAtMs)),
+            gt(organizationMembers.userId, after.userId),
+          ),
+        )
+      : undefined;
+
+    // Fetch limit+1 to detect whether another page exists.
     const rows = await db
       .select({ member: organizationMembers, user: users })
       .from(organizationMembers)
       .innerJoin(users, eq(users.id, organizationMembers.userId))
-      .where(eq(organizationMembers.orgId, orgId))
-      .orderBy(organizationMembers.joinedAt);
+      .where(and(eq(organizationMembers.orgId, orgId), keyset))
+      .orderBy(organizationMembers.joinedAt, organizationMembers.userId)
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+    const nextCursor =
+      hasMore && last
+        ? encodeMemberCursor({
+            joinedAtMs: last.member.joinedAt.getTime(),
+            userId: last.member.userId,
+          })
+        : null;
 
     return c.json(
-      { members: rows.map(memberToResponse), next_cursor: null },
+      { members: page.map(memberToResponse), next_cursor: nextCursor },
       200,
     );
   },
@@ -423,6 +497,10 @@ orgRoutes.openapi(
     if (!target) {
       throw new HTTPException(404, { message: 'Member not found' });
     }
+    // Only an owner may modify another owner — an admin must not demote an owner.
+    if (target.member.role === 'owner' && c.var.orgRole !== 'owner') {
+      throw new AppError(403, 'insufficient_role', 'Only an owner can modify an owner');
+    }
     if (target.member.role === 'owner') {
       const owners = await countOwners(db, orgId);
       if (owners <= 1) {
@@ -434,6 +512,10 @@ orgRoutes.openapi(
       .update(organizationMembers)
       .set({ role, updatedAt: new Date() })
       .where(eq(organizationMembers.id, target.member.id));
+
+    // Membership role is cached in KV (gate:member) for 60s; invalidate so a
+    // demoted admin loses admin powers immediately instead of after the TTL.
+    await invalidateMembership(c.env, orgId, target.user.id);
 
     const updated = await loadMember(db, orgId, user_uuid);
     if (!updated) {
@@ -484,6 +566,11 @@ orgRoutes.openapi(
     if (!isSelf && c.var.orgRole !== 'owner' && c.var.orgRole !== 'admin') {
       throw new HTTPException(403, { message: 'insufficient_role' });
     }
+    // Only an owner may remove another owner — an admin must not remove an
+    // owner. (Self-removal is allowed: a self-removing owner is already owner.)
+    if (!isSelf && target.member.role === 'owner' && c.var.orgRole !== 'owner') {
+      throw new AppError(403, 'insufficient_role', 'Only an owner can remove an owner');
+    }
     if (target.member.role === 'owner') {
       const owners = await countOwners(db, orgId);
       if (owners <= 1) {
@@ -495,6 +582,9 @@ orgRoutes.openapi(
       .delete(organizationMembers)
       .where(eq(organizationMembers.id, target.member.id));
     await removeUserFromAllGroups(db, { orgId, userId: target.user.id });
+    // Invalidate the 60s KV membership cache so a removed user loses access
+    // immediately instead of retaining it until the TTL expires.
+    await invalidateMembership(c.env, orgId, target.user.id);
     return c.body(null, 204);
   },
 );
@@ -533,6 +623,25 @@ orgRoutes.openapi(
     assertActiveOrg(orgId, c.var.activeOrgId);
     const org = await getOrganizationByIdOrThrow(db, orgId);
 
+    // Per-org rate limit so a compromised/abusive admin can't mail-bomb arbitrary
+    // addresses (Resend cost + reputation). Reuses the org's plan RPM/daily caps.
+    const limiter = getRateLimiter(c.env);
+    try {
+      await enforcePlanRateLimit(db, limiter, orgId);
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        // Thrown (not returned) so it bypasses the OpenAPI response-type
+        // checking; the global onError renders the canonical envelope.
+        throw new HTTPException(429, {
+          res: apiError(c, 429, 'Rate limit exceeded', {
+            code: 'rate_limited',
+            headers: { 'Retry-After': String(err.retryAfterSeconds) },
+          }),
+        });
+      }
+      throw err;
+    }
+
     const normalizedEmail = body.email.trim().toLowerCase();
     const [existing] = await db
       .select()
@@ -565,7 +674,16 @@ orgRoutes.openapi(
       .returning();
     if (!invite) throw new Error('Failed to create invite');
 
-    getBackgroundTasks(c).waitUntil(
+    // Fire the invite email best-effort, but LOG failures — a silently dropped
+    // email previously left the invite committed with no trace of the failure.
+    waitUntilLogged(
+      c,
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { org_id: orgId },
+      }),
+      'orgs.invite_email_failed',
       getEmailSender(c.env).sendInvite({
         to: invite.email,
         orgName: org.name,
@@ -574,6 +692,7 @@ orgRoutes.openapi(
         acceptUrl: inviteAcceptUrl(c, rawToken),
         expiresAt: invite.expiresAt,
       }),
+      { org_id: orgId },
     );
 
     return c.json(

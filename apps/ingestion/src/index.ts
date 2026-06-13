@@ -12,6 +12,7 @@ import {
   handleIngestionDelivery,
   type IngestionQueueConsumerDeps,
 } from './queue-consumer';
+import { resetJobForRetry } from './job-store';
 
 /**
  * Ingestion Worker.
@@ -95,16 +96,36 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         embedder: getEmbedder(this.env),
         vectorStore: getVectorStore(this.env, db),
         logger,
+        analytics: this.env.ANALYTICS,
+        environment: this.env.ENVIRONMENT,
       });
     } catch (err) {
-      // Don't rethrow — the queue backstop owns recovery. The job is left
-      // non-terminal; either its claim was never taken (queue claims cleanly)
-      // or it sits in `processing` until the lease lapses (queue reclaims).
+      // Don't rethrow — the queue backstop owns recovery. But don't wait out
+      // the full lease either: proactively flip a job we claimed-then-wedged in
+      // `processing` back to `pending` so the queue backstop can re-claim it
+      // promptly. `resetJobForRetry` is a guarded CAS (only touches a row still
+      // `processing`), so it's a no-op if the claim was never taken or another
+      // trigger already moved the job terminal. We deliberately DON'T touch
+      // source rows: the re-run's idempotency gate 2 re-processes any source
+      // left `processing` and skips terminal ones, so blanket-resetting sources
+      // would needlessly redo completed work and erase accurate status.
       logger.error(
         'ingestion.rpc_run_failed',
         { error_category: 'internal', dependency: 'pipeline' },
         err,
       );
+      try {
+        const reset = await resetJobForRetry(db, message.job_id);
+        if (reset) {
+          logger.info('ingestion.rpc_run_reset_for_retry', {
+            status: 'pending',
+            reason: 'rpc_run_failed',
+          });
+        }
+      } catch (resetErr) {
+        // Reset is best-effort; the lease-expiry path still recovers the job.
+        logger.warn('ingestion.rpc_run_reset_failed', {}, resetErr);
+      }
     }
   }
 
@@ -119,6 +140,8 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       createEmbedder: () => getEmbedder(this.env),
       createVectorStore: () => getVectorStore(this.env, db),
       nowMs: () => systemClock.nowMs(),
+      analytics: this.env.ANALYTICS,
+      environment: this.env.ENVIRONMENT,
     };
   }
 }

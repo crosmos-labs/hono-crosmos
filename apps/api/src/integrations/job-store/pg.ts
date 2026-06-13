@@ -29,7 +29,52 @@ export class PgJobStore implements JobStore {
     });
   }
 
-  async get(jobId: string, opts?: { userId?: number }): Promise<JobRow | null> {
+  async createWithActiveCap(
+    input: {
+      jobId: string;
+      orgId: number;
+      spaceId: number;
+      userId: number;
+      sourceIds: number[];
+    },
+    maxActive: number,
+  ): Promise<boolean> {
+    // Unlimited → plain insert, always succeeds.
+    if (maxActive < 0) {
+      await this.create(input);
+      return true;
+    }
+
+    // Guarded INSERT ... SELECT: the row materializes only if the user's live
+    // count of pending+processing jobs is under `maxActive`. The count and the
+    // insert are evaluated in ONE statement, so concurrent submits can't all
+    // slip under the cap (unlike the old count-then-insert). `RETURNING id`
+    // yields 1 row on insert, 0 rows when the guard rejected it.
+    const sourceIdsJson = JSON.stringify(input.sourceIds);
+    const rows = await this.db.execute<{ id: string }>(sql`
+      INSERT INTO ingestion_jobs (id, org_id, space_id, user_id, source_ids, status)
+      SELECT
+        ${input.jobId}::uuid,
+        ${input.orgId},
+        ${input.spaceId},
+        ${input.userId},
+        ${sourceIdsJson}::jsonb,
+        'pending'
+      WHERE (
+        SELECT count(*) FROM ingestion_jobs
+        WHERE user_id = ${input.userId}
+          AND status IN ('pending', 'processing')
+      ) < ${maxActive}
+      RETURNING id
+    `);
+    // postgres-js returns an array-like of result rows.
+    return Array.from(rows as Iterable<{ id: string }>).length > 0;
+  }
+
+  async get(
+    jobId: string,
+    opts?: { userId?: number; orgId?: number },
+  ): Promise<JobRow | null> {
     const rows = await this.db
       .select()
       .from(ingestionJobs)
@@ -37,7 +82,10 @@ export class PgJobStore implements JobStore {
       .limit(1);
     const row = rows[0];
     if (!row) return null;
+    // Ownership + tenancy checks. Both return null (not 403) so a cross-user or
+    // cross-org probe can't distinguish "exists" from "not found".
     if (opts?.userId !== undefined && row.userId !== opts.userId) return null;
+    if (opts?.orgId !== undefined && row.orgId !== opts.orgId) return null;
     return rowToJob(row);
   }
 
