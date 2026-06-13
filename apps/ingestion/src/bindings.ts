@@ -14,7 +14,11 @@ export interface Env {
   ENVIRONMENT: 'development' | 'production';
   LLM_PROVIDER: 'openrouter' | 'openai';
   // Provider selection. Defaults: workers-ai / vectorize. Must match the API.
-  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai';
+  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
+  // Deployment vector-space dimension (= Vectorize index dimension). Default
+  // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small. Must
+  // match the API worker.
+  EMBEDDING_DIMENSIONS?: string;
   VECTOR_STORE?: 'vectorize' | 'pg';
 
   // Secrets (set via `wrangler secret put` or .dev.vars)

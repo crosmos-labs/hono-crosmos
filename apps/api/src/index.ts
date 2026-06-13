@@ -24,6 +24,7 @@ import {
   oauthServerRoutes,
 } from './features/oauth/server.routes';
 import { orgRoutes } from './features/orgs/routes';
+import { adminRoutes } from './features/admin/reembed';
 import { searchRoutes } from './features/search/routes';
 import { sourceRoutes } from './features/sources/routes';
 import { spaceRoutes } from './features/spaces/routes';
@@ -164,6 +165,7 @@ app.route('/api/v1/memories', memoryRoutes);
 app.route('/api/v1/entities', entityRoutes);
 app.route('/api/v1/graph', graphRoutes);
 app.route('/api/v1/search', searchRoutes);
+app.route('/api/v1/_admin', adminRoutes);
 app.route('/api/v1/conversations', conversationRoutes);
 app.route('/api/v1/jobs', jobRoutes);
 app.route('/api/v1/usage', usageRoutes);

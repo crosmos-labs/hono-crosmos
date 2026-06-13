@@ -33,6 +33,10 @@ export class ZeroEntropyReranker implements Reranker {
       model: opts?.model ?? this.defaultModel,
       query,
       documents,
+      // `fast` guarantees subsecond inference; the `slow` mode trades latency
+      // (>10s) for higher rate limits. Retrieval is latency-critical, so pin
+      // fast explicitly rather than rely on the API default.
+      latency: 'fast',
     };
     if (opts?.topK !== undefined) body.top_n = opts.topK;
 

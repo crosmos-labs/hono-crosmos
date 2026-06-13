@@ -6,8 +6,13 @@ export type {
   EmbeddingUsage,
   EmbedOptions,
 } from './port';
-export { OpenAIEmbedder, EmbeddingRequestError } from './openai';
+export { EmbeddingRequestError } from './openai-compat';
+export { OpenAICompatEmbedder } from './openai-compat';
+export type { OpenAICompatEmbedderConfig } from './openai-compat';
+export { OpenAIEmbedder } from './openai';
 export type { OpenAIEmbedderConfig } from './openai';
+export { OpenRouterEmbedder } from './openrouter';
+export type { OpenRouterEmbedderConfig } from './openrouter';
 export { WorkersAiEmbedder } from './workers-ai';
 export type { WorkersAiEmbedderConfig } from './workers-ai';
 
@@ -37,15 +42,24 @@ export const EXPECTED_EMBEDDING_DIMENSIONS = 1024;
  * routes its constructed embedder through this, so a misconfigured
  * EMBEDDINGS_PROVIDER throws a clear error at construction time instead of
  * silently returning garbage search results.
+ *
+ * `expected` defaults to {@link EXPECTED_EMBEDDING_DIMENSIONS} but can be
+ * overridden by a deployment that pins a different vector space via an env var
+ * (e.g. `EMBEDDING_DIMENSIONS=1536` for native OpenAI `text-embedding-3-small`,
+ * with the Vectorize indexes recreated at that dimension). BOTH workers must
+ * agree on the value, or query and document vectors won't share a space.
  */
-export function assertEmbeddingSpace(embedder: Embedder): Embedder {
-  if (embedder.dimensions !== EXPECTED_EMBEDDING_DIMENSIONS) {
+export function assertEmbeddingSpace(
+  embedder: Embedder,
+  expected: number = EXPECTED_EMBEDDING_DIMENSIONS,
+): Embedder {
+  if (embedder.dimensions !== expected) {
     throw new Error(
       `Embedding dimension mismatch: the configured embedder produces ` +
         `${embedder.dimensions}-dim vectors, but this deployment's vector space is ` +
-        `${EXPECTED_EMBEDDING_DIMENSIONS}-dim (the Vectorize index dimension). Ingestion ` +
+        `${expected}-dim (the Vectorize index dimension). Ingestion ` +
         `and retrieval must use the same embedding model. If you are intentionally ` +
-        `switching models, update EXPECTED_EMBEDDING_DIMENSIONS, recreate the Vectorize ` +
+        `switching models, set EMBEDDING_DIMENSIONS on BOTH workers, recreate the Vectorize ` +
         `indexes at the new dimension, and re-embed all sources.`,
     );
   }

@@ -1,117 +1,38 @@
-import type { EmbedOptions, Embedder, EmbeddingUsage } from './port';
+import { OpenAICompatEmbedder } from './openai-compat';
 
-const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
+// Re-exported so existing importers (`./openai`) keep working after the error
+// type moved to the shared base. New code can import it from `./openai-compat`.
+export { EmbeddingRequestError } from './openai-compat';
 
 /**
- * OpenAI `text-embedding-3-small` at 1536 dimensions. Fallback provider
- * (`EMBEDDINGS_PROVIDER=openai`); the default is Workers AI bge-m3 at 1024. Note
- * the schema columns / Vectorize index default to 1024 — using this provider
- * requires matching the stored-vector dimension (re-ingest at 1536).
+ * OpenAI `text-embedding-3-small`. The model is natively 1536-dim but supports
+ * Matryoshka dimension reduction via the `dimensions` request param, so we pin
+ * it to the deployment's vector space (default 1024 — the Vectorize index
+ * dimension) instead of re-creating the index. Requires `OPENAI_API_KEY`.
  *
  * `text-embedding-3-small` is symmetric: document and search modes share one
- * vector space, so the `mode` option on the interface is ignored here. Callers
- * still pass it so a future asymmetric provider can honor it without a code
- * change.
+ * vector space, so the `mode` option is informational here.
  */
-const MODEL = 'text-embedding-3-small';
-const DIMENSIONS = 1536;
-
-/** Bound a single embeddings request so a hung connection can't wedge the job. */
-const EMBED_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_MODEL = 'text-embedding-3-small';
+const DEFAULT_DIMENSIONS = 1024;
+const BASE_URL = 'https://api.openai.com/v1';
 
 export interface OpenAIEmbedderConfig {
   apiKey: string;
+  /** Output dimensionality. Default 1024 (the Vectorize index dimension). */
+  dimensions?: number;
+  /** Override the default model id. */
+  model?: string;
 }
 
-interface EmbeddingsResponse {
-  data: Array<{ embedding: number[]; index: number }>;
-  usage?: { prompt_tokens: number; total_tokens: number };
-}
-
-export class OpenAIEmbedder implements Embedder {
-  readonly dimensions = DIMENSIONS;
-  private _totalTokens = 0;
-
-  constructor(private readonly config: OpenAIEmbedderConfig) {}
-
-  get totalTokens(): number {
-    return this._totalTokens;
-  }
-
-  async embed(text: string, opts?: EmbedOptions) {
-    const { vectors, usage } = await this.embedBatch([text], opts);
-    return { vector: vectors[0]!, usage };
-  }
-
-  async embedBatch(texts: string[], _opts?: EmbedOptions) {
-    if (texts.length === 0) {
-      return {
-        vectors: [],
-        usage: { promptTokens: 0, totalTokens: 0 } satisfies EmbeddingUsage,
-      };
-    }
-
-    let res: Response;
-    try {
-      res = await fetch(OPENAI_EMBEDDINGS_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          input: texts,
-          dimensions: DIMENSIONS,
-        }),
-        signal: AbortSignal.timeout(EMBED_REQUEST_TIMEOUT_MS),
-      });
-    } catch (err) {
-      // Timeout / transient network failure → retryable (504) so the per-source
-      // retry + queue backstop take over instead of the call hanging.
-      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-      throw new EmbeddingRequestError(
-        `OpenAI embeddings request ${
-          isTimeout
-            ? `timed out after ${EMBED_REQUEST_TIMEOUT_MS}ms`
-            : `failed: ${err instanceof Error ? err.message : String(err)}`
-        }`,
-        504,
-      );
-    }
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new EmbeddingRequestError(
-        `OpenAI embeddings ${res.status}: ${text || res.statusText}`,
-        res.status,
-      );
-    }
-    const json = (await res.json()) as EmbeddingsResponse;
-
-    // Provider may return rows out of order; sort by `index` to match input order.
-    const sorted = [...json.data].sort((a, b) => a.index - b.index);
-    const vectors = sorted.map((row) => row.embedding);
-
-    const usage: EmbeddingUsage = {
-      promptTokens: json.usage?.prompt_tokens ?? 0,
-      totalTokens: json.usage?.total_tokens ?? 0,
-    };
-    this._totalTokens += usage.totalTokens;
-
-    return { vectors, usage };
-  }
-}
-
-export class EmbeddingRequestError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-    this.name = 'EmbeddingRequestError';
-  }
-
-  get retryable(): boolean {
-    return this.status === 429 || this.status >= 500;
+export class OpenAIEmbedder extends OpenAICompatEmbedder {
+  constructor(config: OpenAIEmbedderConfig) {
+    super({
+      baseUrl: BASE_URL,
+      apiKey: config.apiKey,
+      model: config.model ?? DEFAULT_MODEL,
+      dimensions: config.dimensions ?? DEFAULT_DIMENSIONS,
+      providerLabel: 'OpenAI',
+    });
   }
 }

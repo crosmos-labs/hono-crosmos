@@ -117,7 +117,8 @@ RERANKER_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
 # Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
-#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small)
+#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small @ 1024-dim)
+#   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small @ 1024-dim)
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
