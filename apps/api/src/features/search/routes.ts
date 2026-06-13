@@ -200,18 +200,36 @@ searchRoutes.openapi(
       environment: c.env.ENVIRONMENT,
     });
 
-    // Fetch org entitlements ONCE per request (KV-cached), then share with the
-    // rate-limit gate, the quota gate, and the orchestrator (was 3 separate
-    // fetches). The space-access check below guarantees space.orgId === orgId,
-    // so the same entitlements apply throughout.
-    const entitlements = await logger.time('retrieval.stage_completed', {
-      stage: 'entitlements',
-    }, () => getCachedEntitlements(c, orgId));
-
     // KV writes commit cross-region (~350ms from this Smart-Placed worker), so
     // the rate-limit + concurrency counters push their writes here instead of
     // blocking the response. The worker stays alive until they settle.
     const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
+
+    // Entitlements + space access are independent, side-effect-free KV reads, so
+    // fetch them CONCURRENTLY. On a cold isolate each KV read is ~150-200ms;
+    // serialized they dominated gate latency. Entitlements is shared with the
+    // rate-limit gate, the quota gate, and the orchestrator (was 3 fetches); the
+    // space check guarantees space.orgId === orgId so the entitlements apply
+    // throughout. The remaining gates (rate-limit → quota → concurrency) stay
+    // ordered because they have side effects (counter increments, slot acquire)
+    // whose sequencing is semantically meaningful.
+    const [entitlements, space] = await Promise.all([
+      logger.time('retrieval.stage_completed', { stage: 'entitlements' },
+        () => getCachedEntitlements(c, orgId)),
+      logger.time('retrieval.stage_completed', { stage: 'space_access' },
+        () => getCachedSpaceByUuid(c, body.space_id)),
+    ]);
+    // Authoritative org is the SPACE's org. 404 on missing or cross-tenant (no
+    // existence leak).
+    if (!space || space.orgId !== orgId) {
+      logger.warn('retrieval.request_rejected', {
+        stage: 'space_access',
+        status_code: 404,
+      });
+      throw new HTTPException(404, {
+        res: jsonError(`Space ${body.space_id} not found`, 404),
+      });
+    }
 
     // 2. Per-org plan rate limit.
     //
@@ -244,21 +262,6 @@ searchRoutes.openapi(
         });
       }
       throw err;
-    }
-
-    // 3. Space access — authoritative org is the SPACE's org. 404 on missing
-    // or cross-tenant (no existence leak). KV-cached (slim {id, orgId}).
-    const space = await logger.time('retrieval.stage_completed', {
-      stage: 'space_access',
-    }, () => getCachedSpaceByUuid(c, body.space_id));
-    if (!space || space.orgId !== orgId) {
-      logger.warn('retrieval.request_rejected', {
-        stage: 'space_access',
-        status_code: 404,
-      });
-      throw new HTTPException(404, {
-        res: jsonError(`Space ${body.space_id} not found`, 404),
-      });
     }
 
     // 4. Monthly search-query quota (optimistic +1, enforce-only).
