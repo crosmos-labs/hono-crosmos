@@ -1,5 +1,6 @@
 import { InvalidTokenError } from '../auth/jwt';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../../bindings';
@@ -24,7 +25,7 @@ import {
   type FlowStateClaims,
 } from './server';
 
-export const oauthServerRoutes = new OpenAPIHono<HonoEnv>();
+export const oauthServerRoutes = createApiApp();
 
 // ── Metadata (RFC 8414) ────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ oauthServerRoutes.openapi(
     summary: 'Dynamic client registration',
     middleware: [
       // Tight: each call writes an oauth_clients row.
-      perIpRateLimit({ bucket: 'oauth-register', limit: 5, windowSeconds: 60 }),
+      perIpRateLimit({ bucket: 'oauth-register', tier: 'strict' }),
     ] as const,
     request: {
       body: { content: { 'application/json': { schema: ClientRegistrationRequest } } },
@@ -204,15 +205,15 @@ const redirectApp = new Hono<HonoEnv>();
 // exists yet). Distinct buckets per logical endpoint.
 redirectApp.use(
   '/oauth/authorize',
-  perIpRateLimit({ bucket: 'oauth-authorize', limit: 30, windowSeconds: 60 }),
+  perIpRateLimit({ bucket: 'oauth-authorize', tier: 'standard' }),
 );
 redirectApp.use(
   '/oauth/callback',
-  perIpRateLimit({ bucket: 'oauth-callback', limit: 30, windowSeconds: 60 }),
+  perIpRateLimit({ bucket: 'oauth-callback', tier: 'standard' }),
 );
 redirectApp.use(
   '/oauth/token',
-  perIpRateLimit({ bucket: 'oauth-token', limit: 30, windowSeconds: 60 }),
+  perIpRateLimit({ bucket: 'oauth-token', tier: 'standard' }),
 );
 
 function errorRedirect(

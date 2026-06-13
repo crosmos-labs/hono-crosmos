@@ -10,6 +10,9 @@ import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
 import { runMaintenanceCleanup } from './features/maintenance/cleanup';
+// Durable Object class for the per-IP rate limiter — must be exported from the
+// worker entry so the runtime can instantiate it.
+export { RateLimiterDO } from './integrations/rate-limit/limiter-do';
 import { conversationRoutes } from './features/conversations/routes';
 import { entityRoutes } from './features/entities/routes';
 import { graphRoutes } from './features/graph/routes';

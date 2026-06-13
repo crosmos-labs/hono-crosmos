@@ -1,6 +1,7 @@
 import { memorySpaces, sources, type Source } from '@crosmos/db';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -38,7 +39,7 @@ import {
 } from './service';
 import { resolveReadVisibility } from '../visibility/service';
 
-export const sourceRoutes = new OpenAPIHono<HonoEnv>();
+export const sourceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SourceErrorBody');
 

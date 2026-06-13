@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
 import { createLogger, createMetrics, durationMs } from '@crosmos/observability';
@@ -38,7 +39,7 @@ import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
 
-export const searchRoutes = new OpenAPIHono<HonoEnv>();
+export const searchRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.unknown() }).openapi('SearchErrorBody');
 

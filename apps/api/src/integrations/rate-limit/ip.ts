@@ -5,35 +5,40 @@ import type { HonoEnv } from '../../bindings';
 import { errorEnvelope } from '../../lib/errors';
 
 /**
- * Per-IP fixed-window rate limiter, as Hono middleware. The plan rate limiter
+ * Per-IP rate limiter, as Hono middleware. The plan rate limiter
  * (`enforcePlanRateLimit`) is keyed on `orgId` and therefore CANNOT protect
  * endpoints that run *before* an org context exists — unauthenticated auth and
- * OAuth routes. This fills that gap: it keys on `cf-connecting-ip` so anonymous
+ * OAuth routes. This fills that gap, keyed on `cf-connecting-ip`, so anonymous
  * floods (token-guessing, `/oauth/register` spam, DB-amplification) are bounded
  * before the route touches the DB or fans out to an upstream.
  *
- * Backed by the same KV namespace as the plan limiter, under an `rl:ip:` prefix.
+ * Backed by a Durable Object (`RATE_LIMITER`, class `RateLimiterDO`): one DO per
+ * `${bucket}:${ip}` key gives a strongly consistent counter. KV is eventually
+ * consistent (a burst never accumulates) and the experimental `ratelimit` unsafe
+ * binding did not enforce its `simple` limit under a named env — verified live —
+ * so neither could bound a burst. The DO can.
  *
- * **Counting.** Unlike the latency-critical plan limiter (which defers writes
- * off the request path), this AWAITS the increment before deciding. These
- * endpoints are low-volume and not latency-sensitive, and accurate counting
- * matters more here (brute-force protection), so we accept the ~one KV write of
- * latency rather than the deferred-write under-count.
+ * Two tiers map to two limits:
+ *   - `standard` → 30 / 60s   (refresh/logout/oauth flows)
+ *   - `strict`   → 5 / 60s    (row-creating `/oauth/register`)
  *
- * **Fail-open.** A KV error logs and allows the request — an infra hiccup must
- * not lock everyone out of login. (Cloudflare's edge still provides baseline
- * L3/L7 DoS protection in front of the worker.)
+ * **Fail-open.** If the DO binding is unbound (local dev) or errors, the request
+ * is allowed — an infra hiccup must not lock everyone out of login. Cloudflare's
+ * edge still provides baseline L3/L7 DoS protection in front of the worker.
  */
-export interface IpRateLimitOptions {
-  /** Logical bucket name, namespaces the counter (e.g. 'auth', 'oauth-register'). */
-  bucket: string;
-  /** Max requests allowed per window. */
-  limit: number;
-  /** Window length in seconds. */
-  windowSeconds: number;
-}
+export type RateLimitTier = 'standard' | 'strict';
 
-const IP_PREFIX = 'rl:ip:';
+const TIER_LIMITS: Record<RateLimitTier, { limit: number; windowSeconds: number }> = {
+  standard: { limit: 30, windowSeconds: 60 },
+  strict: { limit: 5, windowSeconds: 60 },
+};
+
+export interface IpRateLimitOptions {
+  /** Logical bucket name; namespaces the counter per endpoint. */
+  bucket: string;
+  /** Which limit tier to apply. */
+  tier: RateLimitTier;
+}
 
 function clientIp(c: { req: { header(name: string): string | undefined } }): string {
   const direct = c.req.header('cf-connecting-ip');
@@ -47,59 +52,50 @@ function clientIp(c: { req: { header(name: string): string | undefined } }): str
 }
 
 export function perIpRateLimit(opts: IpRateLimitOptions) {
+  const { limit, windowSeconds } = TIER_LIMITS[opts.tier];
   return createMiddleware<HonoEnv>(async (c, next) => {
-    const kv = c.env.API_KEY_CACHE;
+    const ns = c.env.RATE_LIMITER;
     const ip = clientIp(c);
-    // No KV binding (dev/tests) or no resolvable IP → can't limit; allow.
-    if (!kv || ip === 'unknown') {
+    // No binding (dev/tests) or no resolvable IP → can't limit; allow.
+    if (!ns || ip === 'unknown') {
       await next();
       return;
     }
 
-    const logger = createLogger({ service: 'api', environment: c.env.ENVIRONMENT });
     try {
-      const now = Math.floor(Date.now() / 1000);
-      const windowBucket = Math.floor(now / opts.windowSeconds);
-      const key = `${IP_PREFIX}${opts.bucket}:${ip}:${windowBucket}`;
-      const raw = await kv.get(key);
-      const current = raw ? Number(raw) : 0;
-      const next1 = current + 1;
-      // Keep the key alive a little past the window so late requests still count.
-      await kv.put(key, String(next1), {
-        expirationTtl: Math.max(60, opts.windowSeconds * 2),
+      const id = ns.idFromName(`${opts.bucket}:${ip}`);
+      const stub = ns.get(id);
+      const res = await stub.fetch('https://rate-limiter/limit', {
+        method: 'POST',
+        body: JSON.stringify({ limit, windowSeconds }),
       });
-      if (next1 > opts.limit) {
-        logger.warn('ratelimit.ip_exceeded', {
-          reason: opts.bucket,
-          ip,
-          limit: opts.limit,
-          count: next1,
-          scope: 'ip',
-        });
+      const { success } = (await res.json()) as { success: boolean };
+      if (!success) {
+        createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
+          'ratelimit.ip_exceeded',
+          { reason: opts.bucket, ip, limit, scope: 'ip' },
+        );
         const requestId = c.var.requestId;
-        const res = new Response(
+        const body = new Response(
           JSON.stringify(
-            errorEnvelope('Too many requests', {
-              code: 'ip_rate_limited',
-              requestId,
-            }),
+            errorEnvelope('Too many requests', { code: 'ip_rate_limited', requestId }),
           ),
           {
             status: 429,
             headers: {
               'Content-Type': 'application/json',
-              'Retry-After': String(opts.windowSeconds),
+              'Retry-After': String(windowSeconds),
               ...(requestId ? { 'X-Request-Id': requestId } : {}),
             },
           },
         );
-        throw new HTTPException(429, { res });
+        throw new HTTPException(429, { res: body });
       }
     } catch (err) {
       if (err instanceof HTTPException) throw err;
-      // Any KV failure: fail open and log, matching the plan limiter's stance.
+      // DO failure: fail open and log, matching the plan limiter's stance.
       createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
-        'ratelimit.ip_kv_failure',
+        'ratelimit.ip_do_failure',
         { reason: opts.bucket, stage: 'ip_rate_limit' },
         err,
       );

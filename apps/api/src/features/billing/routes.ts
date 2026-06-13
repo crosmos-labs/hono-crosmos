@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -27,8 +28,8 @@ import {
 } from './schemas';
 import { handlePolarWebhook, WebhookHttpError } from './webhooks';
 
-export const billingRoutes = new OpenAPIHono<HonoEnv>();
-export const billingWebhookRoutes = new OpenAPIHono<HonoEnv>();
+export const billingRoutes = createApiApp();
+export const billingWebhookRoutes = createApiApp();
 
 const BillingErrorSchema = z
   .object({ detail: z.string() })

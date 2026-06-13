@@ -72,12 +72,26 @@ entrypoint = "IngestionWorker"
 [ai]
 binding = "AI"
 
+# Durable Object rate limiter — per-IP limits on pre-org-context auth/OAuth
+# routes (integrations/rate-limit/ip.ts). KV is eventually consistent and can't
+# bound a burst; the experimental `ratelimit` binding didn't enforce its limit
+# under a named env (verified live). A DO per `${bucket}:${ip}` key is strongly
+# consistent, so it actually bounds bursts.
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiterDO"]
+
 # Analytics Engine: metrics sink (counters + latencies). Queryable via the
 # Analytics Engine SQL API / dashboard; alerts configured there. No provisioning
 # command — the dataset is created on first write.
-[[analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "crosmos_api_dev"
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_api_dev"
 
 # Vectorize: vector storage for the retrieval read path (VECTOR_STORE=vectorize).
 # Create with:
@@ -135,10 +149,20 @@ VECTOR_STORE = "vectorize"
 [env.production.ai]
 binding = "AI"
 
+# Durable Object rate limiter (prod). Not inherited from top-level.
+[[env.production.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiterDO"]
+
 # Analytics Engine (prod metrics sink). Not inherited from top-level.
-[[env.production.analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "crosmos_api"
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[env.production.analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_api"
 
 # Vectorize (prod indexes). Create with:
 #   wrangler vectorize create crosmos-memories --dimensions=1024 --metric=cosine

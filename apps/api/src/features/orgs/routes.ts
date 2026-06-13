@@ -16,6 +16,7 @@ import {
   UpdateOrganizationSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { HTTPException } from 'hono/http-exception';
 import { createLogger } from '@crosmos/observability';
 import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
@@ -48,7 +49,7 @@ import {
   updateOrganization,
 } from './service';
 
-export const orgRoutes = new OpenAPIHono<HonoEnv>();
+export const orgRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('OrgErrorBody');
 const SlugConflictBody = z

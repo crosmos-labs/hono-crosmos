@@ -6,6 +6,7 @@ import {
 } from './schemas';
 import type { MemorySpace } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -26,7 +27,7 @@ import {
   SPACE_QUOTA_EXCEEDED,
 } from './service';
 
-export const spaceRoutes = new OpenAPIHono<HonoEnv>();
+export const spaceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SpaceErrorBody');
 
@@ -116,8 +117,9 @@ spaceRoutes.openapi(
       limit,
     });
     if (space === SPACE_QUOTA_EXCEEDED) {
-      // Preserve the existing 429 quota-exceeded body shape. `used === limit`
-      // since the cap is enforced at the boundary.
+      // Structured quota body (schema-backed `QuotaExceededBodySchema`), kept
+      // consistent with the sibling source/conversation quota responses.
+      // `used === limit` since the cap is enforced at the boundary.
       return c.json(
         {
           detail: {

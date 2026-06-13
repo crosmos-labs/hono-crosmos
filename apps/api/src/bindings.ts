@@ -30,6 +30,10 @@ export interface Env {
   // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
   // local dev / tests, where createMetrics() degrades to a no-op.
   ANALYTICS?: AnalyticsEngineDataset;
+  // Durable-Object rate limiter (class RateLimiterDO) for per-IP limits on
+  // pre-org-context auth/OAuth routes (see integrations/rate-limit/ip.ts).
+  // Optional: unbound in local dev, where the limiter fails open.
+  RATE_LIMITER?: DurableObjectNamespace;
 
   // Vars
   ENVIRONMENT: 'development' | 'production';

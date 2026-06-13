@@ -7,6 +7,7 @@ import {
   type Memory,
 } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, asc, count, desc, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -30,7 +31,7 @@ import {
   EntityListResponseSchema,
 } from './schemas';
 
-export const entityRoutes = new OpenAPIHono<HonoEnv>();
+export const entityRoutes = createApiApp();
 
 type ApiContext = Context<HonoEnv>;
 

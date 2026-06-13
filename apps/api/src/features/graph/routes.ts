@@ -1,5 +1,6 @@
 import { edges, entities, type Edge, type Entity } from '@crosmos/db';
 import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, asc, count, desc, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -18,7 +19,7 @@ import {
   GraphViewportResponseSchema,
 } from './schemas';
 
-export const graphRoutes = new OpenAPIHono<HonoEnv>();
+export const graphRoutes = createApiApp();
 
 type ApiContext = Context<HonoEnv>;
 

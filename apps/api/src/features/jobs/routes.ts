@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -8,7 +9,7 @@ import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { JobResponseSchema } from './schemas';
 
-export const jobRoutes = new OpenAPIHono<HonoEnv>();
+export const jobRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('JobErrorBody');
 

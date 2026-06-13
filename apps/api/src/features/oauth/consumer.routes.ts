@@ -13,6 +13,7 @@ import {
   OAuthProvidersSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -29,7 +30,7 @@ import {
 import { getEarliestMembershipForUser } from '../orgs/memberships';
 import { getOrCreateOauthUser } from './onboarding';
 
-export const oauthConsumerRoutes = new OpenAPIHono<HonoEnv>();
+export const oauthConsumerRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('OAuthErrorBody');
 const STATE_TTL_SECONDS = 10 * 60; // 10 minutes
@@ -64,7 +65,7 @@ oauthConsumerRoutes.openapi(
     tags: ['oauth-consumer'],
     summary: 'Build OAuth authorize URL',
     middleware: [
-      perIpRateLimit({ bucket: 'oauth-consumer-authorize', limit: 20, windowSeconds: 60 }),
+      perIpRateLimit({ bucket: 'oauth-consumer-authorize', tier: 'standard' }),
     ] as const,
     request: {
       params: z.object({ provider: z.string() }),
@@ -117,7 +118,7 @@ oauthConsumerRoutes.openapi(
     tags: ['oauth-consumer'],
     summary: 'Exchange OAuth code for tokens',
     middleware: [
-      perIpRateLimit({ bucket: 'oauth-consumer-callback', limit: 20, windowSeconds: 60 }),
+      perIpRateLimit({ bucket: 'oauth-consumer-callback', tier: 'standard' }),
     ] as const,
     request: {
       params: z.object({ provider: z.string() }),

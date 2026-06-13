@@ -18,6 +18,7 @@ import {
   UserSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -46,7 +47,7 @@ import {
 } from './refresh-tokens';
 import { getUserById, updateUserName } from './users';
 
-export const authRoutes = new OpenAPIHono<HonoEnv>();
+export const authRoutes = createApiApp();
 
 const ErrorBody = z
   .object({ detail: z.string() })
@@ -347,7 +348,7 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Exchange refresh token for new pair',
     middleware: [
-      perIpRateLimit({ bucket: 'auth-refresh', limit: 30, windowSeconds: 60 }),
+      perIpRateLimit({ bucket: 'auth-refresh', tier: 'standard' }),
     ] as const,
     request: {
       body: {
@@ -441,7 +442,7 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Revoke refresh token (idempotent)',
     middleware: [
-      perIpRateLimit({ bucket: 'auth-logout', limit: 30, windowSeconds: 60 }),
+      perIpRateLimit({ bucket: 'auth-logout', tier: 'standard' }),
     ] as const,
     request: {
       body: {
