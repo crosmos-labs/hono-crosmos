@@ -1,6 +1,6 @@
 import { edges, entities, type Edge, type Entity } from '@crosmos/db';
 import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { and, count, isNull } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
