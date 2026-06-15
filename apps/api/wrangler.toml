@@ -32,6 +32,10 @@ mode = "smart"
 
 [dev]
 port = 8787
+# Distinct inspector (debugger) port per worker. Wrangler defaults this to 9229
+# for every worker, so running the API + ingestion workers together (e.g.
+# `bun run dev` / `turbo dev`) would collide on 9229 and kill the second one.
+inspector_port = 9229
 
 [triggers]
 crons = ["17 3 * * *"]

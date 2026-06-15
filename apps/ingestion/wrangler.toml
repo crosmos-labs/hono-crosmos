@@ -22,6 +22,11 @@ head_sampling_rate = 1
 
 [dev]
 port = 8788
+# Distinct inspector (debugger) port per worker — see apps/api/wrangler.toml.
+# Wrangler defaults every worker to 9229, so this must differ from the API's
+# 9229 or `bun run dev` (both workers at once) dies with "Address already in
+# use (127.0.0.1:9229)".
+inspector_port = 9230
 
 # Hyperdrive: shared NeonDB connection pooling (same DB as the API worker)
 [[hyperdrive]]

@@ -1,6 +1,21 @@
+# Local development infrastructure for Crosmos workers.
+#
+# This single Postgres container is BOTH the relational DB and the vector DB:
+# the `pgvector/pgvector` image is stock Postgres 17 plus the `vector`
+# extension, so the `embedding vector(1024)` columns + HNSW indexes on
+# `memories`/`entities` work locally exactly as they do in prod. Migration
+# 0001 runs `CREATE EXTENSION vector`, which the plain `postgres:*-alpine`
+# image cannot satisfy — hence the dedicated image here.
+#
+# The vector store is selected at runtime by `VECTOR_STORE` (see
+# packages/vector): set `VECTOR_STORE=pg` in .dev.vars to back retrieval with
+# pgvector against this container instead of Cloudflare Vectorize.
+#
+# Wrangler dev reaches this via the `localConnectionString` in each
+# apps/*/wrangler.toml (postgresql://crosmos:crosmos@localhost:5433/crosmos).
 services:
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     container_name: crosmos-dev-pg
     restart: unless-stopped
     environment:

@@ -12,3 +12,13 @@ OPENAI_API_KEY=sk-xxx
 # OPENAI_API_KEY above.
 
 SENTRY_DSN=
+
+# --- Fully-local benchmark path (no Cloudflare AI/Vectorize) -----------------
+# Values here override wrangler.toml [vars] for `wrangler dev`. Must MATCH the
+# API worker's local config so ingested document vectors and search query
+# vectors share one embedding space. See docs/local-development.md. Uncomment:
+#
+# VECTOR_STORE=pg                       # write vectors to the local Postgres column
+# EMBEDDINGS_PROVIDER=openrouter        # openai/text-embedding-3-small @ 1024-dim over HTTP
+# LLM_PROVIDER=openrouter               # extraction LLM over HTTP (already the default)
+# (OPENROUTER_API_KEY above is reused for both embeddings and the extraction LLM)

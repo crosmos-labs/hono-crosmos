@@ -98,6 +98,12 @@ export const GLOBAL_AI_RETRY_AFTER_SECONDS = 5;
  * Whether the cross-encoder reranker is constructed for retrieval. Mirrors
  * Python's `settings.retrieval_reranker_enabled` (env `RETRIEVAL_RERANKER_ENABLED`,
  * default on). Anything other than the literal string `"false"` keeps it on.
+ *
+ * IMPORTANT — the reranker is ON BY DEFAULT and must stay that way, in every
+ * environment including local dev and benchmarks. It is a core part of
+ * retrieval quality, not an optional add-on. Only turn it off when the user
+ * explicitly asks for it off (e.g. measuring pre-rerank ranking in isolation).
+ * Do NOT default it to false for convenience — leaving it unset = enabled.
  */
 export function isRerankerEnabled(value: string | undefined): boolean {
   return value !== 'false';
