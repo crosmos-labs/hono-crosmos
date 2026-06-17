@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { createLogger, type Logger } from '@crosmos/observability';
+import { createLogger, createMetrics, type Logger } from '@crosmos/observability';
 import { systemClock } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { Env } from './bindings';
@@ -52,13 +52,47 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(this.run(message));
   }
 
-  /** Queue consumer entrypoint (durable backstop). */
+  /** Queue consumer entrypoint (durable backstop + dead-letter visibility). */
   async queue(batch: MessageBatch<IngestionJobMessage>): Promise<void> {
     const db = getDb(this.env);
     const rootLogger = createLogger({
       service: 'ingestion',
       environment: this.env.ENVIRONMENT,
     });
+
+    // Dead-letter queue: messages that exhausted the main queue's retries land
+    // here. We deliberately DON'T reprocess inline (that risks a tight failure
+    // loop) — instead we make the exhaustion VISIBLE (error log + metric so it
+    // can be alerted on) and ack so it doesn't pile up. Actual recovery is the
+    // API worker's cron re-drive sweep, which re-attempts the underlying
+    // non-completed sources with a bounded per-source attempt budget.
+    if (batch.queue.endsWith('-dlq')) {
+      const metrics = createMetrics(this.env.ANALYTICS, {
+        service: 'ingestion',
+        environment: this.env.ENVIRONMENT,
+      });
+      for (const message of batch.messages) {
+        const body = message.body;
+        rootLogger.error('ingestion.job_dead_lettered', {
+          job_id: body.job_id,
+          correlation_id: body.correlation_id,
+          org_id: body.org_id,
+          space_id: body.space_id,
+          user_id: body.user_id,
+          source_count: body.source_ids?.length,
+          attempts: message.attempts,
+          error_category: 'internal',
+          dependency: 'pipeline',
+        });
+        metrics.count('ingestion_dead_lettered', {
+          tags: [this.env.ENVIRONMENT],
+          index: 'ingestion_dead_lettered',
+        });
+        message.ack();
+      }
+      return;
+    }
+
     const deps = this.consumerDeps(db, rootLogger);
 
     for (const message of batch.messages) {

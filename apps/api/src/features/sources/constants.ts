@@ -17,6 +17,25 @@ export const MAX_PENDING_JOBS_PER_USER = 5000;
 export const MAX_SOURCES_PER_REQUEST = 100;
 export const MAX_CONTENT_LENGTH_PER_SOURCE = 100_000;
 
+/**
+ * Max source_ids per ingestion JOB. A single request's sources are split into
+ * jobs of at most this size, so each worker invocation processes a bounded
+ * number of sources and can never exceed Cloudflare's per-invocation subrequest
+ * cap (each source makes several LLM/embed/vector subrequests — more so for
+ * fetch-based vector stores like Qdrant, where every op is a counted
+ * subrequest). One job == one invocation under the claim/lease model — and on a
+ * backstop RECLAIM a single invocation re-runs ALL of a job's not-yet-terminal
+ * sources at once — so this is the true per-invocation ceiling regardless of
+ * how the client batches.
+ *
+ * Sizing: measured ~50 subrequests/source (≈2 LLM + 3 embed + ~4 Qdrant + DB
+ * queries over Hyperdrive); the Workers Paid per-invocation cap is 1000. A
+ * reclaim of a 25-source job hit the cap at ~source 19, so we set this to 10
+ * (~500 subrequests/invocation — a 2× margin that absorbs content-heavy
+ * sources with extra memories/entities).
+ */
+export const MAX_SOURCES_PER_JOB = 10;
+
 /** Producer-side ceiling on conversation request shape. Matches Python `IngestConversationRequest`. */
 export const MAX_CONVERSATION_MESSAGES = 500;
 

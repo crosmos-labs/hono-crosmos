@@ -9,3 +9,5 @@ export type {
 export { PgVectorStore } from './pg';
 export { VectorizeStore } from './vectorize';
 export type { VectorizeStoreConfig } from './vectorize';
+export { QdrantStore, QdrantRequestError, ensureQdrantCollections } from './qdrant';
+export type { QdrantStoreConfig } from './qdrant';

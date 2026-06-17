@@ -22,7 +22,7 @@ import {
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
 } from './constants';
-import type { VectorStore } from '@crosmos/vector';
+import { QdrantRequestError, type VectorStore } from '@crosmos/vector';
 import type { Embedder } from './integrations/embeddings';
 import { EmbeddingRequestError } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
@@ -75,18 +75,25 @@ export interface ProcessIngestionDeps {
 function isRetryable(err: unknown): boolean {
   if (err instanceof LLMRequestError) return err.retryable;
   if (err instanceof EmbeddingRequestError) return err.retryable;
+  // Vector store (Qdrant) over HTTP: 429/5xx (incl. transient connect/timeout
+  // surfaced as 504) are worth retrying. Per-source retry + the bounded
+  // per-invocation source cap keep this from re-hitting the subrequest ceiling.
+  if (err instanceof QdrantRequestError) return err.retryable;
   return false;
 }
 
 function failureFields(err: unknown): {
   error_category: 'external_service' | 'internal';
-  dependency: 'llm' | 'embedding' | 'pipeline';
+  dependency: 'llm' | 'embedding' | 'vector' | 'pipeline';
 } {
   if (err instanceof LLMRequestError) {
     return { error_category: 'external_service', dependency: 'llm' };
   }
   if (err instanceof EmbeddingRequestError) {
     return { error_category: 'external_service', dependency: 'embedding' };
+  }
+  if (err instanceof QdrantRequestError) {
+    return { error_category: 'external_service', dependency: 'vector' };
   }
   return { error_category: 'internal', dependency: 'pipeline' };
 }

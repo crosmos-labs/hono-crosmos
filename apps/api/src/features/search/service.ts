@@ -73,6 +73,13 @@ export interface RetrieveInput {
    */
   entitlements?: Entitlements | null;
   logger?: Logger;
+  /**
+   * Optional pre-started query embedding. The route kicks this off BEFORE the
+   * visibility + working-set DB loads so the external embedding call (~370ms)
+   * overlaps those round-trips instead of running after them. If omitted,
+   * retrieve embeds lazily as before. Quality-neutral: identical vector + usage.
+   */
+  embedPromise?: ReturnType<Embedder['embed']>;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -150,9 +157,11 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   let graphEnabled = graphRetrieval && query.graph;
   if (effectiveMaxDepth === 0) graphEnabled = false;
 
-  // Stage 2 — start embedding as a shared promise (semantic + graph await it).
+  // Stage 2 — embedding as a shared promise (semantic + graph await it). Prefer
+  // the route's pre-started embed (overlaps the DB loads); else embed lazily.
   const embedStart = performance.now();
-  const embedPromise = embedder.embed(query.text, { mode: 'search' }).then(
+  const embedSource = input.embedPromise ?? embedder.embed(query.text, { mode: 'search' });
+  const embedPromise = embedSource.then(
     (result) => {
       logger?.info('embedding.request_completed', {
         stage: 'retrieval_query_embedding',
@@ -259,25 +268,33 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     candidate_count: candidateLookup.size,
   });
 
-  // Stage 5 — attach source text for the top candidates. Non-fatal: on failure
-  // candidates keep source=null (worker.md error-parity table).
+  // Stage 5 — attach source text for the top candidates, CONCURRENTLY with the
+  // Stage-6 reranker below. The two are independent: the reranker scores each
+  // candidate's `content`, while attach only fills the `source`/`sourceId`
+  // fields that are first read at Stage 8. Starting it here (instead of awaiting
+  // before rerank) hides the ~120ms citation round-trip behind the ~280ms
+  // rerank. Non-fatal and never rejects: on failure candidates keep source=null
+  // (worker.md error-parity table). Awaited just before Stage 8.
+  let attachPromise: Promise<void> = Promise.resolve();
   if (candidateLookup.size > 0) {
     const attachSourceStart = performance.now();
-    try {
-      await attachSourceText(db, scope, candidateLookup);
-      logger?.info('retrieval.stage_completed', {
-        stage: 'source_text_attach',
-        duration_ms: durationMs(attachSourceStart),
-        candidate_count: candidateLookup.size,
-      });
-    } catch (err) {
-      logger?.warn('retrieval.source_text_attach_failed', {
-        stage: 'source_text_attach',
-        duration_ms: durationMs(attachSourceStart),
-        error_category: 'internal',
-        dependency: 'database',
-      }, err);
-    }
+    attachPromise = attachSourceText(db, scope, candidateLookup).then(
+      () => {
+        logger?.info('retrieval.stage_completed', {
+          stage: 'source_text_attach',
+          duration_ms: durationMs(attachSourceStart),
+          candidate_count: candidateLookup.size,
+        });
+      },
+      (err) => {
+        logger?.warn('retrieval.source_text_attach_failed', {
+          stage: 'source_text_attach',
+          duration_ms: durationMs(attachSourceStart),
+          error_category: 'internal',
+          dependency: 'database',
+        }, err);
+      },
+    );
   }
 
   // Stage 6 — base scores (CE rerank OR rank-remap fallback).
@@ -320,6 +337,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       ce_enabled: false,
     });
   }
+
+  // Join the concurrent Stage-5 source-text attach before Stage 8 reads
+  // sourceChunk/sourceId off the candidates. (Never rejects — see Stage 5.)
+  await attachPromise;
 
   // Stage 7 — recency alpha + pool + optional temporal filter.
   const scoringStart = performance.now();

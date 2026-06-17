@@ -353,6 +353,16 @@ searchRoutes.openapi(
         });
       }
 
+      // EARLY EMBED — kick the query embedding off NOW so the external call
+      // (~370ms, OpenAI) overlaps the visibility + working-set DB round-trips
+      // below instead of running after them inside retrieve(). The signals then
+      // find the vector already resolved. Quality-neutral (same vector).
+      const embedder = getEmbedder(c.env);
+      const embedPromise = embedder.embed(body.query, { mode: 'search' });
+      // retrieve() awaits this; guard the pre-await window so a rejection here
+      // isn't reported as an unhandled rejection.
+      embedPromise.catch(() => {});
+
       const visibleUserIds = await logger.time('retrieval.stage_completed', {
         stage: 'visibility_scope',
         space_id: space.id,
@@ -372,9 +382,31 @@ searchRoutes.openapi(
         memory_count: candidates.memories.length,
         entity_count: candidates.entities.length,
       });
+
+      // Resolve owner display names CONCURRENTLY with retrieve() — the signals
+      // and ranking never use them, only the final response does. Prefetching
+      // for every distinct owner in the loaded working set (a superset of the
+      // result owners) overlaps the ~900ms retrieve() instead of adding a
+      // serial ~110ms DB round-trip after it. Queries users by id (indexed).
+      const ownerIdSet = [
+        ...new Set(
+          candidates.memories
+            .map((m) => m.ownerUserId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+      const ownersPromise =
+        ownerIdSet.length > 0
+          ? db
+              .select({ id: users.id, uuid: users.uuid, name: users.name })
+              .from(users)
+              .where(inArray(users.id, ownerIdSet))
+          : Promise.resolve([] as { id: number; uuid: string; name: string }[]);
+      ownersPromise.catch(() => {}); // guard pre-await window; awaited after retrieve()
+
       const deps = {
         db,
-        embedder: getEmbedder(c.env),
+        embedder,
         reranker: getReranker(c.env),
         vectorStore: getVectorStore(c.env, db),
       };
@@ -393,6 +425,7 @@ searchRoutes.openapi(
           candidates,
           deps,
           entitlements,
+          embedPromise,
           logger: logger.child({ space_id: space.id }),
         }),
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
@@ -401,20 +434,8 @@ searchRoutes.openapi(
       // Map int id → uuid from the already-loaded scoped memories (no extra
       // query). Result candidates are a subset of candidates.memories.
       const uuidById = new Map(candidates.memories.map((m) => [m.id, m.uuid]));
-      const ownerIds = [
-        ...new Set(
-          result.candidates
-            .map((candidate) => candidate.ownerUserId)
-            .filter((id): id is number => id != null),
-        ),
-      ];
-      const ownerRows =
-        ownerIds.length > 0
-          ? await db
-              .select({ id: users.id, uuid: users.uuid, name: users.name })
-              .from(users)
-              .where(inArray(users.id, ownerIds))
-          : [];
+      // Join the owner-name prefetch kicked off before retrieve() (overlapped).
+      const ownerRows = await ownersPromise;
       const ownerById = new Map(
         ownerRows.map((owner) => [
           owner.id,

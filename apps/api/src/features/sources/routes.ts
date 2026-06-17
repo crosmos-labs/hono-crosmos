@@ -16,7 +16,7 @@ import { UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from './gates';
-import { MAX_PENDING_JOBS_PER_USER } from './constants';
+import { MAX_PENDING_JOBS_PER_USER, MAX_SOURCES_PER_JOB } from './constants';
 import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
@@ -194,36 +194,64 @@ sourceRoutes.openapi(
       dependency: 'database',
     }, () => createSources(db, inserts));
 
-    const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
-    // Enforce the per-user pending cap ATOMICALLY at job creation — the gate's
-    // pre-check in `preflight` is a fast advisory reject, but it's a TOCTOU race
-    // under concurrency, so the guarded insert here is the authoritative cap.
-    const jobCreated = await logger.time('ingestion.enqueue_stage_completed', {
+    const enqueuedAtMs = Date.now();
+
+    // Split the request's sources into jobs of at most MAX_SOURCES_PER_JOB. One
+    // job == one worker invocation under the claim/lease model, so this bounds
+    // the sources (and thus the LLM/embed/vector subrequests) per invocation,
+    // keeping it under Cloudflare's per-invocation subrequest cap regardless of
+    // how the client batches. Most requests fit in a single job.
+    const chunks: (typeof created)[] = [];
+    for (let i = 0; i < created.length; i += MAX_SOURCES_PER_JOB) {
+      chunks.push(created.slice(i, i + MAX_SOURCES_PER_JOB));
+    }
+
+    // Create a job per chunk, each gated by the SAME atomic per-user pending cap
+    // (authoritative over preflight's advisory check). Stop at the first cap
+    // rejection; sources left without a job are rolled back below.
+    const createdJobs: { jobId: string; sources: typeof created }[] = [];
+    await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'job_create',
       space_id: space.id,
       error_category: 'internal',
       dependency: 'database',
-    }, () => jobStore.createWithActiveCap({
-      jobId,
-      orgId: space.orgId,
-      spaceId: space.id,
-      userId,
-      sourceIds: created.map((s) => s.id),
-    }, MAX_PENDING_JOBS_PER_USER));
-    if (!jobCreated) {
-      // Lost the cap race: the guarded insert wrote no job. Roll back the sources
-      // we just inserted so they don't dangle without a job, then 429 (same shape
-      // as the advisory gate's pending-cap rejection).
+    }, async () => {
+      for (const chunk of chunks) {
+        const jobId = crypto.randomUUID();
+        const ok = await jobStore.createWithActiveCap({
+          jobId,
+          orgId: space.orgId,
+          spaceId: space.id,
+          userId,
+          sourceIds: chunk.map((s) => s.id),
+        }, MAX_PENDING_JOBS_PER_USER);
+        if (!ok) break;
+        createdJobs.push({ jobId, sources: chunk });
+      }
+    });
+
+    // Roll back sources that didn't get a job (pending cap hit mid-split) so
+    // they never dangle without a job referencing them.
+    const assignedIds = new Set(
+      createdJobs.flatMap((j) => j.sources.map((s) => s.id)),
+    );
+    const orphanedIds = created
+      .filter((s) => !assignedIds.has(s.id))
+      .map((s) => s.id);
+    if (orphanedIds.length > 0) {
       await db
         .delete(sources)
         .where(
           and(
             eq(sources.orgId, space.orgId),
             eq(sources.spaceId, space.id),
-            inArray(sources.id, created.map((s) => s.id)),
+            inArray(sources.id, orphanedIds),
           ),
         );
+    }
+
+    if (createdJobs.length === 0) {
       logger.warn('ingestion.request_rejected', {
         stage: 'pending_cap',
         space_id: space.id,
@@ -240,49 +268,61 @@ sourceRoutes.openapi(
       });
     }
 
-    const enqueuedAtMs = Date.now();
-    const jobMessage = {
-      task: 'process_ingestion' as const,
-      job_id: jobId,
-      correlation_id: correlationId,
-      org_id: space.orgId,
-      space_id: space.id,
-      user_id: userId,
-      source_ids: created.map((s) => s.id),
-      enqueued_at_ms: enqueuedAtMs,
-    };
-    // Durable enqueue first (the backstop), then the low-latency direct kick.
-    await logger.time('ingestion.enqueue_stage_completed', {
-      stage: 'queue_enqueue',
-      space_id: space.id,
-      error_category: 'external_service',
-      dependency: 'queue',
-    }, () => queue.enqueue(jobMessage));
-    // Best-effort: start ingestion now over the service binding so we don't eat
-    // the queue's cold-delivery latency. Off the response path; the enqueued
-    // copy still runs the job if this fails.
-    waitUntilLogged(
-      c,
-      logger,
-      'ingestion.kick_failed',
-      queue.kick(jobMessage),
-      { space_id: space.id, job_id: jobId },
-    );
+    // Durable enqueue (backstop) + low-latency RPC kick, per job. Both are
+    // best-effort: the source + job rows are already committed, so the cron
+    // re-drive sweep recovers any job whose enqueue/kick failed — a source that
+    // got a 202 is never silently dropped.
+    for (const job of createdJobs) {
+      const jobMessage = {
+        task: 'process_ingestion' as const,
+        job_id: job.jobId,
+        correlation_id: correlationId,
+        org_id: space.orgId,
+        space_id: space.id,
+        user_id: userId,
+        source_ids: job.sources.map((s) => s.id),
+        enqueued_at_ms: enqueuedAtMs,
+      };
+      try {
+        await queue.enqueue(jobMessage);
+      } catch (err) {
+        logger.error(
+          'ingestion.enqueue_failed',
+          { stage: 'queue_enqueue', space_id: space.id, job_id: job.jobId },
+          err,
+        );
+      }
+      waitUntilLogged(
+        c,
+        logger,
+        'ingestion.kick_failed',
+        queue.kick(jobMessage),
+        { space_id: space.id, job_id: job.jobId },
+      );
+    }
+
     logger.info('ingestion.enqueue_accepted', {
       space_id: space.id,
-      source_count: created.length,
+      source_count: assignedIds.size,
+      job_count: createdJobs.length,
       duration_ms: durationMs(enqueueStart),
       // Tie the API request_id (in `logger`'s base) to the ingestion
       // correlation_id so a trace spans the producer hop → the worker run.
-      job_id: jobId,
+      job_id: createdJobs[0]!.jobId,
       correlation_id: correlationId,
     });
 
     return c.json(
       {
-        job_id: jobId,
+        job_id: createdJobs[0]!.jobId,
         status: 'pending' as const,
-        source_ids: created.map((s) => s.uuid),
+        source_ids: created
+          .filter((s) => assignedIds.has(s.id))
+          .map((s) => s.uuid),
+        jobs: createdJobs.map((j) => ({
+          job_id: j.jobId,
+          source_ids: j.sources.map((s) => s.uuid),
+        })),
       },
       202,
     );

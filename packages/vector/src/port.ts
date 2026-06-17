@@ -78,6 +78,22 @@ export interface VectorStore {
   ): Promise<VectorMatch[]>;
 
   /**
+   * Optional batched ANN search: run several query vectors against one
+   * collection in a single backend call, returning one match list per input
+   * vector (same order, same `scope`/`opts` applied to each). Adapters that
+   * speak a remote API over HTTP (e.g. Qdrant) implement this to collapse N
+   * per-vector round trips into one request — important under Cloudflare's
+   * per-invocation subrequest cap, where each `fetch` counts. Callers must
+   * fall back to looping `queryNearest` when this is undefined.
+   */
+  queryNearestBatch?(
+    collection: VectorCollection,
+    vectors: number[][],
+    scope: VectorScope,
+    opts: QueryOptions,
+  ): Promise<VectorMatch[][]>;
+
+  /**
    * Fetch raw vectors by id (used by MMR diversification). Missing ids are
    * simply absent from the returned map.
    */

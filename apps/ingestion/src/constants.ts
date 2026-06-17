@@ -9,7 +9,7 @@
 
 // Extraction
 export const MODEL_NAME = 'openai/gpt-4.1-mini';
-export const EMBEDDING_DIMENSIONS = 1024;
+export const EMBEDDING_DIMENSIONS = 1536;
 export const MIN_IMPORTANCE_SCORE = 0.2;
 export const MIN_RELATION_CONFIDENCE = 0.7;
 
