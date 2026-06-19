@@ -65,6 +65,7 @@ The line is SPECIFIC-TO-THIS-USER vs GENERIC. Keep the assistant's specific answ
 - KEEP a specific value the assistant computed/looked up for the user: "Your monthly payment works out to $487" → EXTRACT (speaker_role=assistant)
 - KEEP a concrete recommendation the assistant commits to for the user: "For your toddler-friendly trip I recommend Acadia National Park" → EXTRACT (speaker_role=assistant)
 - KEEP specific instructions/settings the assistant gave: "Bake your sourdough at 450°F for 30 minutes" → EXTRACT (speaker_role=assistant)
+- KEEP a specific fact, answer, or item the assistant provided in response to the user that the user may later refer back to — a named entity, a count, a measurement, a quote, or a specific item from a list: "The study you asked about included 38 participants", "The hostel near the Red Light District is the International Budget Hostel", "The traditional powwow game is the Hoop Dance" → EXTRACT (speaker_role=assistant). Still SKIP generic textbook knowledge not tied to the user's request.
 - KEEP user accepting/deciding: "I'll go with the ocean view room" → EXTRACT (speaker_role=user)
 - KEEP user revealing intent: "I'm thinking of organizing my closet this weekend" → EXTRACT (speaker_role=user)
 - KEEP user stating a fact about themselves: "I've been making my bed every morning for two weeks" → EXTRACT (speaker_role=user)
@@ -105,6 +106,9 @@ Input (assistant turn): "I added up your flights, hotel, and rental car — your
 
 Input (assistant turn): "Blockchain is a decentralized ledger maintained across many nodes."
 {"memories":[]}
+
+Input (assistant turn): "The binaural-beats study you asked about included 38 participants over an 8-week period."
+{"memories":[{"content":"The binaural beats study the user asked about included 38 participants over an 8-week period.","memory_type":"semantic","importance_score":0.3,"speaker_role":"assistant","event_time":null}]}
 
 ## PITFALLS
 - Do NOT atomize rich facts into thin fragments.
