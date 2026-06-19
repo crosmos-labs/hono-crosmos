@@ -77,6 +77,16 @@ export async function handleIngestionDelivery(
         attempt: delivery.attempts,
       });
       delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
+    } else if (outcome === 'retry_transient') {
+      // A dependency (vector store / embedder / LLM) was degraded — the job was
+      // reset to `pending`. Re-queue with a delay so we back off and re-attempt
+      // once it recovers, instead of acking (which would drop the only durable
+      // copy of a job that hasn't finished). See issue #4.
+      logger.warn('ingestion.job_transient_requeued', {
+        delay_seconds: BACKSTOP_RETRY_DELAY_SECONDS,
+        attempt: delivery.attempts,
+      });
+      delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
     } else {
       delivery.ack();
     }

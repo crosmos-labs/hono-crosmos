@@ -8,7 +8,7 @@ import type { IngestionJobMessage } from '@crosmos/types';
  * Why a port at all (since Cloudflare's `Queue` binding is already an
  * interface)? Three reasons:
  *
- *  1. `queueDepth` doesn't exist natively on Cloudflare Queues — every
+ *  1. `inFlightJobCount` doesn't exist natively on Cloudflare Queues — every
  *     backend that wants to enforce backpressure has to source the number
  *     from somewhere. The port hides that choice (DB count vs Durable
  *     Object counter, see decisions.md §4) from the routes.
@@ -29,6 +29,12 @@ export interface QueueService {
    */
   kick(message: IngestionJobMessage): Promise<void>;
 
-  /** Approximate count of pending+processing jobs — for backpressure. */
-  queueDepth(): Promise<number>;
+  /**
+   * Count of in-flight (non-stale pending+processing) ingestion jobs — the
+   * admission signal for the global backpressure gate. NOTE: this is NOT the
+   * Cloudflare Queue's backlog (Queues expose no native depth); it's a DB count
+   * proxy, bounded to non-stale rows so a crashed worker's graveyard rows don't
+   * inflate it (issue #3/#7). Renamed from the misleading `queueDepth`.
+   */
+  inFlightJobCount(): Promise<number>;
 }

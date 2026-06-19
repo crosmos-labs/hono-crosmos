@@ -10,7 +10,7 @@ import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
 import { runMaintenanceCleanup } from './features/maintenance/cleanup';
-import { runIngestionRedrive } from './features/maintenance/redrive';
+import { reapStaleJobs, runIngestionRedrive } from './features/maintenance/redrive';
 // Durable Object class for the per-IP rate limiter — must be exported from the
 // worker entry so the runtime can instantiate it.
 export { RateLimiterDO } from './integrations/rate-limit/limiter-do';
@@ -210,6 +210,20 @@ export default {
     // Each sweep is isolated — one failure must not block the others, and a
     // cron failure is surfaced (logged), never silently lost.
     const isDaily = controller.cron === '17 3 * * *';
+
+    // Reap orphaned jobs first (cheap CAS update): flip jobs that crashed
+    // mid-flight from `processing`/`pending` to `failed` so they stop pinning
+    // the per-user pending cap + the global queue-depth gate and become terminal
+    // for cleanup. The windowed counts already self-heal the gates; this makes
+    // the rows' status reflect reality. See issue #3.
+    try {
+      const reaped = await reapStaleJobs(env);
+      if (reaped > 0) {
+        logger.info('cron.jobs_reaped', { trigger: 'cron', cron: controller.cron, jobs_reaped: reaped });
+      }
+    } catch (err) {
+      logger.error('cron.jobs_reap_failed', { trigger: 'cron' }, err);
+    }
 
     try {
       const redriven = await runIngestionRedrive(env);

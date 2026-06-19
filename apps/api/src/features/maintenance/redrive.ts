@@ -2,9 +2,20 @@ import { createDb, sources, type Database } from '@crosmos/db';
 import { createLogger } from '@crosmos/observability';
 import { and, gt, inArray, lt, or, sql } from 'drizzle-orm';
 import type { Env } from '../../bindings';
-import { getJobStore } from '../../integrations/job-store';
+import { getJobStore, reapStaleIngestionJobs } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
-import { MAX_PENDING_JOBS_PER_USER, MAX_SOURCES_PER_JOB } from '../sources/constants';
+import { getOperationalLimits } from '../../lib/limits';
+import { MAX_SOURCES_PER_JOB } from '../sources/constants';
+
+/**
+ * Cron entrypoint for the stale-job reaper (issue #3). Flips jobs orphaned by a
+ * crashed worker to `failed` so they stop pinning the admission gates and become
+ * terminal for cleanup. Owns its own connection, like `runIngestionRedrive`.
+ */
+export async function reapStaleJobs(env: Env): Promise<number> {
+  const db = createDb(env.HYPERDRIVE.connectionString);
+  return reapStaleIngestionJobs(db, getOperationalLimits(env).staleJobMinutes);
+}
 
 /**
  * Ingestion re-drive sweep — the durability backstop of last resort.
@@ -119,7 +130,8 @@ export async function redriveStuckSources(
     else groups.set(key, { orgId: s.orgId, spaceId: s.spaceId, userId: s.ownerUserId, ids: [s.id] });
   }
 
-  const jobStore = getJobStore(db);
+  const limits = getOperationalLimits(env);
+  const jobStore = getJobStore(db, limits.staleJobMinutes);
   const queue = getQueueService(env, db);
   const correlationId = crypto.randomUUID();
   const enqueuedAtMs = now;
@@ -131,7 +143,7 @@ export async function redriveStuckSources(
         const jobId = crypto.randomUUID();
         const ok = await jobStore.createWithActiveCap(
           { jobId, orgId: g.orgId, spaceId: g.spaceId, userId: g.userId, sourceIds: chunk },
-          MAX_PENDING_JOBS_PER_USER,
+          limits.maxPendingJobsPerUser,
         );
         if (!ok) {
           // User is at the pending cap — leave these for a later sweep.

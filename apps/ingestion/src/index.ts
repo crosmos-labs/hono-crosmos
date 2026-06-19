@@ -124,7 +124,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       },
     });
     try {
-      await processIngestion(message, {
+      const outcome = await processIngestion(message, {
         db,
         llm: getLLM(this.env),
         embedder: getEmbedder(this.env),
@@ -133,6 +133,15 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         analytics: this.env.ANALYTICS,
         environment: this.env.ENVIRONMENT,
       });
+      // On the RPC fast path we don't own the queue message, so we can't re-queue
+      // it ourselves — but `processIngestion` already reset the job to `pending`,
+      // and the durable queue copy (enqueued at creation) will be delivered and
+      // re-attempt it via the queue consumer's retry path. Just record it. (#4)
+      if (outcome === 'retry_transient') {
+        logger.warn('ingestion.rpc_run_retry_transient', {
+          reason: 'dependency_degraded',
+        });
+      }
     } catch (err) {
       // Don't rethrow — the queue backstop owns recovery. But don't wait out
       // the full lease either: proactively flip a job we claimed-then-wedged in

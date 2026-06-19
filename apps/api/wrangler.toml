@@ -120,6 +120,16 @@ EMBEDDINGS_PROVIDER = "workers-ai"
 RERANKER_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
+# Operational limits (issue #6) — optional overrides for the admission/
+# backpressure knobs. Each falls back to its compile-time default
+# (lib/limits.ts → getOperationalLimits) when unset, so behavior is unchanged
+# unless you set one. Uncomment to tune per-env without a code change:
+#   MAX_PENDING_JOBS_PER_USER = "5000"          # per-user active-job cap
+#   MAX_QUEUE_DEPTH = "5000"                     # global in-flight-job gate
+#   STALE_JOB_MINUTES = "10"                     # orphaned-job window (gates + reaper)
+#   RETRIEVAL_MAX_CONCURRENT_PER_USER = "10"     # per-user concurrent /search
+#   GLOBAL_AI_RPM_CEILING = "3000"               # account-wide AI RPM ceiling
+
 # Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
 #   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small @ 1024-dim)
 #   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small @ 1024-dim)

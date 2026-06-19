@@ -80,6 +80,15 @@ export interface Env {
   RETRIEVAL_RERANKER_ENABLED?: string;
   // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
   ADMIN_TOOLS?: string;
+
+  // Operational limits (issue #6) — env overrides for the admission/backpressure
+  // knobs. Optional: each falls back to its compile-time default (see
+  // lib/limits.ts → getOperationalLimits). Integers as strings.
+  MAX_PENDING_JOBS_PER_USER?: string;
+  MAX_QUEUE_DEPTH?: string;
+  STALE_JOB_MINUTES?: string;
+  RETRIEVAL_MAX_CONCURRENT_PER_USER?: string;
+  GLOBAL_AI_RPM_CEILING?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).
