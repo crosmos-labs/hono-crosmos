@@ -16,7 +16,13 @@ import { UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from './gates';
-import { MAX_PENDING_JOBS_PER_USER, MAX_SOURCES_PER_JOB } from './constants';
+import {
+  assertDispatchedOrRollback,
+  dispatchIngestionJobs,
+  type DispatchableJob,
+} from './dispatch';
+import { MAX_SOURCES_PER_JOB } from './constants';
+import { getOperationalLimits } from '../../lib/limits';
 import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
@@ -146,9 +152,10 @@ sourceRoutes.openapi(
       source_count: body.sources.length,
     });
 
+    const limits = getOperationalLimits(c.env);
     const limiter = getRateLimiter(c.env);
     const queue = getQueueService(c.env, db);
-    const jobStore = getJobStore(db);
+    const jobStore = getJobStore(db, limits.staleJobMinutes);
 
     const preflightStart = performance.now();
     const space = await preflight({
@@ -156,6 +163,7 @@ sourceRoutes.openapi(
       limiter,
       queue,
       jobStore,
+      limits,
       orgId,
       userId,
       spaceUuid: body.space_id,
@@ -225,7 +233,7 @@ sourceRoutes.openapi(
           spaceId: space.id,
           userId,
           sourceIds: chunk.map((s) => s.id),
-        }, MAX_PENDING_JOBS_PER_USER);
+        }, limits.maxPendingJobsPerUser);
         if (!ok) break;
         createdJobs.push({ jobId, sources: chunk });
       }
@@ -268,12 +276,17 @@ sourceRoutes.openapi(
       });
     }
 
-    // Durable enqueue (backstop) + low-latency RPC kick, per job. Both are
-    // best-effort: the source + job rows are already committed, so the cron
-    // re-drive sweep recovers any job whose enqueue/kick failed — a source that
-    // got a 202 is never silently dropped.
-    for (const job of createdJobs) {
-      const jobMessage = {
+    // Durable enqueue (backstop) + low-latency RPC kick, per job, dispatched
+    // concurrently. Unlike the old fully best-effort path, we now classify each
+    // job's outcome: if EVERY job both failed to enqueue AND failed to kick (the
+    // startup race / ingestion-binding-down case), the rows are rolled back and
+    // we 503 instead of silently returning 202 over orphaned `pending` rows that
+    // only the cron could ever recover. Partial failures keep their rows and
+    // lean on the re-drive sweep. See ./dispatch.ts and issue #2.
+    const dispatchables: DispatchableJob[] = createdJobs.map((job) => ({
+      jobId: job.jobId,
+      sourceIds: job.sources.map((s) => s.id),
+      message: {
         task: 'process_ingestion' as const,
         job_id: job.jobId,
         correlation_id: correlationId,
@@ -282,24 +295,15 @@ sourceRoutes.openapi(
         user_id: userId,
         source_ids: job.sources.map((s) => s.id),
         enqueued_at_ms: enqueuedAtMs,
-      };
-      try {
-        await queue.enqueue(jobMessage);
-      } catch (err) {
-        logger.error(
-          'ingestion.enqueue_failed',
-          { stage: 'queue_enqueue', space_id: space.id, job_id: job.jobId },
-          err,
-        );
-      }
-      waitUntilLogged(
-        c,
-        logger,
-        'ingestion.kick_failed',
-        queue.kick(jobMessage),
-        { space_id: space.id, job_id: job.jobId },
-      );
-    }
+      },
+    }));
+    const dispatchResult = await dispatchIngestionJobs(queue, dispatchables);
+    await assertDispatchedOrRollback(db, logger, {
+      orgId: space.orgId,
+      spaceId: space.id,
+      jobs: dispatchables,
+      result: dispatchResult,
+    });
 
     logger.info('ingestion.enqueue_accepted', {
       space_id: space.id,

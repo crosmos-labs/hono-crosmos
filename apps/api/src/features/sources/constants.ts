@@ -1,7 +1,13 @@
 /**
  * Producer-side backpressure constants. Mirror Python's
- * `app/worker/constants.py`; see .codex/pipelines.md. Keep these
- * hard-coded (not env-configurable) so behavior matches between deploys.
+ * `app/worker/constants.py`; see .codex/pipelines.md.
+ *
+ * NOTE: the operational limits below (`MAX_QUEUE_DEPTH`,
+ * `MAX_PENDING_JOBS_PER_USER`, `STALE_JOB_MINUTES`) are the DEFAULTS — they're
+ * env-overridable via `lib/limits.ts` → `getOperationalLimits` (issue #6).
+ * Don't read them directly in request paths; resolve through the config layer so
+ * an env override takes effect. The shape/format constants (sizes, lengths) stay
+ * compile-time.
  */
 
 /** Reject `POST /sources` with 503 when the queue has at least this many pending jobs. */
@@ -12,6 +18,21 @@ export const RETRY_AFTER_SECONDS = 30;
 
 /** Reject `POST /sources` with 429 when a user already has this many pending+processing jobs. */
 export const MAX_PENDING_JOBS_PER_USER = 5000;
+
+/**
+ * A job stops counting against the per-user pending cap and the global
+ * queue-depth gate once it has been stale this long, and the reaper flips it to
+ * `failed` (issue #3). Without this, a worker that died mid-job leaves rows in
+ * `processing` forever — they're counted indefinitely and wedge both gates shut
+ * until manual cleanup.
+ *
+ * A healthy `processing` job heartbeats `started_at` once per source (see the
+ * ingestion worker's `updateJobStatus`), so it never looks stale; only a job
+ * that has made NO progress for this long is treated as orphaned. Kept aligned
+ * with the ingestion job lease (`STUCK_JOB_TIMEOUT_MINUTES = 10`) so "abandoned"
+ * means the same thing to the gates, the lease/claim, and the reaper.
+ */
+export const STALE_JOB_MINUTES = 10;
 
 /** Producer-side ceiling on request shape. Matches Python `IngestSourcesRequest`. */
 export const MAX_SOURCES_PER_REQUEST = 100;

@@ -18,6 +18,7 @@ import type {
   TenantScope,
 } from '@crosmos/types';
 import {
+  BACKSTOP_RETRY_DELAY_SECONDS,
   JOB_LEASE_MS,
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
@@ -31,6 +32,7 @@ import { ingestSource, type IngestResult } from './ingestion/pipeline';
 import {
   claimJob,
   isJobCancelled,
+  resetJobForRetry,
   updateJobStatus,
 } from './job-store';
 import {
@@ -50,12 +52,19 @@ import { recordIngestionTokens } from './usage';
  *  - `skipped_in_flight` — another trigger holds a live lease → the durable
  *                          copy must survive, so the queue consumer re-queues
  *                          with a delay and re-checks later.
+ *  - `retry_transient`   — one or more sources failed on a RETRYABLE
+ *                          infrastructure error (vector store / embedder / LLM
+ *                          5xx-429), so the job is NOT marked terminal: it's
+ *                          reset to `pending` and the queue consumer re-queues
+ *                          it with a delay. Avoids silently dropping a session
+ *                          just because a dependency was briefly red (issue #4).
  */
 export type IngestionOutcome =
   | 'processed'
   | 'skipped_terminal'
   | 'skipped_not_found'
-  | 'skipped_in_flight';
+  | 'skipped_in_flight'
+  | 'retry_transient';
 
 export interface ProcessIngestionDeps {
   db: Database;
@@ -159,6 +168,10 @@ export async function processIngestion(
   const failedSourceIds: number[] = [];
   const sourceErrors: Record<string, string> = {};
   const results: IngestResult[] = [];
+  // Sources that failed on a RETRYABLE infrastructure error (e.g. a red vector
+  // store). These are deliberately NOT marked terminally `failed` — they're left
+  // `processing` so the re-queue (return 'retry_transient') reprocesses them.
+  const transientFailedIds: number[] = [];
   // Representative error category for the rolled-up outcome metric. An external
   // (LLM/embedder) failure dominates over an internal one for alerting.
   let rolledUpErrorCategory: 'external_service' | 'internal' | undefined;
@@ -291,9 +304,15 @@ export async function processIngestion(
       const message =
         lastErr instanceof Error ? lastErr.message : String(lastErr);
       const fields = failureFields(lastErr);
+      // Retryable infra failure that survived the in-source retry budget = the
+      // dependency is (still) degraded. Don't terminally fail the source —
+      // leave it `processing` and re-queue the job so it's reprocessed once the
+      // dependency recovers, instead of silently dropping the session (#4).
+      const transient = isRetryable(lastErr);
       sourceLogger.error('ingestion.source_failed', {
         duration_ms: durationMs(sourceStart),
         error_message: message,
+        transient,
         ...fields,
       }, lastErr);
       // An external (LLM/embedder) failure dominates for outcome alerting.
@@ -315,10 +334,42 @@ export async function processIngestion(
           index: 'ingestion_ai_error',
         });
       }
-      sourceErrors[String(sourceId)] = message;
-      await markSourcesFailed(db, scope, [sourceId], message);
-      failedSourceIds.push(sourceId);
+      if (transient) {
+        // Leave the source `processing` (gate 2 reprocesses it on the re-run).
+        transientFailedIds.push(sourceId);
+      } else {
+        sourceErrors[String(sourceId)] = message;
+        await markSourcesFailed(db, scope, [sourceId], message);
+        failedSourceIds.push(sourceId);
+      }
     }
+  }
+
+  // If any source hit a retryable infra failure, re-queue the whole job rather
+  // than recording a terminal status that would lose those sessions. The job is
+  // reset to `pending` (CAS-guarded; we own the claim) and the queue consumer
+  // re-delivers after a delay — completed sources are skipped on the re-run
+  // (gate 2), permanently-failed ones stay failed, and the transient ones are
+  // reprocessed once the dependency recovers. Token usage from this aborted
+  // attempt is intentionally not recorded here to avoid double-counting against
+  // the successful re-run.
+  if (transientFailedIds.length > 0) {
+    const reset = await resetJobForRetry(db, msg.job_id);
+    logger.warn('ingestion.job_retry_transient', {
+      duration_ms: durationMs(jobStart),
+      transient_source_count: transientFailedIds.length,
+      permanent_failed_count: failedSourceIds.length,
+      completed_source_count: results.length,
+      reset,
+    });
+    emitOutcomeMetric(deps, {
+      finalStatus: 'pending',
+      durationMs: durationMs(jobStart),
+      failedSourceCount: transientFailedIds.length,
+      tokenCount: llm.totalTokens + embedder.totalTokens,
+      errorCategory: rolledUpErrorCategory ?? 'external_service',
+    });
+    return 'retry_transient';
   }
 
   // Roll up job status — mirrors Python's `process_ingestion` terminal block.

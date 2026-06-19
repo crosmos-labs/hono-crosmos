@@ -29,12 +29,11 @@ import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
   GLOBAL_AI_RETRY_AFTER_SECONDS,
-  GLOBAL_AI_RPM_CEILING,
   GLOBAL_AI_WINDOW_SECONDS,
-  RETRIEVAL_MAX_CONCURRENT_PER_USER,
   RETRIEVAL_RESULT_TIMEOUT_SECONDS,
   RETRIEVAL_USER_COUNTER_TTL_SECONDS,
 } from './constants';
+import { getOperationalLimits } from '../../lib/limits';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
@@ -180,6 +179,7 @@ searchRoutes.openapi(
   async (c) => {
     const body = c.req.valid('json');
     const db = getDb(c);
+    const limits = getOperationalLimits(c.env);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
     const requestId = c.var.requestId ?? crypto.randomUUID();
@@ -303,7 +303,7 @@ searchRoutes.openapi(
       () =>
         concurrency.acquire(
           userKey,
-          RETRIEVAL_MAX_CONCURRENT_PER_USER,
+          limits.retrievalMaxConcurrentPerUser,
           RETRIEVAL_USER_COUNTER_TTL_SECONDS,
         ),
     );
@@ -333,7 +333,7 @@ searchRoutes.openapi(
         stage: 'global_ai_throttle',
         space_id: space.id,
       }, () => checkGlobalAiThrottle(c.env, {
-        limit: GLOBAL_AI_RPM_CEILING,
+        limit: limits.globalAiRpmCeiling,
         windowSeconds: GLOBAL_AI_WINDOW_SECONDS,
       }, defer));
       if (!globalAi.allowed) {

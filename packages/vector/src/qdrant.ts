@@ -31,6 +31,22 @@ const REQUEST_TIMEOUT_MS = 30_000;
 // Point retrieval is batched to keep request bodies bounded.
 const RETRIEVE_BATCH = 256;
 
+// Bounded in-adapter retry for WRITES (upsert/delete) only. A write that fails
+// with a retryable status (429 / 5xx / timeout) is almost always a transient
+// blip — a brief Qdrant flush stall, a connection reset — that clears in well
+// under a second. Retrying here absorbs it WITHOUT re-running the whole
+// (expensive, LLM-bearing) source pipeline. Reads aren't retried here: the
+// dedup-hint read is non-fatal (degrades to empty) and the per-source pipeline
+// retry already covers read-path failures. Kept small so a genuinely red store
+// fails fast and bubbles up to the job-level re-queue (issue #4) rather than
+// burning the per-invocation subrequest budget on retries.
+const WRITE_RETRY_ATTEMPTS = 3;
+const WRITE_RETRY_BASE_MS = 200;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export interface QdrantStoreConfig {
   /** Cluster endpoint, e.g. `https://xxxx.aws.cloud.qdrant.io` (no trailing slash needed). */
   url: string;
@@ -59,7 +75,7 @@ export class QdrantStore implements VectorStore {
     if (items.length === 0) return;
     // wait=true so a subsequent read (dedup hint / entity-resolution prefilter)
     // sees the write — ingestion writes then immediately queries.
-    await this.request('PUT', `/collections/${this.collectionName(collection)}/points?wait=true`, {
+    await this.writeWithRetry('PUT', `/collections/${this.collectionName(collection)}/points?wait=true`, {
       points: items.map((it) => ({
         id: it.id,
         vector: it.vector,
@@ -171,11 +187,39 @@ export class QdrantStore implements VectorStore {
 
   async deleteByIds(collection: VectorCollection, ids: number[]): Promise<void> {
     if (ids.length === 0) return;
-    await this.request(
+    await this.writeWithRetry(
       'POST',
       `/collections/${this.collectionName(collection)}/points/delete?wait=true`,
       { points: ids },
     );
+  }
+
+  /**
+   * `request` wrapped in a bounded retry on retryable failures, for WRITES only.
+   * Exponential backoff with jitter (200ms, ~400ms) so concurrent jobs don't
+   * retry in lockstep against a recovering cluster. A non-retryable error (4xx
+   * other than 429) throws immediately. After the budget is exhausted the last
+   * `QdrantRequestError` propagates, where the job-level handler decides to
+   * re-queue rather than terminally fail (issue #4).
+   */
+  private async writeWithRetry<T = unknown>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= WRITE_RETRY_ATTEMPTS; attempt++) {
+      try {
+        return await this.request<T>(method, path, body);
+      } catch (err) {
+        lastErr = err;
+        const retryable = err instanceof QdrantRequestError && err.retryable;
+        if (!retryable || attempt === WRITE_RETRY_ATTEMPTS) throw err;
+        const backoff = WRITE_RETRY_BASE_MS * 2 ** (attempt - 1);
+        await sleep(backoff + Math.floor(Math.random() * WRITE_RETRY_BASE_MS));
+      }
+    }
+    throw lastErr;
   }
 
   private async request<T = unknown>(
