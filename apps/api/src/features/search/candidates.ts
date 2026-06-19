@@ -124,6 +124,8 @@ export async function attachSourceText(
       memoryId: chunkMemories.memoryId,
       content: sources.content,
       sourceId: sources.id,
+      sourceUuid: sources.uuid,
+      sourceMeta: sources.meta,
     })
     .from(chunkMemories)
     .innerJoin(chunks, eq(chunks.id, chunkMemories.chunkId))
@@ -139,6 +141,11 @@ export async function attachSourceText(
     if (candidate) {
       candidate.sourceChunk = row.content;
       candidate.sourceId = row.sourceId;
+      candidate.sourceUuid = row.sourceUuid;
+      // session_id lives in the source's meta (set by the conversations route);
+      // surfaced so consumers/benchmarks can attribute a memory to its session.
+      const meta = row.sourceMeta as Record<string, unknown> | null;
+      candidate.sessionId = typeof meta?.session_id === 'string' ? meta.session_id : null;
     }
   }
 }

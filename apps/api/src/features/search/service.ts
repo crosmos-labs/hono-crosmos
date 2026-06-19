@@ -22,6 +22,7 @@ import {
   RECENCY_ALPHA,
   RECENCY_ALPHA_FALLBACK,
   RECENCY_CENTER,
+  RERANK_RELEVANCE_FLOOR,
   RERANKER_MAX_CANDIDATES,
   TEMPORAL_CANDIDATE_LIMIT,
   TEMPORAL_CENTER,
@@ -416,14 +417,35 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       sourceSignals: sourceSignalsMap.get(memoryId) ?? [],
       sourceChunk: ranked.sourceChunk,
       sourceId: ranked.sourceId,
+      sourceUuid: ranked.sourceUuid,
+      sessionId: ranked.sessionId,
       fusedScore,
       persistenceScore: persistence,
       finalScore,
+      rerankScore: base,
+      ceRelevance: ceEnabled,
     });
   }
 
-  // Stage 9 — sort + select top_k (or MMR).
+  // Stage 9 — sort, apply the rerank relevance floor, then select top_k (or MMR).
   scored.sort((a, b) => b.finalScore - a.finalScore);
+
+  // Post-rerank precision gate: when the cross-encoder is active, drop weakly
+  // relevant candidates so the reader sees only on-topic memories. Always keep
+  // at least the single best candidate — a weak query returns fewer, never zero.
+  let selectable = scored;
+  if (ceEnabled && scored.length > 0) {
+    const aboveFloor = scored.filter((c) => c.rerankScore >= RERANK_RELEVANCE_FLOOR);
+    selectable = aboveFloor.length > 0 ? aboveFloor : scored.slice(0, 1);
+    if (selectable.length !== scored.length) {
+      logger?.info('retrieval.stage_completed', {
+        stage: 'rerank_floor',
+        candidate_count: scored.length,
+        result_count: selectable.length,
+        floor: RERANK_RELEVANCE_FLOOR,
+      });
+    }
+  }
 
   let top: CandidateMemory[];
   if (query.diversify) {
@@ -431,11 +453,11 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     // store (pg: column read; vectorize: batched getByIds).
     const embeddingsLookup = await vectorStore.fetchVectors(
       'memories',
-      scored.map((c) => c.memoryId),
+      selectable.map((c) => c.memoryId),
     );
-    top = mmrRerank(scored, embeddingsLookup, query.topK);
+    top = mmrRerank(selectable, embeddingsLookup, query.topK);
   } else {
-    top = scored.slice(0, query.topK);
+    top = selectable.slice(0, query.topK);
   }
   logger?.info('retrieval.stage_completed', {
     stage: 'score_and_select',

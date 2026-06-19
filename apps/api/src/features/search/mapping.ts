@@ -31,5 +31,7 @@ export function toRankedCandidate(
     source,
     sourceChunk: null,
     sourceId: null,
+    sourceUuid: null,
+    sessionId: null,
   };
 }

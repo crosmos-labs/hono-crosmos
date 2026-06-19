@@ -92,6 +92,8 @@ interface SearchCandidateOut {
   memory_type: string;
   score: number;
   source?: string | null;
+  source_id: string | null;
+  session_id: string | null;
   created_at: string;
   recorded_at: string;
   event_time: string | null;
@@ -128,6 +130,8 @@ function buildResponse(
       content: c.content,
       memory_type: c.memoryType,
       score: c.finalScore,
+      source_id: c.sourceUuid,
+      session_id: c.sessionId,
       created_at: c.createdAt.toISOString(),
       recorded_at: c.recordedAt.toISOString(),
       event_time: c.eventTime ? c.eventTime.toISOString() : null,
