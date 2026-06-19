@@ -58,6 +58,14 @@ export const BACKSTOP_RETRY_DELAY_SECONDS = 60;
 export const SESSION_SEGMENT_SIZE = 4;
 export const SESSION_LOOKBACK_WINDOW = 4;
 
+// Conversation chunking — a source runs entirely in ONE Cloudflare invocation,
+// which is bounded to 1000 subrequests; each chunk spends ~10 of them (search
+// embed + 2 LLM calls + batch embed + DB + vector ops). A very long conversation
+// chunks into many windows and can approach that ceiling. We only WARN past this
+// threshold today (see the TODO in pipeline.ts); production bounding (splitting
+// a long conversation across sources/jobs) is a follow-up.
+export const CONVERSATION_CHUNK_WARN_THRESHOLD = 50;
+
 // Source loader retries (Stage 0)
 export const SOURCE_LOAD_RETRIES = 5;
 export const SOURCE_LOAD_RETRY_DELAY_MS = 500;
