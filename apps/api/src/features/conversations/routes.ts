@@ -36,7 +36,7 @@ conversationRoutes.openapi(
     tags: ['conversations'],
     summary: 'Ingest Conversation',
     description:
-      'Ingest a multi-turn conversation. Messages are segmented into batches of 4; each segment becomes one source with the prior 4 segments attached as `meta.lookback_context` for pronoun resolution during extraction.',
+      'Ingest a multi-turn conversation. The conversation is stored as a single source and segmented at ingestion into windows of 4 turns; each window is extracted independently with the prior window as lookback context for pronoun resolution.',
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requirePrincipal] as const,
     request: {
