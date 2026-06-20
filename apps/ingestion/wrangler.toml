@@ -3,6 +3,15 @@ main = "src/index.ts"
 compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
 
+# ───────────────────────────────────────────────────────────────────────────
+# PRODUCTION STACK (the [ai] + [[vectorize]] bindings below are DORMANT in prod):
+#   vector store = Qdrant   ·   embeddings = OpenAI text-embedding-3-small @1536
+#   extraction LLM = OpenRouter   ·   DB = Neon/Hyperdrive (shared with API)
+# Real provider switches live in [env.production.vars]. Top-level [vars]
+# (workers-ai / vectorize) are only the bare-`wrangler dev` default. Source of
+# truth: docs/deployed-architecture.md. Do NOT call prod "Workers AI"/"Vectorize".
+# ───────────────────────────────────────────────────────────────────────────
+
 workers_dev = true
 
 [observability]
@@ -61,7 +70,8 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3
 
-# Workers AI: embeddings (bge-m3).
+# Workers AI binding (embeddings bge-m3) — DORMANT in production. Kept as a
+# swappable fallback; prod uses OpenAI embeddings (EMBEDDINGS_PROVIDER below).
 [ai]
 binding = "AI"
 
@@ -72,7 +82,8 @@ binding = "AI"
 # binding = "ANALYTICS"
 # dataset = "crosmos_ingestion_dev"
 
-# Vectorize: vector storage (VECTOR_STORE=vectorize). Shared with the API worker.
+# Vectorize: vector storage (only when VECTOR_STORE=vectorize). DORMANT in
+# production — prod sets VECTOR_STORE=qdrant. Shared with the API worker.
 [[vectorize]]
 binding = "MEMORIES_INDEX"
 index_name = "crosmos-memories-dev"
@@ -85,7 +96,9 @@ index_name = "crosmos-entities-dev"
 ENVIRONMENT = "development"
 # Default LLM provider for ingestion. Switch to "openai" to call OpenAI directly.
 LLM_PROVIDER = "openrouter"
-# Provider selection (defaults if unset: workers-ai / vectorize). Must match the API.
+# Provider selection. THESE ARE THE BARE-`wrangler dev` DEFAULTS, NOT PRODUCTION.
+# Production overrides to openai / qdrant in [env.production.vars] below; the
+# local benchmark overrides via .dev.vars. Must match the API worker.
 EMBEDDINGS_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 

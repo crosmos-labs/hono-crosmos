@@ -6,7 +6,7 @@
  * order). Seeding uses three strategies; an entity's relevance is the max
  * across them. See .codex/pipelines.md.
  */
-import { type Database, type Entity, type Memory, edges } from '@crosmos/db';
+import { type Database, edges } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
@@ -25,7 +25,12 @@ import {
 } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { intersectionSize, tokenize } from '../tokenize';
-import { type RankedCandidate, SourceSignal } from '../types';
+import {
+  type RankedCandidate,
+  type RetrievalEntityRow,
+  type RetrievalMemoryRow,
+  SourceSignal,
+} from '../types';
 
 const SEC_PER_DAY = 86400;
 
@@ -104,7 +109,7 @@ async function seedByMemory(
   vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
-  memoryMap: Map<number, Memory>,
+  memoryMap: Map<number, RetrievalMemoryRow>,
   memoryToEntities: Map<number, number[]>,
 ): Promise<Map<number, number>> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
@@ -143,12 +148,12 @@ async function seedByEntityEmbedding(
 /** Seed via token overlap on entity names (normalized to the top match). */
 function seedByEntityName(
   queryText: string,
-  entities: Entity[],
+  entities: RetrievalEntityRow[],
 ): Map<number, number> {
   const queryTokens = tokenize(queryText);
   if (queryTokens.size === 0) return new Map();
 
-  const scored: Array<{ entity: Entity; score: number }> = [];
+  const scored: Array<{ entity: RetrievalEntityRow; score: number }> = [];
   for (const entity of entities) {
     const overlap = intersectionSize(queryTokens, tokenize(entity.name));
     if (overlap > 0) scored.push({ entity, score: overlap / queryTokens.size });
@@ -170,8 +175,8 @@ export async function graphSearchWithStore(
   vectorStore: VectorStore,
   queryText: string,
   queryEmbedding: number[],
-  memories: Memory[],
-  entities: Entity[],
+  memories: RetrievalMemoryRow[],
+  entities: RetrievalEntityRow[],
   memoryToEntities: Map<number, number[]>,
   limit: number,
   asOf: Date | null,
@@ -181,7 +186,7 @@ export async function graphSearchWithStore(
   const effectiveMaxDepth = maxDepth ?? MAX_DEPTH;
   const now = new Date();
 
-  const memoryMap = new Map<number, Memory>();
+  const memoryMap = new Map<number, RetrievalMemoryRow>();
   for (const m of memories) if (m.forgottenAt === null) memoryMap.set(m.id, m);
   if (memoryMap.size === 0) return [];
 

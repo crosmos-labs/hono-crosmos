@@ -218,7 +218,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
         if (temporalRange === null) return [];
         return temporalSearch(
-          candidates.memories,
+          db,
+          scope,
           temporalRange[0],
           temporalRange[1],
           Math.min(query.candidatePool, TEMPORAL_CANDIDATE_LIMIT),
