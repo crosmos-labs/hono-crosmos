@@ -10,19 +10,18 @@
  * similarity-ordered, so `queryNearest` already truncates below
  * `SEMANTIC_MIN_SCORE`.
  */
-import type { Memory } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { SEMANTIC_MIN_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
-import { type RankedCandidate, SourceSignal } from '../types';
+import { type RankedCandidate, type RetrievalMemoryRow, SourceSignal } from '../types';
 
 export async function semanticSearch(
   vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
   limit: number,
-  memoryById: Map<number, Memory>,
+  memoryById: Map<number, RetrievalMemoryRow>,
 ): Promise<RankedCandidate[]> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
     topK: limit,

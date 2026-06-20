@@ -4,37 +4,65 @@
  * `app/services/retrieval.py` (loader) + `services/memories.py:touch_memories`
  * + the `chunk_memories → chunks → sources` text attach.
  */
-import { type Database, type Memory, type Entity, memories, entities, memoryEntities, chunkMemories, chunks, sources } from '@crosmos/db';
+import { type Database, memories, entities, memoryEntities, chunkMemories, chunks, sources } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
 import { and, asc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { scopeEntities, scopeMemories, sourceVisibilityClause } from '../../lib/scope';
-import type { RankedCandidate } from './types';
+import type { RankedCandidate, RetrievalMemoryRow, RetrievalEntityRow } from './types';
 
 export interface RetrievalCandidates {
-  memories: Memory[];
-  entities: Entity[];
+  memories: RetrievalMemoryRow[];
+  entities: RetrievalEntityRow[];
   /** Empty on the store path (`include_edges = graph_store is None`). */
   edges: never[];
   memoryToEntities: Map<number, number[]>;
 }
 
-/** Load all non-forgotten memories in scope. */
+/**
+ * The exact column set ranking reads off a memory row (see `RetrievalMemoryRow`).
+ * Shared by every loader/signal that hydrates memory rows so the projection
+ * stays in one place — notably the temporal signal reuses it. Deliberately omits
+ * `embedding` (vector; null on the qdrant/vectorize backends, fetched by id for
+ * MMR), `meta`, `visibility`, `updatedAt`, and the clustering columns — none
+ * are read by the ranking pipeline or the response mapper.
+ */
+export const retrievalMemoryColumns = {
+  id: memories.id,
+  uuid: memories.uuid,
+  content: memories.content,
+  memoryType: memories.memoryType,
+  ownerUserId: memories.ownerUserId,
+  orgId: memories.orgId,
+  spaceId: memories.spaceId,
+  importanceScore: memories.importanceScore,
+  createdAt: memories.createdAt,
+  recordedAt: memories.recordedAt,
+  accessFrequency: memories.accessFrequency,
+  lastAccessedAt: memories.lastAccessedAt,
+  eventTime: memories.eventTime,
+  forgottenAt: memories.forgottenAt,
+} as const;
+
+/** Load all non-forgotten memories in scope (projected columns only). */
 export async function getRetrievalMemories(
   db: Database,
   scope: TenantScope,
-): Promise<Memory[]> {
+): Promise<RetrievalMemoryRow[]> {
   return db
-    .select()
+    .select(retrievalMemoryColumns)
     .from(memories)
     .where(and(scopeMemories(scope), isNull(memories.forgottenAt)));
 }
 
-/** Load all entities in scope. */
+/** Load all entities in scope (id + name only — the graph signal's needs). */
 export async function getRetrievalEntities(
   db: Database,
   scope: TenantScope,
-): Promise<Entity[]> {
-  return db.select().from(entities).where(scopeEntities(scope));
+): Promise<RetrievalEntityRow[]> {
+  return db
+    .select({ id: entities.id, name: entities.name })
+    .from(entities)
+    .where(scopeEntities(scope));
 }
 
 /**
