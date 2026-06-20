@@ -1,10 +1,11 @@
-import type {
-  QueryOptions,
-  UpsertItem,
-  VectorCollection,
-  VectorMatch,
-  VectorScope,
-  VectorStore,
+import {
+  VectorStoreError,
+  type QueryOptions,
+  type UpsertItem,
+  type VectorCollection,
+  type VectorMatch,
+  type VectorScope,
+  type VectorStore,
 } from './port';
 
 /**
@@ -260,17 +261,16 @@ export class QdrantStore implements VectorStore {
   }
 }
 
-export class QdrantRequestError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
+/**
+ * Qdrant-specific {@link VectorStoreError}. Retryable on 429 / 5xx (incl. the
+ * 504 a request timeout is mapped to). Extends the port error so the ingestion
+ * consumer can branch on `VectorStoreError` for any backend, while in-adapter
+ * retry logic can still narrow to `QdrantRequestError`.
+ */
+export class QdrantRequestError extends VectorStoreError {
+  constructor(message: string, status: number) {
+    super(message, { status, retryable: status === 429 || status >= 500 });
     this.name = 'QdrantRequestError';
-  }
-
-  get retryable(): boolean {
-    return this.status === 429 || this.status >= 500;
   }
 }
 

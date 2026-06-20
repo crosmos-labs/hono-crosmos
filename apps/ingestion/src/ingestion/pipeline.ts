@@ -33,8 +33,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { VectorStore } from '@crosmos/vector';
 import {
   CONVERSATION_CHUNK_WARN_THRESHOLD,
-  EMBEDDING_DIMENSIONS,
   EXISTING_MEMORY_LOOKUP_LIMIT,
+  MAX_CHUNKS_PER_SOURCE,
 } from '../constants';
 import { extractGraph, extractMemories } from '../extractors/extract';
 import { DropCounter, normalizeFacts } from '../extractors/normalize';
@@ -63,6 +63,48 @@ export interface IngestResult {
   edges: IngestedEdge[];
   newEntityIds: number[];
   resolvedEntityIds: number[];
+  /**
+   * Number of chunks this source was split into (whether or not they yielded
+   * memories). The job-level handler sums these to enforce the per-invocation
+   * chunk budget (issues #1 / #2).
+   */
+  chunkCount: number;
+}
+
+/**
+ * A single source produced more chunks than one Cloudflare invocation can safely
+ * process under the subrequest cap. Terminal for that source — it must be split
+ * across multiple sources at the producer. Non-retryable.
+ */
+export class SourceTooLargeError extends Error {
+  constructor(
+    public readonly sourceId: number,
+    public readonly chunkCount: number,
+    public readonly maxChunks: number,
+  ) {
+    super(
+      `Source ${sourceId} has ${chunkCount} chunks, exceeding the per-source limit of ${maxChunks}; split it across multiple sources`,
+    );
+    this.name = 'SourceTooLargeError';
+  }
+}
+
+/**
+ * Processing this source would exceed the REMAINING per-invocation chunk budget.
+ * NOT a failure: the source is left untouched, the job is re-queued, and the
+ * remaining sources run in a fresh invocation with a full budget (issue #2).
+ */
+export class JobBudgetExceededError extends Error {
+  constructor(
+    public readonly sourceId: number,
+    public readonly chunkCount: number,
+    public readonly remaining: number,
+  ) {
+    super(
+      `Source ${sourceId} (${chunkCount} chunks) exceeds the remaining invocation budget (${remaining}); deferring to a re-queue`,
+    );
+    this.name = 'JobBudgetExceededError';
+  }
 }
 
 export interface IngestSourceInput {
@@ -78,14 +120,33 @@ export interface IngestSourceInput {
   /** Caller-supplied dedup hint (overrides the Stage-1 DB lookup). */
   existingMemories?: string[];
   logger?: Logger;
+  /**
+   * Mid-source lease heartbeat (issue #1). Called once per chunk; the job-level
+   * handler throttles it to re-stamp `started_at` so a long-but-healthy source
+   * isn't reclaimed and double-processed. Best-effort — must never throw.
+   */
+  heartbeat?: () => Promise<void>;
+  /**
+   * Chunks still available in the current invocation's budget (issue #2). When
+   * this source isn't the first processed this invocation and its chunk count
+   * exceeds this, `ingestSource` throws `JobBudgetExceededError` before doing any
+   * work, so the job-level handler can defer it to a re-queue.
+   */
+  chunkBudgetRemaining?: number;
+  /**
+   * True when no source has been processed yet this invocation. The first source
+   * always proceeds (up to `MAX_CHUNKS_PER_SOURCE`) so the job can't livelock.
+   */
+  isFirstSourceThisInvocation?: boolean;
 }
 
-const EMPTY_RESULT = (sourceId: number): IngestResult => ({
+const EMPTY_RESULT = (sourceId: number, chunkCount = 0): IngestResult => ({
   sourceId,
   memories: [],
   edges: [],
   newEntityIds: [],
   resolvedEntityIds: [],
+  chunkCount,
 });
 
 function failureFields(err: unknown): {
@@ -137,11 +198,17 @@ async function purgeSourceArtifacts(
     // edges.memory_id is ON DELETE SET NULL, so deleting memories would orphan
     // the edges rather than remove them — delete them explicitly first.
     await db.delete(edges).where(inArray(edges.memoryId, memoryIds));
-    // Deleting memories cascades chunk_memories + memory_entities.
-    await db.delete(memoriesTable).where(inArray(memoriesTable.id, memoryIds));
+    // Delete index vectors BEFORE the PG rows (issue #5). `deleteByIds` is
+    // idempotent, and `chunk_memories` — which we walk above to re-derive these
+    // ids — is only cascaded away when the memory rows are deleted. So if this
+    // vector delete throws, the next attempt still finds the chunks, re-derives
+    // the same ids, and retries the delete. Deleting the PG rows first would make
+    // the ids unrecoverable, orphaning those vectors in the index permanently.
     if (!vectorStore.persistsInColumn) {
       await vectorStore.deleteByIds('memories', memoryIds);
     }
+    // Deleting memories cascades chunk_memories + memory_entities.
+    await db.delete(memoriesTable).where(inArray(memoriesTable.id, memoryIds));
   }
   // Remove the chunk(s) themselves (cascades any remaining chunk_memories).
   await db.delete(chunks).where(eq(chunks.sourceId, sourceId));
@@ -151,19 +218,10 @@ async function purgeSourceArtifacts(
 export async function ingestSource(input: IngestSourceInput): Promise<IngestResult> {
   const { db, scope, sourceId, llm, embedder, vectorStore, logger } = input;
 
-  // Stage 0 — load + preprocess. First purge any partial artifacts from a prior
-  // failed/interrupted attempt so re-running this source can't duplicate
-  // memories or vectors (the pipeline isn't atomic across stages).
-  const purgeStart = performance.now();
-  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId);
-  if (purged > 0) {
-    logger?.info('ingestion.stage_completed', {
-      stage: 'purge_prior_artifacts',
-      duration_ms: durationMs(purgeStart),
-      memory_count: purged,
-    });
-  }
-
+  // Stage 0 — load + preprocess. Load and chunk FIRST (both read-only /
+  // in-memory) so the per-invocation bounds (issues #1 / #2) are enforced BEFORE
+  // the destructive purge or any expensive AI work — an over-budget source must
+  // be left completely untouched so a re-queue can process it cleanly later.
   const loadStart = performance.now();
   const source = await loadSource(db, sourceId);
   const contentType = (source.contentType ?? 'text').toLowerCase();
@@ -193,17 +251,46 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // Ports `app/engine/ingestion/pipeline.py:_chunk_source`.
   const sourceChunks = chunkSource(contentType, content, meta);
   if (sourceChunks.length === 0) return EMPTY_RESULT(sourceId);
-  if (sourceChunks.length > CONVERSATION_CHUNK_WARN_THRESHOLD) {
-    // TODO(prod cap): a source runs entirely in ONE Cloudflare invocation,
-    // bounded to 1000 subrequests; each chunk spends ~10 of them (search embed +
-    // 2 LLM calls + batch embed + DB + vector ops), so a very long conversation
-    // can approach that ceiling here. Before relying on this in production, bound
-    // large conversations — split them across multiple sources so
-    // MAX_SOURCES_PER_JOB spreads the work over several invocations.
+  const chunkCount = sourceChunks.length;
+  if (chunkCount > CONVERSATION_CHUNK_WARN_THRESHOLD) {
     logger?.warn('ingestion.chunk_count_high', {
       source_id: sourceId,
-      chunk_count: sourceChunks.length,
+      chunk_count: chunkCount,
       threshold: CONVERSATION_CHUNK_WARN_THRESHOLD,
+    });
+  }
+
+  // Per-source hard cap (issue #1). A single source runs entirely in one
+  // Cloudflare invocation (1000-subrequest cap) and can't be split across
+  // invocations — purge re-runs it from the top — so a source over the cap can
+  // never complete. Fail it terminally with a clear "split it" message instead
+  // of silently blowing the cap and getting reclaimed/retried forever.
+  if (chunkCount > MAX_CHUNKS_PER_SOURCE) {
+    throw new SourceTooLargeError(sourceId, chunkCount, MAX_CHUNKS_PER_SOURCE);
+  }
+  // Per-invocation budget (issue #2). If this source won't fit the budget the
+  // job has left AND it isn't the first source this invocation, defer it: throw
+  // before any work so the job-level handler re-queues and a fresh invocation
+  // (full budget) picks it up. The first source always proceeds (guarded by the
+  // per-source cap above) so the job can't livelock.
+  if (
+    input.isFirstSourceThisInvocation === false &&
+    input.chunkBudgetRemaining !== undefined &&
+    chunkCount > input.chunkBudgetRemaining
+  ) {
+    throw new JobBudgetExceededError(sourceId, chunkCount, input.chunkBudgetRemaining);
+  }
+
+  // Stage 0.6 — now that bounds pass, purge any partial artifacts from a prior
+  // failed/interrupted attempt so re-running this source can't duplicate
+  // memories or vectors (the pipeline isn't atomic across stages).
+  const purgeStart = performance.now();
+  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId);
+  if (purged > 0) {
+    logger?.info('ingestion.stage_completed', {
+      stage: 'purge_prior_artifacts',
+      duration_ms: durationMs(purgeStart),
+      memory_count: purged,
     });
   }
 
@@ -390,10 +477,14 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         `Embedder returned ${vectors.length} vectors for ${facts.length} facts`,
       );
     }
+    // Validate against the CONFIGURED embedder's dimension — the single source
+    // of truth (derived from EMBEDDING_DIMENSIONS env via getEmbedder /
+    // assertEmbeddingSpace), not a hardcoded constant that can drift from the
+    // deployed model / vector store dimension. See issue #3.
     for (const v of vectors) {
-      if (v.length !== EMBEDDING_DIMENSIONS) {
+      if (v.length !== embedder.dimensions) {
         throw new Error(
-          `Expected ${EMBEDDING_DIMENSIONS}-dim embedding, got ${v.length}`,
+          `Expected ${embedder.dimensions}-dim embedding, got ${v.length}`,
         );
       }
     }
@@ -488,9 +579,13 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // per-invocation cap). Mirrors Python's sequential chunk loop.
   const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
   for (const chunk of sourceChunks) {
+    // Mid-source lease heartbeat (issue #1): re-stamp the job's `started_at` so a
+    // long-but-healthy source isn't reclaimed and double-processed concurrently.
+    // Throttled + best-effort in the caller; never throws.
+    await input.heartbeat?.();
     allIngested.push(...(await ingestChunk(chunk)));
   }
-  if (allIngested.length === 0) return EMPTY_RESULT(sourceId);
+  if (allIngested.length === 0) return EMPTY_RESULT(sourceId, chunkCount);
 
   // Stage 8 — entity resolution + memory_entities + edges, ONCE across all
   // chunks. Entities are shared, so a single resolution pass dedupes them
@@ -550,6 +645,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     edges: ingestedEdges,
     newEntityIds: resolved.filter((r) => r.isNew).map((r) => r.entityId),
     resolvedEntityIds: resolved.filter((r) => !r.isNew).map((r) => r.entityId),
+    chunkCount,
   };
 }
 

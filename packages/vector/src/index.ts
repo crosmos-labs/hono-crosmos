@@ -6,6 +6,7 @@ export type {
   QueryOptions,
   UpsertItem,
 } from './port';
+export { VectorStoreError } from './port';
 export { PgVectorStore } from './pg';
 export { VectorizeStore } from './vectorize';
 export type { VectorizeStoreConfig } from './vectorize';
