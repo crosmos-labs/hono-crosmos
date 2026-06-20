@@ -24,6 +24,13 @@ export interface CompleteOptions {
   model?: string;
   /** 0..2; defaults to provider default (typically 1.0). */
   temperature?: number;
+  /**
+   * Upper bound on completion tokens. Bounds a pathological/runaway generation
+   * and makes truncation deterministic: a response cut at this limit reports
+   * `finish_reason: "length"`, which `completeJson` turns into a clear error
+   * rather than an opaque JSON-parse failure. Omit for the provider default.
+   */
+  maxTokens?: number;
 }
 
 export interface CompleteJsonOptions extends CompleteOptions {
