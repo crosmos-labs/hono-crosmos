@@ -136,11 +136,12 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       // On the RPC fast path we don't own the queue message, so we can't re-queue
       // it ourselves — but `processIngestion` already reset the job to `pending`,
       // and the durable queue copy (enqueued at creation) will be delivered and
-      // re-attempt it via the queue consumer's retry path. Just record it. (#4)
-      if (outcome === 'retry_transient') {
-        logger.warn('ingestion.rpc_run_retry_transient', {
-          reason: 'dependency_degraded',
-        });
+      // re-attempt it via the queue consumer's retry path. Just record it.
+      //  - retry_transient: a dependency was degraded (#4).
+      //  - requeue_incomplete: the per-invocation chunk budget ran out before all
+      //    sources finished; the re-delivery continues the remaining ones (#2).
+      if (outcome === 'retry_transient' || outcome === 'requeue_incomplete') {
+        logger.warn('ingestion.rpc_run_incomplete', { reason: outcome });
       }
     } catch (err) {
       // Don't rethrow — the queue backstop owns recovery. But don't wait out

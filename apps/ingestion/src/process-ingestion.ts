@@ -19,16 +19,22 @@ import type {
 } from '@crosmos/types';
 import {
   BACKSTOP_RETRY_DELAY_SECONDS,
+  CHUNK_HEARTBEAT_INTERVAL_MS,
   JOB_LEASE_MS,
+  MAX_CHUNKS_PER_INVOCATION,
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
 } from './constants';
-import { QdrantRequestError, type VectorStore } from '@crosmos/vector';
+import { VectorStoreError, type VectorStore } from '@crosmos/vector';
 import type { Embedder } from './integrations/embeddings';
 import { EmbeddingRequestError } from './integrations/embeddings';
 import type { LLM } from './integrations/llm';
 import { LLMRequestError } from './integrations/llm';
-import { ingestSource, type IngestResult } from './ingestion/pipeline';
+import {
+  ingestSource,
+  JobBudgetExceededError,
+  type IngestResult,
+} from './ingestion/pipeline';
 import {
   claimJob,
   isJobCancelled,
@@ -58,13 +64,19 @@ import { recordIngestionTokens } from './usage';
  *                          reset to `pending` and the queue consumer re-queues
  *                          it with a delay. Avoids silently dropping a session
  *                          just because a dependency was briefly red (issue #4).
+ *  - `requeue_incomplete`— the per-invocation chunk budget was exhausted before
+ *                          all sources were processed (issue #2). Completed
+ *                          sources are persisted (skipped on the re-run); the job
+ *                          is reset to `pending` and re-queued so the remaining
+ *                          sources run in a fresh invocation with a full budget.
  */
 export type IngestionOutcome =
   | 'processed'
   | 'skipped_terminal'
   | 'skipped_not_found'
   | 'skipped_in_flight'
-  | 'retry_transient';
+  | 'retry_transient'
+  | 'requeue_incomplete';
 
 export interface ProcessIngestionDeps {
   db: Database;
@@ -84,10 +96,11 @@ export interface ProcessIngestionDeps {
 function isRetryable(err: unknown): boolean {
   if (err instanceof LLMRequestError) return err.retryable;
   if (err instanceof EmbeddingRequestError) return err.retryable;
-  // Vector store (Qdrant) over HTTP: 429/5xx (incl. transient connect/timeout
-  // surfaced as 504) are worth retrying. Per-source retry + the bounded
-  // per-invocation source cap keep this from re-hitting the subrequest ceiling.
-  if (err instanceof QdrantRequestError) return err.retryable;
+  // Any vector store (Qdrant, Vectorize, …) surfaces failures as VectorStoreError
+  // with a `retryable` flag (429/5xx/timeout). Branching on the PORT error — not a
+  // single adapter's type — means a Vectorize upsert failure is re-queued, not
+  // silently dropped, exactly like a Qdrant one. See issue #4.
+  if (err instanceof VectorStoreError) return err.retryable;
   return false;
 }
 
@@ -101,7 +114,7 @@ function failureFields(err: unknown): {
   if (err instanceof EmbeddingRequestError) {
     return { error_category: 'external_service', dependency: 'embedding' };
   }
-  if (err instanceof QdrantRequestError) {
+  if (err instanceof VectorStoreError) {
     return { error_category: 'external_service', dependency: 'vector' };
   }
   return { error_category: 'internal', dependency: 'pipeline' };
@@ -175,6 +188,12 @@ export async function processIngestion(
   // Representative error category for the rolled-up outcome metric. An external
   // (LLM/embedder) failure dominates over an internal one for alerting.
   let rolledUpErrorCategory: 'external_service' | 'internal' | undefined;
+  // Per-invocation chunk budget bookkeeping (issue #2): cumulative chunks of the
+  // sources COMPLETED this invocation, and whether we stopped early on budget.
+  let chunksProcessed = 0;
+  let budgetHit = false;
+  // Mid-source lease heartbeat clock (issue #1). Seeded at claim time.
+  let lastHeartbeatMs = Date.now();
 
   for (let i = 0; i < msg.source_ids.length; i++) {
     const sourceId = msg.source_ids[i]!;
@@ -262,37 +281,79 @@ export async function processIngestion(
       stage: `source ${i + 1}/${msg.source_ids.length}`,
     });
 
+    // The per-source status write above is itself a lease beat, so reset the
+    // clock: the mid-source heartbeat only fires when a SINGLE source runs long
+    // (issue #1). Throttled to at most one DB write per CHUNK_HEARTBEAT_INTERVAL_MS
+    // and best-effort — a missed beat only risks a (recoverable) re-claim.
+    lastHeartbeatMs = Date.now();
+    const heartbeat = async () => {
+      const now = Date.now();
+      if (now - lastHeartbeatMs < CHUNK_HEARTBEAT_INTERVAL_MS) return;
+      lastHeartbeatMs = now;
+      try {
+        await updateJobStatus(db, msg.job_id, 'processing', {
+          stage: `source ${i + 1}/${msg.source_ids.length} (in progress)`,
+        });
+      } catch (err) {
+        sourceLogger.warn('ingestion.heartbeat_failed', {}, err);
+      }
+    };
+
     let result: IngestResult | null = null;
     let lastErr: unknown = null;
-    for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
-      try {
-        result = await ingestSource({
-          db,
-          scope,
-          sourceId,
-          llm,
-          embedder,
-          vectorStore,
-          logger: sourceLogger,
-        });
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
-          sourceLogger.warn('ingestion.source_retry_scheduled', {
-            attempt,
-            duration_ms: durationMs(sourceStart),
-            ...failureFields(err),
+    try {
+      for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
+        try {
+          result = await ingestSource({
+            db,
+            scope,
+            sourceId,
+            llm,
+            embedder,
+            vectorStore,
+            logger: sourceLogger,
+            heartbeat,
+            chunkBudgetRemaining: MAX_CHUNKS_PER_INVOCATION - chunksProcessed,
+            isFirstSourceThisInvocation: chunksProcessed === 0,
           });
-          await sleep(SOURCE_RETRY_DELAY_MS * attempt);
-          continue;
+          break;
+        } catch (err) {
+          // A budget deferral is deterministic — don't retry it; bail to the
+          // handler below so the job is re-queued with this source untouched.
+          if (err instanceof JobBudgetExceededError) throw err;
+          lastErr = err;
+          if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
+            sourceLogger.warn('ingestion.source_retry_scheduled', {
+              attempt,
+              duration_ms: durationMs(sourceStart),
+              ...failureFields(err),
+            });
+            await sleep(SOURCE_RETRY_DELAY_MS * attempt);
+            continue;
+          }
+          break;
         }
+      }
+    } catch (err) {
+      // Only JobBudgetExceededError reaches here. Stop processing further sources
+      // this invocation; the post-loop handler re-queues the job. The deferred
+      // source was left untouched (thrown before purge), so it and every source
+      // after it are re-processed cleanly in a fresh invocation with full budget.
+      if (err instanceof JobBudgetExceededError) {
+        sourceLogger.info('ingestion.source_deferred_budget', {
+          chunk_count: err.chunkCount,
+          budget_remaining: err.remaining,
+          chunks_processed: chunksProcessed,
+        });
+        budgetHit = true;
         break;
       }
+      throw err;
     }
 
     if (result) {
       results.push(result);
+      chunksProcessed += result.chunkCount;
       await markSourcesStatus(db, scope, [sourceId], 'completed');
       sourceLogger.info('ingestion.source_completed', {
         duration_ms: durationMs(sourceStart),
@@ -370,6 +431,39 @@ export async function processIngestion(
       errorCategory: rolledUpErrorCategory ?? 'external_service',
     });
     return 'retry_transient';
+  }
+
+  // Per-invocation chunk budget exhausted (issue #2). We stopped before all
+  // sources were processed; the completed ones are persisted and will be skipped
+  // (gate 2) on the re-run, so bill their tokens NOW or lose the attribution —
+  // unlike the transient path, nothing here is reprocessed, so there's no
+  // double-count risk. Reset the job to `pending` and re-queue so the remaining
+  // sources run in a fresh invocation with a full budget. No terminal status is
+  // written: the job rolls up only once it actually finishes a full pass.
+  if (budgetHit) {
+    const budgetTokens = llm.totalTokens + embedder.totalTokens;
+    if (budgetTokens > 0) {
+      try {
+        await recordIngestionTokens(db, scope, budgetTokens);
+      } catch (err) {
+        logger.warn('ingestion.record_tokens_failed', {}, err);
+      }
+    }
+    const reset = await resetJobForRetry(db, msg.job_id);
+    logger.info('ingestion.job_requeue_incomplete', {
+      duration_ms: durationMs(jobStart),
+      chunks_processed: chunksProcessed,
+      completed_source_count: results.length,
+      permanent_failed_count: failedSourceIds.length,
+      reset,
+    });
+    emitOutcomeMetric(deps, {
+      finalStatus: 'pending',
+      durationMs: durationMs(jobStart),
+      failedSourceCount: failedSourceIds.length,
+      tokenCount: budgetTokens,
+    });
+    return 'requeue_incomplete';
   }
 
   // Roll up job status — mirrors Python's `process_ingestion` terminal block.
