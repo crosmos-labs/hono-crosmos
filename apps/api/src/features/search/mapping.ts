@@ -16,6 +16,7 @@ export function toRankedCandidate(
 ): RankedCandidate {
   return {
     memoryId: m.id,
+    uuid: m.uuid,
     content: m.content,
     memoryType: m.memoryType,
     ownerUserId: m.ownerUserId,
