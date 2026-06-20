@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { createLogger, type Logger } from '@crosmos/observability';
+import { createLogger, createMetrics, type Logger } from '@crosmos/observability';
 import { systemClock } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { Env } from './bindings';
@@ -52,13 +52,47 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(this.run(message));
   }
 
-  /** Queue consumer entrypoint (durable backstop). */
+  /** Queue consumer entrypoint (durable backstop + dead-letter visibility). */
   async queue(batch: MessageBatch<IngestionJobMessage>): Promise<void> {
     const db = getDb(this.env);
     const rootLogger = createLogger({
       service: 'ingestion',
       environment: this.env.ENVIRONMENT,
     });
+
+    // Dead-letter queue: messages that exhausted the main queue's retries land
+    // here. We deliberately DON'T reprocess inline (that risks a tight failure
+    // loop) — instead we make the exhaustion VISIBLE (error log + metric so it
+    // can be alerted on) and ack so it doesn't pile up. Actual recovery is the
+    // API worker's cron re-drive sweep, which re-attempts the underlying
+    // non-completed sources with a bounded per-source attempt budget.
+    if (batch.queue.endsWith('-dlq')) {
+      const metrics = createMetrics(this.env.ANALYTICS, {
+        service: 'ingestion',
+        environment: this.env.ENVIRONMENT,
+      });
+      for (const message of batch.messages) {
+        const body = message.body;
+        rootLogger.error('ingestion.job_dead_lettered', {
+          job_id: body.job_id,
+          correlation_id: body.correlation_id,
+          org_id: body.org_id,
+          space_id: body.space_id,
+          user_id: body.user_id,
+          source_count: body.source_ids?.length,
+          attempts: message.attempts,
+          error_category: 'internal',
+          dependency: 'pipeline',
+        });
+        metrics.count('ingestion_dead_lettered', {
+          tags: [this.env.ENVIRONMENT],
+          index: 'ingestion_dead_lettered',
+        });
+        message.ack();
+      }
+      return;
+    }
+
     const deps = this.consumerDeps(db, rootLogger);
 
     for (const message of batch.messages) {
@@ -90,7 +124,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       },
     });
     try {
-      await processIngestion(message, {
+      const outcome = await processIngestion(message, {
         db,
         llm: getLLM(this.env),
         embedder: getEmbedder(this.env),
@@ -99,6 +133,16 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         analytics: this.env.ANALYTICS,
         environment: this.env.ENVIRONMENT,
       });
+      // On the RPC fast path we don't own the queue message, so we can't re-queue
+      // it ourselves — but `processIngestion` already reset the job to `pending`,
+      // and the durable queue copy (enqueued at creation) will be delivered and
+      // re-attempt it via the queue consumer's retry path. Just record it.
+      //  - retry_transient: a dependency was degraded (#4).
+      //  - requeue_incomplete: the per-invocation chunk budget ran out before all
+      //    sources finished; the re-delivery continues the remaining ones (#2).
+      if (outcome === 'retry_transient' || outcome === 'requeue_incomplete') {
+        logger.warn('ingestion.rpc_run_incomplete', { reason: outcome });
+      }
     } catch (err) {
       // Don't rethrow — the queue backstop owns recovery. But don't wait out
       // the full lease either: proactively flip a job we claimed-then-wedged in

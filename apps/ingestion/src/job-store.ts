@@ -146,12 +146,14 @@ export async function updateJobStatus(
   const now = new Date();
   const values: Record<string, unknown> = { status };
   // LOAD-BEARING — DO NOT REMOVE: re-stamping `started_at` on every
-  // `processing` write is the lease HEARTBEAT that `claimJob` reads. Because
-  // `processIngestion` calls this once per source, a healthy long job keeps
-  // advancing `started_at`, so the queue backstop never reclaims it mid-run.
-  // The lease (`JOB_LEASE_MS`) is therefore "no progress for N minutes", NOT
-  // "whole job under N minutes". Drop this line and large batches (up to
-  // MAX_SOURCES_PER_REQUEST) start getting double-claimed. See claimJob.
+  // `processing` write is the lease HEARTBEAT that `claimJob` reads.
+  // `processIngestion` calls this once per source AND mid-source on a throttled
+  // per-chunk heartbeat (issue #1), so a healthy long job — even one stuck on a
+  // single large multi-chunk source — keeps advancing `started_at`, and the
+  // queue backstop never reclaims it mid-run (which would double-process it). The
+  // lease (`JOB_LEASE_MS`) is therefore "no progress for N minutes", NOT "whole
+  // job under N minutes". Drop this line and large batches / long sources start
+  // getting double-claimed. See claimJob and process-ingestion's heartbeat.
   if (status === 'processing') values.startedAt = now;
   if (status === 'completed' || status === 'failed' || status === 'partial') {
     values.completedAt = now;

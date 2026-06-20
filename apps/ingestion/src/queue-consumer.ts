@@ -77,6 +77,22 @@ export async function handleIngestionDelivery(
         attempt: delivery.attempts,
       });
       delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
+    } else if (outcome === 'retry_transient' || outcome === 'requeue_incomplete') {
+      // Two non-terminal "keep going" outcomes, both of which reset the job to
+      // `pending`:
+      //  - retry_transient: a dependency (vector store / embedder / LLM) was
+      //    degraded (issue #4).
+      //  - requeue_incomplete: the per-invocation chunk budget ran out before all
+      //    sources were processed (issue #2); completed sources are skipped on
+      //    the re-run and the rest continue in a fresh invocation.
+      // Either way we must NOT ack (that would drop the only durable copy of a
+      // job that hasn't finished) — re-queue with a delay so it's re-delivered.
+      logger.warn('ingestion.job_requeued', {
+        reason: outcome,
+        delay_seconds: BACKSTOP_RETRY_DELAY_SECONDS,
+        attempt: delivery.attempts,
+      });
+      delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
     } else {
       delivery.ack();
     }

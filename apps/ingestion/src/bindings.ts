@@ -19,7 +19,13 @@ export interface Env {
   // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small. Must
   // match the API worker.
   EMBEDDING_DIMENSIONS?: string;
-  VECTOR_STORE?: 'vectorize' | 'pg';
+  VECTOR_STORE?: 'vectorize' | 'pg' | 'qdrant';
+  // Qdrant config (only needed when VECTOR_STORE=qdrant). Collection names
+  // default to crosmos-memories/crosmos-entities if unset. Must match the API.
+  QDRANT_URL?: string;
+  QDRANT_API_KEY?: string;
+  QDRANT_MEMORIES_COLLECTION?: string;
+  QDRANT_ENTITIES_COLLECTION?: string;
 
   // Secrets (set via `wrangler secret put` or .dev.vars)
   OPENROUTER_API_KEY?: string;

@@ -10,6 +10,7 @@ import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
 import { runMaintenanceCleanup } from './features/maintenance/cleanup';
+import { reapStaleJobs, runIngestionRedrive } from './features/maintenance/redrive';
 // Durable Object class for the per-IP rate limiter — must be exported from the
 // worker entry so the runtime can instantiate it.
 export { RateLimiterDO } from './integrations/rate-limit/limiter-do';
@@ -200,10 +201,44 @@ app.notFound((c) =>
 
 export default {
   fetch: app.fetch,
-  async scheduled(_controller: ScheduledController, env: HonoEnv['Bindings']) {
+  async scheduled(controller: ScheduledController, env: HonoEnv['Bindings']) {
     const logger = createLogger({ service: 'api', environment: env.ENVIRONMENT });
-    // Both sweeps are independent — isolate failures so one can't block the
-    // other, and so a cron failure is surfaced rather than silently lost.
+
+    // The ingestion re-drive runs on a frequent cron (every 15 min) so wedged
+    // sources recover quickly; billing + retention sweeps stay daily. Branch on
+    // the firing schedule so the heavy daily sweeps don't run every 15 min.
+    // Each sweep is isolated — one failure must not block the others, and a
+    // cron failure is surfaced (logged), never silently lost.
+    const isDaily = controller.cron === '17 3 * * *';
+
+    // Reap orphaned jobs first (cheap CAS update): flip jobs that crashed
+    // mid-flight from `processing`/`pending` to `failed` so they stop pinning
+    // the per-user pending cap + the global queue-depth gate and become terminal
+    // for cleanup. The windowed counts already self-heal the gates; this makes
+    // the rows' status reflect reality. See issue #3.
+    try {
+      const reaped = await reapStaleJobs(env);
+      if (reaped > 0) {
+        logger.info('cron.jobs_reaped', { trigger: 'cron', cron: controller.cron, jobs_reaped: reaped });
+      }
+    } catch (err) {
+      logger.error('cron.jobs_reap_failed', { trigger: 'cron' }, err);
+    }
+
+    try {
+      const redriven = await runIngestionRedrive(env);
+      logger.info('cron.ingestion_redrive', {
+        trigger: 'cron',
+        cron: controller.cron,
+        jobs_created: redriven.jobsCreated,
+        sources_requeued: redriven.sourcesRequeued,
+      });
+    } catch (err) {
+      logger.error('cron.ingestion_redrive_failed', { trigger: 'cron' }, err);
+    }
+
+    if (!isDaily) return;
+
     try {
       await runBillingReconciliation(env);
     } catch (err) {

@@ -78,6 +78,22 @@ export interface VectorStore {
   ): Promise<VectorMatch[]>;
 
   /**
+   * Optional batched ANN search: run several query vectors against one
+   * collection in a single backend call, returning one match list per input
+   * vector (same order, same `scope`/`opts` applied to each). Adapters that
+   * speak a remote API over HTTP (e.g. Qdrant) implement this to collapse N
+   * per-vector round trips into one request — important under Cloudflare's
+   * per-invocation subrequest cap, where each `fetch` counts. Callers must
+   * fall back to looping `queryNearest` when this is undefined.
+   */
+  queryNearestBatch?(
+    collection: VectorCollection,
+    vectors: number[][],
+    scope: VectorScope,
+    opts: QueryOptions,
+  ): Promise<VectorMatch[][]>;
+
+  /**
    * Fetch raw vectors by id (used by MMR diversification). Missing ids are
    * simply absent from the returned map.
    */
@@ -88,4 +104,26 @@ export interface VectorStore {
 
   /** Remove vectors by id (e.g. when memories are physically deleted). */
   deleteByIds(collection: VectorCollection, ids: number[]): Promise<void>;
+}
+
+/**
+ * Error thrown by a vector-store adapter for a failed backend operation.
+ *
+ * Defined on the PORT (not inside a single adapter) so every backend — Qdrant,
+ * Vectorize, future stores — surfaces failures through one type the ingestion
+ * consumer can branch on. The `retryable` flag is what keeps a post-commit
+ * upsert failure (429/5xx/timeout) from silently dropping memories: the consumer
+ * sees a retryable `VectorStoreError` and re-queues the job instead of marking
+ * the source terminally `failed`. A non-retryable error (e.g. a 4xx the request
+ * caused) fails the source so it isn't retried forever.
+ */
+export class VectorStoreError extends Error {
+  readonly status: number;
+  readonly retryable: boolean;
+  constructor(message: string, opts: { status: number; retryable: boolean }) {
+    super(message);
+    this.name = 'VectorStoreError';
+    this.status = opts.status;
+    this.retryable = opts.retryable;
+  }
 }
