@@ -34,6 +34,21 @@ export interface DispatchResult {
   degraded: DispatchableJob[];
 }
 
+/**
+ * The per-user pending-jobs cap was hit. Shared by `/sources` and
+ * `/conversations` so both enforce the cap the same way (429 + JSON body).
+ */
+export function pendingCapError(): HTTPException {
+  return new HTTPException(429, {
+    res: new Response(
+      JSON.stringify({
+        detail: 'Too many pending jobs. Wait for existing jobs to complete.',
+      }),
+      { status: 429, headers: { 'Content-Type': 'application/json' } },
+    ),
+  });
+}
+
 async function attempt(task: () => Promise<unknown>): Promise<boolean> {
   try {
     await task();

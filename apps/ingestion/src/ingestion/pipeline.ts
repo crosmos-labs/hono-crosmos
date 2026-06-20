@@ -233,11 +233,19 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   const sessionDate = typeof meta.date === 'string' ? meta.date : null;
   const lookbackContext =
     typeof meta.lookback_context === 'string' ? meta.lookback_context : null;
-  const referenceTime = sessionDate ?? new Date().toISOString();
-  const learnedTime = (() => {
-    const d = new Date(referenceTime);
-    return Number.isNaN(d.getTime()) ? new Date() : d;
-  })();
+  // A valid, parsed session date — or null. Relative-date resolution (both the
+  // LLM `reference_time` and the Stage-5 temporal-regex fallback) MUST anchor to
+  // this and NOT to ingestion wall-clock: anchoring "yesterday" to now is wrong
+  // for any backfilled / replayed source (issue #8). `recordedAt` is when we
+  // learned the fact and is always a concrete timestamp (now if no date given).
+  const parsedSessionDate = sessionDate ? new Date(sessionDate) : null;
+  const validSessionDate =
+    parsedSessionDate && !Number.isNaN(parsedSessionDate.getTime())
+      ? parsedSessionDate
+      : null;
+  const referenceTime = validSessionDate ? validSessionDate.toISOString() : null;
+  const temporalBase = validSessionDate;
+  const recordedAt = validSessionDate ?? new Date();
   const ownerUserId = source.ownerUserId;
   const visibility = source.visibility as 'private' | 'org';
   logger?.info('ingestion.stage_completed', {
@@ -293,6 +301,10 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       memory_count: purged,
     });
   }
+
+  // Dedup keys shared across ALL chunks of this source so a fact that recurs in
+  // overlapping chunks (e.g. via lookback context) isn't persisted twice (#8).
+  const seenFactKeys = new Set<string>();
 
   // Stages 1–7 for a single chunk: dedup hint → extract → graph → normalize →
   // temporal → embed → persist. Returns the persisted memories paired with the
@@ -431,7 +443,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     // ordering in `app/engine/ingestion/pipeline.py`).
     const drops = new DropCounter();
     const normalizeStart = performance.now();
-    const facts = normalizeFacts(rawMemories, rawGraph, drops);
+    const facts = normalizeFacts(rawMemories, rawGraph, drops, seenFactKeys);
     logger?.info('ingestion.stage_completed', {
       stage: 'normalize_facts',
       sequence,
@@ -444,7 +456,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     // event_time. Mutates `facts` in place, matching Python.
     for (const f of facts) {
       if (f.eventTime) continue;
-      const inferred = inferTemporalDate(f.content, learnedTime);
+      const inferred = inferTemporalDate(f.content, temporalBase);
       if (inferred) f.eventTime = new Date(inferred);
     }
 
@@ -529,7 +541,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
             embedding: vectorStore.persistsInColumn ? vectors[i]! : null,
             importanceScore: f.importanceScore,
             eventTime: f.eventTime,
-            recordedAt: learnedTime,
+            recordedAt,
           })),
         )
         .returning();
@@ -543,7 +555,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         rows.map((m) => ({
           chunkId: chunkRow.id,
           memoryId: m.id,
-          extractionTimestamp: learnedTime,
+          extractionTimestamp: recordedAt,
         })),
       );
       return rows;
@@ -629,7 +641,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     scope,
     ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
     nameToId,
-    learnedTime,
+    recordedAt,
     ownerUserId,
     visibility,
   );

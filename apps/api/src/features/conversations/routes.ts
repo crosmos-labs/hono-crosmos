@@ -11,9 +11,12 @@ import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from '../sources/gates';
+import { HTTPException } from 'hono/http-exception';
 import {
   assertDispatchedOrRollback,
   dispatchIngestionJobs,
+  pendingCapError,
+  rollbackJobsAndSources,
   type DispatchableJob,
 } from '../sources/dispatch';
 import {
@@ -158,62 +161,99 @@ conversationRoutes.openapi(
 
     const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
-    await logger.time('ingestion.enqueue_stage_completed', {
-      stage: 'job_create',
-      space_id: space.id,
-      error_category: 'internal',
-      dependency: 'database',
-    }, () => jobStore.create({
-      jobId,
-      orgId: space.orgId,
-      spaceId: space.id,
-      userId,
-      sourceIds: created.map((s) => s.id),
-    }));
-
-    const enqueuedAtMs = Date.now();
-    const dispatchable: DispatchableJob = {
-      jobId,
-      sourceIds: created.map((s) => s.id),
-      message: {
-        task: 'process_ingestion' as const,
-        job_id: jobId,
-        correlation_id: correlationId,
-        org_id: space.orgId,
+    // Everything after the source INSERT is wrapped so any failure rolls the
+    // source (and job, if created) back — `createSources` autocommits, so an
+    // unhandled throw here would otherwise orphan a `pending` source that only
+    // the cron sweep could ever recover (issue #6).
+    try {
+      // Atomic per-user pending cap (issue #6) — authoritative, matching
+      // `/sources`. `jobStore.create` had no cap, leaving a TOCTOU race vs the
+      // advisory preflight check.
+      const ok = await logger.time('ingestion.enqueue_stage_completed', {
+        stage: 'job_create',
         space_id: space.id,
-        user_id: userId,
-        source_ids: created.map((s) => s.id),
-        enqueued_at_ms: enqueuedAtMs,
-      },
-    };
-    // Durable enqueue (backstop) + low-latency RPC kick, with outcome tracking:
-    // if BOTH fail (startup race / ingestion binding down) the rows are rolled
-    // back and we 503 rather than 202 over an orphaned `pending` job. See #2.
-    const dispatchResult = await logger.time('ingestion.enqueue_stage_completed', {
-      stage: 'queue_enqueue',
-      space_id: space.id,
-      error_category: 'external_service',
-      dependency: 'queue',
-    }, () => dispatchIngestionJobs(queue, [dispatchable]));
-    await assertDispatchedOrRollback(db, logger, {
-      orgId: space.orgId,
-      spaceId: space.id,
-      jobs: [dispatchable],
-      result: dispatchResult,
-    });
-    logger.info('ingestion.enqueue_accepted', {
-      space_id: space.id,
-      source_count: created.length,
-      duration_ms: durationMs(enqueueStart),
-    });
+        error_category: 'internal',
+        dependency: 'database',
+      }, () => jobStore.createWithActiveCap({
+        jobId,
+        orgId: space.orgId,
+        spaceId: space.id,
+        userId,
+        sourceIds: created.map((s) => s.id),
+      }, limits.maxPendingJobsPerUser));
+      if (!ok) {
+        await rollbackJobsAndSources(db, {
+          orgId: space.orgId,
+          spaceId: space.id,
+          jobIds: [],
+          sourceIds: created.map((s) => s.id),
+        });
+        logger.warn('ingestion.request_rejected', {
+          stage: 'pending_cap',
+          space_id: space.id,
+          status_code: 429,
+        });
+        throw pendingCapError();
+      }
 
-    return c.json(
-      {
-        job_id: jobId,
-        status: 'pending' as const,
-        source_id: created[0]!.uuid,
-      },
-      202,
-    );
+      const enqueuedAtMs = Date.now();
+      const dispatchable: DispatchableJob = {
+        jobId,
+        sourceIds: created.map((s) => s.id),
+        message: {
+          task: 'process_ingestion' as const,
+          job_id: jobId,
+          correlation_id: correlationId,
+          org_id: space.orgId,
+          space_id: space.id,
+          user_id: userId,
+          source_ids: created.map((s) => s.id),
+          enqueued_at_ms: enqueuedAtMs,
+        },
+      };
+      // Durable enqueue (backstop) + low-latency RPC kick, with outcome tracking:
+      // if BOTH fail (startup race / ingestion binding down) the rows are rolled
+      // back and we 503 rather than 202 over an orphaned `pending` job. See #2.
+      const dispatchResult = await logger.time('ingestion.enqueue_stage_completed', {
+        stage: 'queue_enqueue',
+        space_id: space.id,
+        error_category: 'external_service',
+        dependency: 'queue',
+      }, () => dispatchIngestionJobs(queue, [dispatchable]));
+      await assertDispatchedOrRollback(db, logger, {
+        orgId: space.orgId,
+        spaceId: space.id,
+        jobs: [dispatchable],
+        result: dispatchResult,
+      });
+      logger.info('ingestion.enqueue_accepted', {
+        space_id: space.id,
+        source_count: created.length,
+        duration_ms: durationMs(enqueueStart),
+      });
+
+      return c.json(
+        {
+          job_id: jobId,
+          status: 'pending' as const,
+          source_id: created[0]!.uuid,
+        },
+        202,
+      );
+    } catch (err) {
+      // HTTPExceptions (429 cap / 503 dispatch) already settled their own
+      // rollback — just propagate. Anything else is an unexpected failure after
+      // the source committed: clean up the orphaned source + job before rethrow.
+      if (err instanceof HTTPException) throw err;
+      await rollbackJobsAndSources(db, {
+        orgId: space.orgId,
+        spaceId: space.id,
+        jobIds: [jobId],
+        sourceIds: created.map((s) => s.id),
+      }).catch((rbErr) => {
+        logger.error('ingestion.rollback_failed', { space_id: space.id }, rbErr);
+      });
+      throw err;
+    }
   },
 );

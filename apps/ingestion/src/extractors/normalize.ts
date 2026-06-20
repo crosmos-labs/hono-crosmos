@@ -8,6 +8,7 @@
 import {
   DEFAULT_ENTITY_TYPE,
   ENTITY_NAME_MAX_WORDS,
+  MIN_FACT_WORDS,
   MIN_IMPORTANCE_SCORE,
   MIN_RELATION_CONFIDENCE,
 } from '../constants';
@@ -176,7 +177,7 @@ function normalizeFact(
     drops.bump('low_signal_content');
     return null;
   }
-  if (wordCount(content) < 4) {
+  if (wordCount(content) < MIN_FACT_WORDS) {
     drops.bump('low_signal_content');
     return null;
   }
@@ -244,17 +245,40 @@ function normalizeFact(
  * Drive normalization across all Pass-1 memories, joining each with its
  * Pass-2 graph result by index. Drops duplicates by
  * `(content.casefold(), memory_type, speaker_role, event_time.isoformat())`.
+ *
+ * `seen` is the dedup key set. Pass a shared set across a source's chunks to
+ * dedup facts that recur in overlapping chunks (issue #8); omit it for
+ * standalone normalization.
+ *
+ * The graph join is defensive (issue #8): a result whose `index` is out of range
+ * or duplicated (the LLM occasionally repeats/reorders indices) is dropped rather
+ * than silently clobbering another memory's entities/relations. First valid
+ * result per index wins.
  */
 export function normalizeFacts(
   rawMemories: RawExtractedMemory[],
   graphResults: RawGraphResult[],
   drops: DropCounter,
+  seen: Set<string> = new Set(),
 ): NormalizedFact[] {
   const graphByIndex = new Map<number, RawGraphResult>();
-  for (const g of graphResults) graphByIndex.set(g.index, g);
+  for (const g of graphResults) {
+    if (
+      !Number.isInteger(g.index) ||
+      g.index < 0 ||
+      g.index >= rawMemories.length
+    ) {
+      drops.bump('invalid_graph_index');
+      continue;
+    }
+    if (graphByIndex.has(g.index)) {
+      drops.bump('duplicate_graph_index');
+      continue;
+    }
+    graphByIndex.set(g.index, g);
+  }
 
   const out: NormalizedFact[] = [];
-  const seen = new Set<string>();
 
   for (let i = 0; i < rawMemories.length; i++) {
     const raw = rawMemories[i]!;
