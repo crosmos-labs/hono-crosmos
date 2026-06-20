@@ -1,12 +1,3 @@
-/**
- * The two LLM-bound extraction stages, wrapped around `LLM.completeJson`.
- *
- * - `extractMemories` is **fatal** on failure: without memories there's
- *   nothing to ingest.
- * - `extractGraph` is **non-fatal**: graph failure is caught upstream so the
- *   pipeline can still persist memories (which remain useful for semantic +
- *   keyword retrieval). See pipeline.md §Stage 3.
- */
 import type { LLM } from '../integrations/llm';
 import {
   MEMORY_EXTRACTION_SCHEMA,

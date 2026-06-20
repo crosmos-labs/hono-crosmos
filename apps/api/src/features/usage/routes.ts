@@ -1,5 +1,6 @@
 import { dailyUsage, memorySpaces } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, count, eq, gte, lte, sum } from 'drizzle-orm';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -10,7 +11,7 @@ import { requirePrincipal } from '../auth/principal';
 import { getOrganizationByIdOrThrow } from '../orgs/service';
 import { UsageQuerySchema, UsageResponseSchema } from './schemas';
 
-export const usageRoutes = new OpenAPIHono<HonoEnv>();
+export const usageRoutes = createApiApp();
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);

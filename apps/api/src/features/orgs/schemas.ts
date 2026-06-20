@@ -84,6 +84,16 @@ export const MemberListResponseSchema = z
   })
   .openapi('MemberListResponse');
 
+// Keyset pagination on (joinedAt, userId). `cursor` is an opaque base64url
+// token encoding the last seen `{ joinedAt, userId }`; `limit` defaults to 50,
+// capped at 100.
+export const MemberListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z.string().min(1).max(256).optional(),
+  })
+  .openapi('MemberListQuery');
+
 export const UpdateMemberRoleSchema = z
   .object({ role: z.enum(['admin', 'member']) })
   .openapi('UpdateMemberRoleRequest');

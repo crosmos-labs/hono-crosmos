@@ -22,6 +22,11 @@ head_sampling_rate = 1
 
 [dev]
 port = 8788
+# Distinct inspector (debugger) port per worker — see apps/api/wrangler.toml.
+# Wrangler defaults every worker to 9229, so this must differ from the API's
+# 9229 or `bun run dev` (both workers at once) dies with "Address already in
+# use (127.0.0.1:9229)".
+inspector_port = 9230
 
 # Hyperdrive: shared NeonDB connection pooling (same DB as the API worker)
 [[hyperdrive]]
@@ -47,9 +52,25 @@ max_batch_timeout = 0
 max_retries = 15
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
+# Dead-letter consumer: makes exhausted jobs VISIBLE (error log + metric) and
+# acks them so they don't accumulate. Recovery is the API cron re-drive sweep.
+# No further DLQ — these are already terminal-failed deliveries.
+[[queues.consumers]]
+queue = "ingestion-jobs-dev-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
 # Workers AI: embeddings (bge-m3).
 [ai]
 binding = "AI"
+
+# Analytics Engine: ingestion metrics sink (outcome/latency/tokens). Created on
+# first write; queried/alerted via the Analytics Engine SQL API.
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_ingestion_dev"
 
 # Vectorize: vector storage (VECTOR_STORE=vectorize). Shared with the API worker.
 [[vectorize]]
@@ -87,25 +108,37 @@ head_sampling_rate = 1
 [env.production.vars]
 ENVIRONMENT = "production"
 LLM_PROVIDER = "openrouter"
-EMBEDDINGS_PROVIDER = "workers-ai"
-VECTOR_STORE = "vectorize"
+EMBEDDINGS_PROVIDER = "openai"
+VECTOR_STORE = "qdrant"
+EMBEDDING_DIMENSIONS = "1536"
+# Qdrant cloud cluster (us-east-1). Must match the API worker. API key is a
+# secret (wrangler secret put QDRANT_API_KEY).
+QDRANT_URL = "https://413d870d-6737-407d-b9f9-7cd92cf76fe7.us-east-1-1.aws.cloud.qdrant.io"
 
 # Workers AI binding (not inherited from top-level).
 [env.production.ai]
 binding = "AI"
 
+# Analytics Engine (prod ingestion metrics sink). Not inherited from top-level.
+# DISABLED until Analytics Engine is enabled on the account (dash toggle).
+# [[env.production.analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "crosmos_ingestion"
+
 # Vectorize (prod indexes, shared with the API worker).
 [[env.production.vectorize]]
 binding = "MEMORIES_INDEX"
-index_name = "crosmos-memories"
+index_name = "crosmos-memories-v3"
 
 [[env.production.vectorize]]
 binding = "ENTITIES_INDEX"
-index_name = "crosmos-entities"
+index_name = "crosmos-entities-v3"
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "334924fce954497fbcc866b74395bca1"
+# crosmos-neon-useast1 → NeonDB us-east-1 (benchmark/US setup). Prior id
+# 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2 (kept for rollback).
+id = "72fcf1cc21b349e490900148469c12e7"
 
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
@@ -120,3 +153,10 @@ max_batch_timeout = 0
 # outlast JOB_LEASE_MS so a silently-dead RPC run is reclaimed before DLQ.
 max_retries = 15
 dead_letter_queue = "ingestion-jobs-dlq"
+
+# Dead-letter consumer (prod): visibility + ack. See dev consumer above.
+[[env.production.queues.consumers]]
+queue = "ingestion-jobs-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3

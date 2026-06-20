@@ -1,5 +1,5 @@
 import { billingEvents, organizations, type Database } from '@crosmos/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 import { invalidateEntitlements } from '../../lib/gate-cache';
 import {
@@ -210,7 +210,46 @@ async function dispatchActive(
   if (!org) return;
   if (customerId && !org.polarCustomerId) patch.polarCustomerId = customerId;
 
-  await db.update(organizations).set(patch).where(eq(organizations.id, orgId));
+  // Monotonicity guard against out-of-order / retried deliveries. Polar
+  // re-signs on retry, so the 5-min skew check gives NO ordering protection: a
+  // stale `subscription.updated` or replayed `order.paid` arriving AFTER a
+  // `revoked`/`refunded` must NOT resurrect paid entitlements. The revoke/refund
+  // handlers null out `currentPeriodEnd`, so we cannot use a stored-period
+  // comparison to block a revoked-org replay. Instead, two atomic WHERE
+  // conditions encode the rule directly so a stale event can never win a race:
+  //
+  //   1. While the org is `revoked`, only re-activate when THIS event proves a
+  //      currently-live subscription — i.e. it carries a `currentPeriodEnd` in
+  //      the FUTURE (genuine re-subscribe / new order). A replay of a past
+  //      `order.paid` carries an expired/absent period and is refused. (A fresh
+  //      re-purchase always rides in with a future period end, so the legitimate
+  //      re-subscribe path is preserved.)
+  //   2. For any event carrying a period end, never move the stored
+  //      `currentPeriodEnd` BACKWARDS — renewals push it forward; stale replays
+  //      carry an older/equal end and are dropped. (Allowed when the stored
+  //      value is NULL, e.g. first activation or post-revoke re-subscribe.)
+  const guards = [eq(organizations.id, orgId)];
+
+  // Condition 1: unless this event proves a currently-live subscription (a
+  // future period end), refuse to lift a `revoked` org back to active.
+  const provesLiveSubscription =
+    currentPeriodEnd != null && currentPeriodEnd.getTime() > Date.now();
+  if (!provesLiveSubscription) {
+    guards.push(ne(organizations.subscriptionStatus, 'revoked'));
+  }
+
+  // Condition 2: never move the stored period end backwards (drops stale replays
+  // that carry an older/equal end; allowed when the stored value is NULL).
+  if (currentPeriodEnd) {
+    guards.push(
+      or(
+        isNull(organizations.currentPeriodEnd),
+        sql`${organizations.currentPeriodEnd} <= ${currentPeriodEnd}`,
+      )!,
+    );
+  }
+
+  await db.update(organizations).set(patch).where(and(...guards));
 }
 
 async function bindCustomer(

@@ -1,6 +1,21 @@
+# Local development infrastructure for Crosmos workers.
+#
+# This single Postgres container is BOTH the relational DB and the vector DB:
+# the `pgvector/pgvector` image is stock Postgres 17 plus the `vector`
+# extension, so the `embedding vector(1024)` columns + HNSW indexes on
+# `memories`/`entities` work locally exactly as they do in prod. Migration
+# 0001 runs `CREATE EXTENSION vector`, which the plain `postgres:*-alpine`
+# image cannot satisfy — hence the dedicated image here.
+#
+# The vector store is selected at runtime by `VECTOR_STORE` (see
+# packages/vector): set `VECTOR_STORE=pg` in .dev.vars to back retrieval with
+# pgvector against this container instead of Cloudflare Vectorize.
+#
+# Wrangler dev reaches this via the `localConnectionString` in each
+# apps/*/wrangler.toml (postgresql://crosmos:crosmos@localhost:5433/crosmos).
 services:
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     container_name: crosmos-dev-pg
     restart: unless-stopped
     environment:
@@ -17,5 +32,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local vector store for the benchmark stack (VECTOR_STORE=qdrant). Reached by
+  # both workers at http://localhost:6333 with api-key `local-dev-key` (see
+  # scripts/bench-setup.sh and the QDRANT_* vars in .dev.vars). Container name
+  # matches scripts/qdrant-watchdog.sh (crosmos-dev-qdrant).
+  #
+  # ulimits/nofile is LOAD-BEARING, not a tuning knob: under sustained ingestion
+  # Qdrant accumulates segment + WAL file handles, and the container's default
+  # nofile (~1024) is far too low. Once it's hit, Qdrant can't open files to
+  # flush (`Too many open files (os error 24)` → `Failed to flush id_tracker
+  # mapping`) and the collection corrupts to `red`, 500ing every upsert and
+  # silently dropping memories. 65536 is Qdrant's recommended minimum. Verify
+  # inside the container with `cat /proc/1/limits`. (Backend issue #5.)
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: crosmos-dev-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    environment:
+      QDRANT__SERVICE__API_KEY: local-dev-key
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - crosmos_qdrant:/qdrant/storage
+
 volumes:
   crosmos_pgdata:
+  crosmos_qdrant:

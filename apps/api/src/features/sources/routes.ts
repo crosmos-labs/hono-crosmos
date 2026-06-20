@@ -1,6 +1,7 @@
 import { memorySpaces, sources, type Source } from '@crosmos/db';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -8,12 +9,20 @@ import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
 import { getRateLimiter } from '../../integrations/rate-limit';
+import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { waitUntilLogged } from '../../lib/runtime';
 import type { TenantScope } from '../../lib/scope';
 import { UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from './gates';
+import {
+  assertDispatchedOrRollback,
+  dispatchIngestionJobs,
+  type DispatchableJob,
+} from './dispatch';
+import { MAX_SOURCES_PER_JOB } from './constants';
+import { getOperationalLimits } from '../../lib/limits';
 import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
@@ -36,7 +45,7 @@ import {
 } from './service';
 import { resolveReadVisibility } from '../visibility/service';
 
-export const sourceRoutes = new OpenAPIHono<HonoEnv>();
+export const sourceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SourceErrorBody');
 
@@ -143,9 +152,10 @@ sourceRoutes.openapi(
       source_count: body.sources.length,
     });
 
+    const limits = getOperationalLimits(c.env);
     const limiter = getRateLimiter(c.env);
     const queue = getQueueService(c.env, db);
-    const jobStore = getJobStore(db);
+    const jobStore = getJobStore(db, limits.staleJobMinutes);
 
     const preflightStart = performance.now();
     const space = await preflight({
@@ -153,6 +163,7 @@ sourceRoutes.openapi(
       limiter,
       queue,
       jobStore,
+      limits,
       orgId,
       userId,
       spaceUuid: body.space_id,
@@ -191,60 +202,131 @@ sourceRoutes.openapi(
       dependency: 'database',
     }, () => createSources(db, inserts));
 
-    const jobId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
+    const enqueuedAtMs = Date.now();
+
+    // Split the request's sources into jobs of at most MAX_SOURCES_PER_JOB. One
+    // job == one worker invocation under the claim/lease model, so this bounds
+    // the sources (and thus the LLM/embed/vector subrequests) per invocation,
+    // keeping it under Cloudflare's per-invocation subrequest cap regardless of
+    // how the client batches. Most requests fit in a single job.
+    const chunks: (typeof created)[] = [];
+    for (let i = 0; i < created.length; i += MAX_SOURCES_PER_JOB) {
+      chunks.push(created.slice(i, i + MAX_SOURCES_PER_JOB));
+    }
+
+    // Create a job per chunk, each gated by the SAME atomic per-user pending cap
+    // (authoritative over preflight's advisory check). Stop at the first cap
+    // rejection; sources left without a job are rolled back below.
+    const createdJobs: { jobId: string; sources: typeof created }[] = [];
     await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'job_create',
       space_id: space.id,
       error_category: 'internal',
       dependency: 'database',
-    }, () => jobStore.create({
-      jobId,
+    }, async () => {
+      for (const chunk of chunks) {
+        const jobId = crypto.randomUUID();
+        const ok = await jobStore.createWithActiveCap({
+          jobId,
+          orgId: space.orgId,
+          spaceId: space.id,
+          userId,
+          sourceIds: chunk.map((s) => s.id),
+        }, limits.maxPendingJobsPerUser);
+        if (!ok) break;
+        createdJobs.push({ jobId, sources: chunk });
+      }
+    });
+
+    // Roll back sources that didn't get a job (pending cap hit mid-split) so
+    // they never dangle without a job referencing them.
+    const assignedIds = new Set(
+      createdJobs.flatMap((j) => j.sources.map((s) => s.id)),
+    );
+    const orphanedIds = created
+      .filter((s) => !assignedIds.has(s.id))
+      .map((s) => s.id);
+    if (orphanedIds.length > 0) {
+      await db
+        .delete(sources)
+        .where(
+          and(
+            eq(sources.orgId, space.orgId),
+            eq(sources.spaceId, space.id),
+            inArray(sources.id, orphanedIds),
+          ),
+        );
+    }
+
+    if (createdJobs.length === 0) {
+      logger.warn('ingestion.request_rejected', {
+        stage: 'pending_cap',
+        space_id: space.id,
+        status_code: 429,
+      });
+      throw new HTTPException(429, {
+        res: new Response(
+          JSON.stringify({
+            detail:
+              'Too many pending jobs. Wait for existing jobs to complete.',
+          }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        ),
+      });
+    }
+
+    // Durable enqueue (backstop) + low-latency RPC kick, per job, dispatched
+    // concurrently. Unlike the old fully best-effort path, we now classify each
+    // job's outcome: if EVERY job both failed to enqueue AND failed to kick (the
+    // startup race / ingestion-binding-down case), the rows are rolled back and
+    // we 503 instead of silently returning 202 over orphaned `pending` rows that
+    // only the cron could ever recover. Partial failures keep their rows and
+    // lean on the re-drive sweep. See ./dispatch.ts and issue #2.
+    const dispatchables: DispatchableJob[] = createdJobs.map((job) => ({
+      jobId: job.jobId,
+      sourceIds: job.sources.map((s) => s.id),
+      message: {
+        task: 'process_ingestion' as const,
+        job_id: job.jobId,
+        correlation_id: correlationId,
+        org_id: space.orgId,
+        space_id: space.id,
+        user_id: userId,
+        source_ids: job.sources.map((s) => s.id),
+        enqueued_at_ms: enqueuedAtMs,
+      },
+    }));
+    const dispatchResult = await dispatchIngestionJobs(queue, dispatchables);
+    await assertDispatchedOrRollback(db, logger, {
       orgId: space.orgId,
       spaceId: space.id,
-      userId,
-      sourceIds: created.map((s) => s.id),
-    }));
+      jobs: dispatchables,
+      result: dispatchResult,
+    });
 
-    const enqueuedAtMs = Date.now();
-    const jobMessage = {
-      task: 'process_ingestion' as const,
-      job_id: jobId,
-      correlation_id: correlationId,
-      org_id: space.orgId,
-      space_id: space.id,
-      user_id: userId,
-      source_ids: created.map((s) => s.id),
-      enqueued_at_ms: enqueuedAtMs,
-    };
-    // Durable enqueue first (the backstop), then the low-latency direct kick.
-    await logger.time('ingestion.enqueue_stage_completed', {
-      stage: 'queue_enqueue',
-      space_id: space.id,
-      error_category: 'external_service',
-      dependency: 'queue',
-    }, () => queue.enqueue(jobMessage));
-    // Best-effort: start ingestion now over the service binding so we don't eat
-    // the queue's cold-delivery latency. Off the response path; the enqueued
-    // copy still runs the job if this fails.
-    waitUntilLogged(
-      c,
-      logger,
-      'ingestion.kick_failed',
-      queue.kick(jobMessage),
-      { space_id: space.id, job_id: jobId },
-    );
     logger.info('ingestion.enqueue_accepted', {
       space_id: space.id,
-      source_count: created.length,
+      source_count: assignedIds.size,
+      job_count: createdJobs.length,
       duration_ms: durationMs(enqueueStart),
+      // Tie the API request_id (in `logger`'s base) to the ingestion
+      // correlation_id so a trace spans the producer hop → the worker run.
+      job_id: createdJobs[0]!.jobId,
+      correlation_id: correlationId,
     });
 
     return c.json(
       {
-        job_id: jobId,
+        job_id: createdJobs[0]!.jobId,
         status: 'pending' as const,
-        source_ids: created.map((s) => s.uuid),
+        source_ids: created
+          .filter((s) => assignedIds.has(s.id))
+          .map((s) => s.uuid),
+        jobs: createdJobs.map((j) => ({
+          job_id: j.jobId,
+          source_ids: j.sources.map((s) => s.uuid),
+        })),
       },
       202,
     );
@@ -347,6 +429,7 @@ sourceRoutes.openapi(
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
+    const requestId = c.var.requestId ?? crypto.randomUUID();
     const spaceId = await resolveSpaceIdForCaller(c, space_id);
 
     const visibleUserIds = await resolveReadVisibility(db, { orgId, userId });
@@ -362,11 +445,34 @@ sourceRoutes.openapi(
       spaceId: source.spaceId,
       userId,
     };
-    const deleted = await deleteSource(db, scope, source.id);
+    const { deleted, memoryIds } = await deleteSource(db, scope, source.id);
     if (!deleted) {
       throw new HTTPException(404, {
         message: `Source ${source_uuid} not found`,
       });
+    }
+
+    // The DB cascade removed the source's memories but cannot reach the external
+    // vector index (Vectorize). Purge their vectors best-effort, off the response
+    // path — orphaned vectors otherwise leak storage and decay ANN recall. No-op
+    // when vectors live in the pg column (cascade already handled them).
+    const vectorStore = getVectorStore(c.env, db);
+    if (!vectorStore.persistsInColumn && memoryIds.length > 0) {
+      const logger = createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { request_id: requestId, org_id: orgId, source_id: source.id },
+      });
+      logger.info('sources.vector_purge_scheduled', {
+        deleted_count: memoryIds.length,
+      });
+      waitUntilLogged(
+        c,
+        logger,
+        'sources.vector_purge_failed',
+        deleteVectorsChunked(vectorStore, 'memories', memoryIds),
+        { vector_count: memoryIds.length },
+      );
     }
     return c.body(null, 204);
   },
@@ -527,6 +633,24 @@ async function loadSourceForCaller(
     });
   }
   return row;
+}
+
+/** Max vector ids per `deleteByIds` call (bounds the upstream request size). */
+const VECTOR_DELETE_CHUNK = 1000;
+
+/**
+ * Purge vectors from the external store in bounded chunks so a large delete
+ * doesn't issue one unbounded request. Best-effort: the caller wraps this in
+ * `waitUntilLogged`, so a rejection is logged rather than failing the request.
+ */
+async function deleteVectorsChunked(
+  vectorStore: VectorStore,
+  collection: 'memories' | 'entities',
+  ids: number[],
+): Promise<void> {
+  for (let i = 0; i < ids.length; i += VECTOR_DELETE_CHUNK) {
+    await vectorStore.deleteByIds(collection, ids.slice(i, i + VECTOR_DELETE_CHUNK));
+  }
 }
 
 async function resolveSpaceIdForCaller(

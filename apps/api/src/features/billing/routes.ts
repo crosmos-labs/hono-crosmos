@@ -1,4 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
+import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
@@ -26,8 +28,8 @@ import {
 } from './schemas';
 import { handlePolarWebhook, WebhookHttpError } from './webhooks';
 
-export const billingRoutes = new OpenAPIHono<HonoEnv>();
-export const billingWebhookRoutes = new OpenAPIHono<HonoEnv>();
+export const billingRoutes = createApiApp();
+export const billingWebhookRoutes = createApiApp();
 
 const BillingErrorSchema = z
   .object({ detail: z.string() })
@@ -54,6 +56,11 @@ async function enforceBillingRateLimit(
   } catch (err) {
     if (err instanceof HTTPException) throw err;
     // Fail open on KV errors; billing provider calls remain authoritative.
+    createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
+      'rate_limit.kv_failure',
+      { stage: 'billing_rate_limit', org_id: c.var.activeOrgId },
+      err,
+    );
   }
 }
 
