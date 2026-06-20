@@ -104,6 +104,39 @@ export async function isJobCancelled(
   return (await getJobStatus(db, jobId)) === 'cancelled';
 }
 
+/**
+ * Conditionally reset a wedged job back to `pending` so the queue backstop can
+ * re-claim it promptly, instead of waiting out the full lease (`JOB_LEASE_MS`).
+ *
+ * Used on the RPC fast-path failure: if the background run threw AFTER claiming
+ * the job, the row sits in `processing` and recovery would otherwise depend on
+ * the lease lapsing. This is a guarded CAS — it only flips a row that is STILL
+ * `processing` (i.e. we presumably still own the claim). It will NOT clobber a
+ * job another trigger has already driven terminal or re-claimed-and-finished,
+ * because those rows are no longer `processing` (terminal) — and a job the
+ * backstop legitimately re-claimed mid-flight only happens after the lease has
+ * expired, by which point this RPC run is long gone. `started_at` is cleared so
+ * the very next claim sees a `pending` row.
+ *
+ * Returns true if a row was reset.
+ */
+export async function resetJobForRetry(
+  db: Database,
+  jobId: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(ingestionJobs)
+    .set({ status: 'pending', startedAt: null, currentStage: null })
+    .where(
+      and(
+        eq(ingestionJobs.id, jobId),
+        eq(ingestionJobs.status, 'processing'),
+      ),
+    )
+    .returning({ id: ingestionJobs.id });
+  return rows.length > 0;
+}
+
 export async function updateJobStatus(
   db: Database,
   jobId: string,
@@ -113,12 +146,14 @@ export async function updateJobStatus(
   const now = new Date();
   const values: Record<string, unknown> = { status };
   // LOAD-BEARING — DO NOT REMOVE: re-stamping `started_at` on every
-  // `processing` write is the lease HEARTBEAT that `claimJob` reads. Because
-  // `processIngestion` calls this once per source, a healthy long job keeps
-  // advancing `started_at`, so the queue backstop never reclaims it mid-run.
-  // The lease (`JOB_LEASE_MS`) is therefore "no progress for N minutes", NOT
-  // "whole job under N minutes". Drop this line and large batches (up to
-  // MAX_SOURCES_PER_REQUEST) start getting double-claimed. See claimJob.
+  // `processing` write is the lease HEARTBEAT that `claimJob` reads.
+  // `processIngestion` calls this once per source AND mid-source on a throttled
+  // per-chunk heartbeat (issue #1), so a healthy long job — even one stuck on a
+  // single large multi-chunk source — keeps advancing `started_at`, and the
+  // queue backstop never reclaims it mid-run (which would double-process it). The
+  // lease (`JOB_LEASE_MS`) is therefore "no progress for N minutes", NOT "whole
+  // job under N minutes". Drop this line and large batches / long sources start
+  // getting double-claimed. See claimJob and process-ingestion's heartbeat.
   if (status === 'processing') values.startedAt = now;
   if (status === 'completed' || status === 'failed' || status === 'partial') {
     values.completedAt = now;

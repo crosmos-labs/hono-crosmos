@@ -11,12 +11,9 @@ import {
 } from '../../integrations/rate-limit';
 import type { JobStore } from '../../integrations/job-store';
 import type { QueueService } from '../../integrations/queue';
+import type { OperationalLimits } from '../../lib/limits';
 import { getSpaceByUuid } from '../spaces/service';
-import {
-  MAX_PENDING_JOBS_PER_USER,
-  MAX_QUEUE_DEPTH,
-  RETRY_AFTER_SECONDS,
-} from './constants';
+import { RETRY_AFTER_SECONDS } from './constants';
 
 /**
  * Producer-side pre-flight gates applied to both `POST /sources` and
@@ -39,6 +36,7 @@ export async function preflight(input: {
   limiter: RateLimiter;
   queue: QueueService;
   jobStore: JobStore;
+  limits: OperationalLimits;
   orgId: number;
   userId: number;
   spaceUuid: string;
@@ -64,9 +62,13 @@ export async function preflight(input: {
     throw err;
   }
 
-  // 2. Global queue depth.
-  const depth = await input.queue.queueDepth();
-  if (depth >= MAX_QUEUE_DEPTH) {
+  // 2. Global in-flight-job gate — a coarse account-wide safety valve (NOT the
+  // Cloudflare Queue's backlog; see `inFlightJobCount`). The per-user pending
+  // cap (gate 3) is the primary admission control; this only trips on aggregate
+  // overload. Now bounded to non-stale rows (issue #3) so it can't wedge on a
+  // crashed worker's graveyard rows.
+  const inFlight = await input.queue.inFlightJobCount();
+  if (inFlight >= input.limits.maxQueueDepth) {
     throw new HTTPException(503, {
       res: jsonError('Ingestion queue is full. Retry later.', 503, {
         'Retry-After': String(RETRY_AFTER_SECONDS),
@@ -76,7 +78,7 @@ export async function preflight(input: {
 
   // 3. Per-user pending cap.
   const activeJobs = await input.jobStore.countActive(input.userId);
-  if (activeJobs >= MAX_PENDING_JOBS_PER_USER) {
+  if (activeJobs >= input.limits.maxPendingJobsPerUser) {
     throw new HTTPException(429, {
       res: jsonError(
         `Too many pending jobs (${activeJobs}). Wait for existing jobs to complete.`,

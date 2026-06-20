@@ -13,11 +13,14 @@ import {
   OAuthProvidersSchema,
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { errorEnvelope } from '../../lib/errors';
 import { getEmailSender } from '../../integrations/email';
+import { perIpRateLimit } from '../../integrations/rate-limit/ip';
 import { waitUntilLogged } from '../../lib/runtime';
 import {
   buildGoogleAuthorizationUrl,
@@ -27,7 +30,7 @@ import {
 import { getEarliestMembershipForUser } from '../orgs/memberships';
 import { getOrCreateOauthUser } from './onboarding';
 
-export const oauthConsumerRoutes = new OpenAPIHono<HonoEnv>();
+export const oauthConsumerRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('OAuthErrorBody');
 const STATE_TTL_SECONDS = 10 * 60; // 10 minutes
@@ -61,6 +64,9 @@ oauthConsumerRoutes.openapi(
     path: '/{provider}/authorize',
     tags: ['oauth-consumer'],
     summary: 'Build OAuth authorize URL',
+    middleware: [
+      perIpRateLimit({ bucket: 'oauth-consumer-authorize', tier: 'standard' }),
+    ] as const,
     request: {
       params: z.object({ provider: z.string() }),
       query: OAuthAuthorizeQuerySchema,
@@ -111,6 +117,9 @@ oauthConsumerRoutes.openapi(
     path: '/{provider}/callback',
     tags: ['oauth-consumer'],
     summary: 'Exchange OAuth code for tokens',
+    middleware: [
+      perIpRateLimit({ bucket: 'oauth-consumer-callback', tier: 'standard' }),
+    ] as const,
     request: {
       params: z.object({ provider: z.string() }),
       body: { content: { 'application/json': { schema: OAuthCallbackRequestSchema } } },
@@ -143,7 +152,23 @@ oauthConsumerRoutes.openapi(
       stateClaims = await verifyFlowState<ConsumerState>(c.env.JWT_SECRET, state);
     } catch (err) {
       if (err instanceof InvalidTokenError) {
-        throw new HTTPException(401, { message: `Invalid state: ${err.message}` });
+        // Don't leak jose/library text to the client; log the real reason.
+        createLogger({
+          service: 'api',
+          environment: c.env.ENVIRONMENT,
+        }).warn('oauth.consumer_invalid_state', {
+          reason: 'invalid_oauth_state',
+          scope: 'oauth-consumer',
+          error_name: err.name,
+          error_message: err.message,
+        });
+        return c.json(
+          errorEnvelope('Invalid OAuth state', {
+            code: 'invalid_oauth_state',
+            requestId: c.var.requestId,
+          }),
+          401,
+        );
       }
       throw err;
     }
@@ -162,7 +187,23 @@ oauthConsumerRoutes.openapi(
       });
     } catch (err) {
       if (err instanceof OAuthError) {
-        throw new HTTPException(401, { message: err.message });
+        // err.message embeds raw Google/jose upstream text — log it, return generic.
+        createLogger({
+          service: 'api',
+          environment: c.env.ENVIRONMENT,
+        }).warn('oauth.consumer_exchange_failed', {
+          reason: 'oauth_exchange_failed',
+          scope: 'oauth-consumer',
+          error_name: err.name,
+          error_message: err.message,
+        });
+        return c.json(
+          errorEnvelope('OAuth exchange failed', {
+            code: 'oauth_exchange_failed',
+            requestId: c.var.requestId,
+          }),
+          401,
+        );
       }
       throw err;
     }

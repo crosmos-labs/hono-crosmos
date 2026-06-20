@@ -1,7 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
-import { createLogger, durationMs } from '@crosmos/observability';
+import { createLogger, createMetrics, durationMs } from '@crosmos/observability';
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -11,6 +12,7 @@ import {
   getRateLimiter,
   RateLimitError,
 } from '../../integrations/rate-limit';
+import { checkGlobalAiThrottle } from '../../integrations/rate-limit/global-ai';
 import { getEmbedder } from '../../integrations/embeddings';
 import { getReranker } from '../../integrations/reranker';
 import { getVectorStore } from '../../integrations/vector-store';
@@ -26,15 +28,17 @@ import { loadRetrievalCandidates, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
-  RETRIEVAL_MAX_CONCURRENT_PER_USER,
+  GLOBAL_AI_RETRY_AFTER_SECONDS,
+  GLOBAL_AI_WINDOW_SECONDS,
   RETRIEVAL_RESULT_TIMEOUT_SECONDS,
   RETRIEVAL_USER_COUNTER_TTL_SECONDS,
 } from './constants';
+import { getOperationalLimits } from '../../lib/limits';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
 
-export const searchRoutes = new OpenAPIHono<HonoEnv>();
+export const searchRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.unknown() }).openapi('SearchErrorBody');
 
@@ -87,6 +91,8 @@ interface SearchCandidateOut {
   memory_type: string;
   score: number;
   source?: string | null;
+  source_id: string | null;
+  session_id: string | null;
   created_at: string;
   recorded_at: string;
   event_time: string | null;
@@ -123,6 +129,8 @@ function buildResponse(
       content: c.content,
       memory_type: c.memoryType,
       score: c.finalScore,
+      source_id: c.sourceUuid,
+      session_id: c.sessionId,
       created_at: c.createdAt.toISOString(),
       recorded_at: c.recordedAt.toISOString(),
       event_time: c.eventTime ? c.eventTime.toISOString() : null,
@@ -171,6 +179,7 @@ searchRoutes.openapi(
   async (c) => {
     const body = c.req.valid('json');
     const db = getDb(c);
+    const limits = getOperationalLimits(c.env);
     const orgId = c.var.activeOrgId!;
     const userId = c.var.userId!;
     const requestId = c.var.requestId ?? crypto.randomUUID();
@@ -189,20 +198,53 @@ searchRoutes.openapi(
       graph_enabled: body.graph,
     });
 
-    // Fetch org entitlements ONCE per request (KV-cached), then share with the
-    // rate-limit gate, the quota gate, and the orchestrator (was 3 separate
-    // fetches). The space-access check below guarantees space.orgId === orgId,
-    // so the same entitlements apply throughout.
-    const entitlements = await logger.time('retrieval.stage_completed', {
-      stage: 'entitlements',
-    }, () => getCachedEntitlements(c, orgId));
+    // Lightweight metrics emitter (no-op if ANALYTICS unbound; never throws).
+    const metrics = createMetrics(c.env.ANALYTICS, {
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+    });
 
     // KV writes commit cross-region (~350ms from this Smart-Placed worker), so
     // the rate-limit + concurrency counters push their writes here instead of
     // blocking the response. The worker stays alive until they settle.
     const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
 
+    // Entitlements + space access are independent, side-effect-free KV reads, so
+    // fetch them CONCURRENTLY. On a cold isolate each KV read is ~150-200ms;
+    // serialized they dominated gate latency. Entitlements is shared with the
+    // rate-limit gate, the quota gate, and the orchestrator (was 3 fetches); the
+    // space check guarantees space.orgId === orgId so the entitlements apply
+    // throughout. The remaining gates (rate-limit → quota → concurrency) stay
+    // ordered because they have side effects (counter increments, slot acquire)
+    // whose sequencing is semantically meaningful.
+    const [entitlements, space] = await Promise.all([
+      logger.time('retrieval.stage_completed', { stage: 'entitlements' },
+        () => getCachedEntitlements(c, orgId)),
+      logger.time('retrieval.stage_completed', { stage: 'space_access' },
+        () => getCachedSpaceByUuid(c, body.space_id)),
+    ]);
+    // Authoritative org is the SPACE's org. 404 on missing or cross-tenant (no
+    // existence leak).
+    if (!space || space.orgId !== orgId) {
+      logger.warn('retrieval.request_rejected', {
+        stage: 'space_access',
+        status_code: 404,
+      });
+      throw new HTTPException(404, {
+        res: jsonError(`Space ${body.space_id} not found`, 404),
+      });
+    }
+
     // 2. Per-org plan rate limit.
+    //
+    // The counter WRITE is deferred (passes `defer`) so it stays off the
+    // critical path — a KV write is ~350ms cross-region from this Smart-Placed
+    // worker, and search latency is the priority. The reads (edge-cached, fast)
+    // still gate synchronously. Tradeoff: under high concurrency the per-org cap
+    // can admit a few extra requests at the boundary (the ±1-2 fuzz that the KV
+    // limiter design explicitly accepts, decisions.md §7); the coarse per-org
+    // RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
+    // global-AI throttle below is what actually bounds aggregate AI cost.
     const limiter = getRateLimiter(c.env, defer);
     try {
       await logger.time('retrieval.stage_completed', {
@@ -214,6 +256,7 @@ searchRoutes.openapi(
           stage: 'plan_rate_limit',
           status_code: 429,
         });
+        metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
@@ -223,21 +266,6 @@ searchRoutes.openapi(
         });
       }
       throw err;
-    }
-
-    // 3. Space access — authoritative org is the SPACE's org. 404 on missing
-    // or cross-tenant (no existence leak). KV-cached (slim {id, orgId}).
-    const space = await logger.time('retrieval.stage_completed', {
-      stage: 'space_access',
-    }, () => getCachedSpaceByUuid(c, body.space_id));
-    if (!space || space.orgId !== orgId) {
-      logger.warn('retrieval.request_rejected', {
-        stage: 'space_access',
-        status_code: 404,
-      });
-      throw new HTTPException(404, {
-        res: jsonError(`Space ${body.space_id} not found`, 404),
-      });
     }
 
     // 4. Monthly search-query quota (optimistic +1, enforce-only).
@@ -252,6 +280,7 @@ searchRoutes.openapi(
           stage: 'monthly_quota',
           status_code: 429,
         });
+        metrics.count('search_throttled', { tags: ['monthly_quota'] });
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
@@ -274,7 +303,7 @@ searchRoutes.openapi(
       () =>
         concurrency.acquire(
           userKey,
-          RETRIEVAL_MAX_CONCURRENT_PER_USER,
+          limits.retrievalMaxConcurrentPerUser,
           RETRIEVAL_USER_COUNTER_TTL_SECONDS,
         ),
     );
@@ -284,6 +313,7 @@ searchRoutes.openapi(
         space_id: space.id,
         status_code: 429,
       });
+      metrics.count('search_throttled', { tags: ['concurrency'] });
       throw new HTTPException(429, {
         res: jsonError(
           'Too many concurrent searches. Wait for existing searches to complete.',
@@ -294,6 +324,49 @@ searchRoutes.openapi(
 
     const t0 = performance.now();
     try {
+      // 7. GLOBAL (account-wide) AI throttle — right before the embedder +
+      // reranker fan-out. The Workers AI quota is account-global, so this is the
+      // only gate that sees aggregate load and protects tenants from each other
+      // (the plan limit + concurrency cap are per-org/per-user). Fail-open. Run
+      // inside the try so the `finally` still releases the concurrency slot.
+      const globalAi = await logger.time('retrieval.stage_completed', {
+        stage: 'global_ai_throttle',
+        space_id: space.id,
+      }, () => checkGlobalAiThrottle(c.env, {
+        limit: limits.globalAiRpmCeiling,
+        windowSeconds: GLOBAL_AI_WINDOW_SECONDS,
+      }, defer));
+      if (!globalAi.allowed) {
+        logger.warn('retrieval.request_rejected', {
+          stage: 'global_ai_throttle',
+          space_id: space.id,
+          status_code: 429,
+          count: globalAi.count,
+        });
+        metrics.count('search_throttled', { tags: ['global_ai'] });
+        throw new HTTPException(429, {
+          res: jsonError(
+            {
+              error: 'ai_capacity',
+              detail:
+                'Search is temporarily at capacity. Please retry shortly.',
+            },
+            429,
+            { 'Retry-After': String(GLOBAL_AI_RETRY_AFTER_SECONDS) },
+          ),
+        });
+      }
+
+      // EARLY EMBED — kick the query embedding off NOW so the external call
+      // (~370ms, OpenAI) overlaps the visibility + working-set DB round-trips
+      // below instead of running after them inside retrieve(). The signals then
+      // find the vector already resolved. Quality-neutral (same vector).
+      const embedder = getEmbedder(c.env);
+      const embedPromise = embedder.embed(body.query, { mode: 'search' });
+      // retrieve() awaits this; guard the pre-await window so a rejection here
+      // isn't reported as an unhandled rejection.
+      embedPromise.catch(() => {});
+
       const visibleUserIds = await logger.time('retrieval.stage_completed', {
         stage: 'visibility_scope',
         space_id: space.id,
@@ -313,9 +386,31 @@ searchRoutes.openapi(
         memory_count: candidates.memories.length,
         entity_count: candidates.entities.length,
       });
+
+      // Resolve owner display names CONCURRENTLY with retrieve() — the signals
+      // and ranking never use them, only the final response does. Prefetching
+      // for every distinct owner in the loaded working set (a superset of the
+      // result owners) overlaps the ~900ms retrieve() instead of adding a
+      // serial ~110ms DB round-trip after it. Queries users by id (indexed).
+      const ownerIdSet = [
+        ...new Set(
+          candidates.memories
+            .map((m) => m.ownerUserId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+      const ownersPromise =
+        ownerIdSet.length > 0
+          ? db
+              .select({ id: users.id, uuid: users.uuid, name: users.name })
+              .from(users)
+              .where(inArray(users.id, ownerIdSet))
+          : Promise.resolve([] as { id: number; uuid: string; name: string }[]);
+      ownersPromise.catch(() => {}); // guard pre-await window; awaited after retrieve()
+
       const deps = {
         db,
-        embedder: getEmbedder(c.env),
+        embedder,
         reranker: getReranker(c.env),
         vectorStore: getVectorStore(c.env, db),
       };
@@ -334,6 +429,7 @@ searchRoutes.openapi(
           candidates,
           deps,
           entitlements,
+          embedPromise,
           logger: logger.child({ space_id: space.id }),
         }),
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
@@ -342,20 +438,8 @@ searchRoutes.openapi(
       // Map int id → uuid from the already-loaded scoped memories (no extra
       // query). Result candidates are a subset of candidates.memories.
       const uuidById = new Map(candidates.memories.map((m) => [m.id, m.uuid]));
-      const ownerIds = [
-        ...new Set(
-          result.candidates
-            .map((candidate) => candidate.ownerUserId)
-            .filter((id): id is number => id != null),
-        ),
-      ];
-      const ownerRows =
-        ownerIds.length > 0
-          ? await db
-              .select({ id: users.id, uuid: users.uuid, name: users.name })
-              .from(users)
-              .where(inArray(users.id, ownerIds))
-          : [];
+      // Join the owner-name prefetch kicked off before retrieve() (overlapped).
+      const ownerRows = await ownersPromise;
       const ownerById = new Map(
         ownerRows.map((owner) => [
           owner.id,
@@ -376,6 +460,11 @@ searchRoutes.openapi(
         candidate_count: candidates.memories.length,
         result_count: response.total,
         top_k: body.limit,
+      });
+      metrics.count('search', {
+        tags: ['ok'],
+        values: [durationMs(t0), response.total],
+        index: 'search',
       });
 
       // Write-side bookkeeping runs OFF the critical path via waitUntil — the
@@ -420,20 +509,24 @@ searchRoutes.openapi(
         status_code: 500,
         ...failureFields(err),
       }, err);
-      // Outside production, surface the real error in the response body so it
-      // can be debugged without a logging pipeline. Production keeps the
-      // generic message — no stack/internal leak. Flip the `ENVIRONMENT` var
-      // away from "production" (e.g. in the dashboard) to enable this on a
-      // deployed worker, then flip it back.
-      const detail =
-        c.env.ENVIRONMENT === 'production'
-          ? 'Search failed unexpectedly.'
-          : {
-              error: 'retrieval_failed',
-              message: err instanceof Error ? err.message : String(err),
-              name: err instanceof Error ? err.name : typeof err,
-              stack: err instanceof Error ? err.stack : undefined,
-            };
+      metrics.count('search', { tags: ['error'], index: 'search' });
+      // Verbose error detail is opt-in via an EXPLICIT `DEBUG_ERRORS === 'true'`
+      // flag — NOT merely "non-production". A staging/preview env that isn't
+      // literally "production" must not leak internals by default. We NEVER
+      // include a stack trace in the response (it can expose code paths / paths);
+      // the full error (incl. stack) is already in the structured log above,
+      // correlated by request_id. `request_id` is returned so a caller can quote
+      // it for support without us leaking the message.
+      const debugErrors =
+        (c.env as { DEBUG_ERRORS?: string }).DEBUG_ERRORS === 'true';
+      const detail = debugErrors
+        ? {
+            error: 'retrieval_failed',
+            message: err instanceof Error ? err.message : String(err),
+            name: err instanceof Error ? err.name : typeof err,
+            request_id: requestId,
+          }
+        : { error: 'retrieval_failed', request_id: requestId };
       throw new HTTPException(500, { res: jsonError(detail, 500) });
     } finally {
       // The concurrency slot MUST be released on every exit path. Schedule it

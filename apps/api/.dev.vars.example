@@ -14,6 +14,23 @@ POLAR_WEBHOOK_SECRET=
 # OPENAI_API_KEY=sk-xxx
 # ZEROENTROPY_API_KEY=ze-xxx
 
+# --- Fully-local benchmark path (no Cloudflare AI/Vectorize) -----------------
+# Values here override wrangler.toml [vars] for `wrangler dev`. This routes
+# retrieval through pgvector (the docker Postgres) + OpenRouter embeddings over
+# HTTP, so the only outbound dependency is the OpenRouter API. See
+# docs/local-development.md. Uncomment the block to enable:
+#
+# VECTOR_STORE=pg                       # use PgVectorStore against local Postgres
+# EMBEDDINGS_PROVIDER=openrouter        # openai/text-embedding-3-small @ 1024-dim over HTTP
+# OPENROUTER_API_KEY=sk-or-v1-xxx       # required by the openrouter embedder
+# RERANKER_PROVIDER=zeroentropy         # reranker over HTTP (like the embedder)
+# ZEROENTROPY_API_KEY=ze-xxx            # required by the zeroentropy reranker
+# The reranker is ON by default (RETRIEVAL_RERANKER_ENABLED=true in wrangler.toml)
+# and should stay on — it's part of retrieval quality. Only set
+# RETRIEVAL_RERANKER_ENABLED=false if you explicitly want to measure pre-rerank
+# ranking. EMBEDDINGS_PROVIDER MUST match the ingestion worker — query and
+# document vectors have to share one embedding space (see @crosmos/ai).
+
 # Used by drizzle-kit for migrations. Local dev points at docker-compose Postgres;
 # in prod, set this to the direct NeonDB URL when running migrations from your laptop/CI.
 DATABASE_URL=postgresql://crosmos:crosmos@localhost:5433/crosmos

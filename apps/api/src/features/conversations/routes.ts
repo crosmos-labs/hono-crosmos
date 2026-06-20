@@ -1,15 +1,21 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { createLogger, durationMs } from '@crosmos/observability';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
 import { getRateLimiter } from '../../integrations/rate-limit';
-import { waitUntilLogged } from '../../lib/runtime';
+import { getOperationalLimits } from '../../lib/limits';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from '../sources/gates';
+import {
+  assertDispatchedOrRollback,
+  dispatchIngestionJobs,
+  type DispatchableJob,
+} from '../sources/dispatch';
 import {
   QuotaExceededBodySchema,
   RateLimitedBodySchema,
@@ -21,7 +27,7 @@ import {
 } from './schemas';
 import { formatMessages } from './sessions';
 
-export const conversationRoutes = new OpenAPIHono<HonoEnv>();
+export const conversationRoutes = createApiApp();
 
 const ErrorBody = z
   .object({ detail: z.string() })
@@ -35,7 +41,7 @@ conversationRoutes.openapi(
     tags: ['conversations'],
     summary: 'Ingest Conversation',
     description:
-      'Ingest a multi-turn conversation. Messages are segmented into batches of 4; each segment becomes one source with the prior 4 segments attached as `meta.lookback_context` for pronoun resolution during extraction.',
+      'Ingest a multi-turn conversation. The conversation is stored as a single source and segmented at ingestion into windows of 4 turns; each window is extracted independently with the prior window as lookback context for pronoun resolution.',
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requirePrincipal] as const,
     request: {
@@ -102,9 +108,10 @@ conversationRoutes.openapi(
       source_count: 1,
     });
 
+    const limits = getOperationalLimits(c.env);
     const limiter = getRateLimiter(c.env);
     const queue = getQueueService(c.env, db);
-    const jobStore = getJobStore(db);
+    const jobStore = getJobStore(db, limits.staleJobMinutes);
 
     const preflightStart = performance.now();
     const space = await preflight({
@@ -112,6 +119,7 @@ conversationRoutes.openapi(
       limiter,
       queue,
       jobStore,
+      limits,
       orgId,
       userId,
       spaceUuid: body.space_id,
@@ -164,33 +172,35 @@ conversationRoutes.openapi(
     }));
 
     const enqueuedAtMs = Date.now();
-    const jobMessage = {
-      task: 'process_ingestion' as const,
-      job_id: jobId,
-      correlation_id: correlationId,
-      org_id: space.orgId,
-      space_id: space.id,
-      user_id: userId,
-      source_ids: created.map((s) => s.id),
-      enqueued_at_ms: enqueuedAtMs,
+    const dispatchable: DispatchableJob = {
+      jobId,
+      sourceIds: created.map((s) => s.id),
+      message: {
+        task: 'process_ingestion' as const,
+        job_id: jobId,
+        correlation_id: correlationId,
+        org_id: space.orgId,
+        space_id: space.id,
+        user_id: userId,
+        source_ids: created.map((s) => s.id),
+        enqueued_at_ms: enqueuedAtMs,
+      },
     };
-    // Durable enqueue first (the backstop), then the low-latency direct kick.
-    await logger.time('ingestion.enqueue_stage_completed', {
+    // Durable enqueue (backstop) + low-latency RPC kick, with outcome tracking:
+    // if BOTH fail (startup race / ingestion binding down) the rows are rolled
+    // back and we 503 rather than 202 over an orphaned `pending` job. See #2.
+    const dispatchResult = await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'queue_enqueue',
       space_id: space.id,
       error_category: 'external_service',
       dependency: 'queue',
-    }, () => queue.enqueue(jobMessage));
-    // Best-effort: start ingestion now over the service binding so we don't eat
-    // the queue's cold-delivery latency. Off the response path; the enqueued
-    // copy still runs the job if this fails.
-    waitUntilLogged(
-      c,
-      logger,
-      'ingestion.kick_failed',
-      queue.kick(jobMessage),
-      { space_id: space.id, job_id: jobId },
-    );
+    }, () => dispatchIngestionJobs(queue, [dispatchable]));
+    await assertDispatchedOrRollback(db, logger, {
+      orgId: space.orgId,
+      spaceId: space.id,
+      jobs: [dispatchable],
+      result: dispatchResult,
+    });
     logger.info('ingestion.enqueue_accepted', {
       space_id: space.id,
       source_count: created.length,

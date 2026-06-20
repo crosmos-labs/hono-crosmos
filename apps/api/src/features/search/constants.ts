@@ -27,6 +27,27 @@ export const GRAPH_EDGE_RECENCY_DAYS = 365.0;
 
 export const RERANKER_MAX_CANDIDATES = 300;
 
+/**
+ * Post-rerank relevance floor (NOT a Python port — an additive precision gate).
+ *
+ * zerank-2 returns a calibrated [0,1] relevance per candidate. Historically it
+ * was used only to ORDER results; the engine always returned `slice(0, topK)`,
+ * so when the true answer is 1–2 memories, up to 8 weak distractors still got
+ * handed to the reader and induced wrong/"unavailable" answers. This floor drops
+ * candidates whose reranker relevance is below it BEFORE the top-K slice, so the
+ * answer context is only the memories that are actually on-topic.
+ *
+ * Applied ONLY when the cross-encoder is active (the score is calibrated then);
+ * the rank-remap fallback uses a different scale and is left untouched. At least
+ * one candidate is always kept, so a genuinely weak query never returns empty —
+ * abstention / sparse-gold queries simply return fewer, which is correct.
+ *
+ * Deliberately CONSERVATIVE so it never demotes a real (if weakly-scored) gold
+ * memory — recall must not regress. Raise it after measuring against the
+ * benchmark backup if precision headroom remains.
+ */
+export const RERANK_RELEVANCE_FLOOR = 0.02;
+
 export const LAMBDA = 0.005;
 export const SIGMA = 0.1;
 export const ALPHA = 0.5;
@@ -78,9 +99,32 @@ export const RETRIEVAL_USER_COUNTER_TTL_SECONDS = 30;
 export const CANDIDATE_POOL = 50;
 
 /**
+ * Account-wide ceiling on AI fan-out (embeddings + reranker) per minute, across
+ * ALL orgs. This is a NOISY-NEIGHBOUR safety ceiling, not a per-user/per-org
+ * limit — those are the plan rate limit + concurrency cap. It exists because the
+ * shared Cloudflare Workers AI quota is account-global: one org bursting can
+ * 429/503 every other tenant (see memory: retrieval ceiling = Workers AI). Sized
+ * generously so it only trips on genuine aggregate overload, well above normal
+ * peak. The global throttle fails OPEN — a KV hiccup must never block all search.
+ */
+export const GLOBAL_AI_RPM_CEILING = 3000;
+
+/** Window length (seconds) for the global AI throttle's fixed window. */
+export const GLOBAL_AI_WINDOW_SECONDS = 60;
+
+/** `Retry-After` (seconds) returned when the global AI ceiling is hit. */
+export const GLOBAL_AI_RETRY_AFTER_SECONDS = 5;
+
+/**
  * Whether the cross-encoder reranker is constructed for retrieval. Mirrors
  * Python's `settings.retrieval_reranker_enabled` (env `RETRIEVAL_RERANKER_ENABLED`,
  * default on). Anything other than the literal string `"false"` keeps it on.
+ *
+ * IMPORTANT — the reranker is ON BY DEFAULT and must stay that way, in every
+ * environment including local dev and benchmarks. It is a core part of
+ * retrieval quality, not an optional add-on. Only turn it off when the user
+ * explicitly asks for it off (e.g. measuring pre-rerank ranking in isolation).
+ * Do NOT default it to false for convenience — leaving it unset = enabled.
  */
 export function isRerankerEnabled(value: string | undefined): boolean {
   return value !== 'false';

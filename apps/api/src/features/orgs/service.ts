@@ -6,18 +6,19 @@ import {
 } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
 import { tokenHex } from '../../lib/crypto';
+import { AppError } from '../../lib/errors';
 import { and, count, desc, eq, inArray, ne } from 'drizzle-orm';
 
-export class SlugCollisionError extends Error {
+export class SlugCollisionError extends AppError {
   constructor(name: string) {
-    super(`Could not generate unique slug for name='${name}'`);
+    super(409, 'slug_taken', `Could not generate unique slug for name='${name}'`);
     this.name = 'SlugCollisionError';
   }
 }
 
-export class OrganizationNotFoundError extends Error {
+export class OrganizationNotFoundError extends AppError {
   constructor(detail: string = 'Organization not found') {
-    super(detail);
+    super(404, 'org_not_found', detail);
     this.name = 'OrganizationNotFoundError';
   }
 }

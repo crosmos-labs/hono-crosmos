@@ -1,5 +1,6 @@
 import { edges, memories, type Memory } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -17,7 +18,7 @@ import {
   SpaceScopedQuerySchema,
 } from './schemas';
 
-export const memoryRoutes = new OpenAPIHono<HonoEnv>();
+export const memoryRoutes = createApiApp();
 
 function toResponse(memory: Memory, spaceUuid: string) {
   return {

@@ -1,8 +1,11 @@
 import { InvalidTokenError } from '../auth/jwt';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createApiApp } from '../../lib/openapi';
+import { createLogger } from '@crosmos/observability';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { perIpRateLimit } from '../../integrations/rate-limit/ip';
 import {
   buildGoogleAuthorizationUrl,
   exchangeGoogleCode,
@@ -22,7 +25,7 @@ import {
   type FlowStateClaims,
 } from './server';
 
-export const oauthServerRoutes = new OpenAPIHono<HonoEnv>();
+export const oauthServerRoutes = createApiApp();
 
 // ── Metadata (RFC 8414) ────────────────────────────────────────────────
 
@@ -71,11 +74,11 @@ oauthServerRoutes.openapi(
 
 const ClientRegistrationRequest = z
   .object({
-    redirect_uris: z.array(z.string().url()).optional(),
+    redirect_uris: z.array(z.string().url().max(2048)).max(20).optional(),
     client_name: z.string().max(255).optional(),
-    grant_types: z.array(z.string()).optional(),
-    response_types: z.array(z.string()).optional(),
-    token_endpoint_auth_method: z.string().optional(),
+    grant_types: z.array(z.string().max(64)).max(10).optional(),
+    response_types: z.array(z.string().max(64)).max(10).optional(),
+    token_endpoint_auth_method: z.string().max(64).optional(),
   })
   .openapi('ClientRegistrationRequest');
 
@@ -99,6 +102,10 @@ oauthServerRoutes.openapi(
     path: '/oauth/register',
     tags: ['oauth-server'],
     summary: 'Dynamic client registration',
+    middleware: [
+      // Tight: each call writes an oauth_clients row.
+      perIpRateLimit({ bucket: 'oauth-register', tier: 'strict' }),
+    ] as const,
     request: {
       body: { content: { 'application/json': { schema: ClientRegistrationRequest } } },
     },
@@ -151,7 +158,7 @@ oauthServerRoutes.openapi(
     tags: ['oauth-server'],
     summary: 'Lookup OAuth client',
     request: {
-      params: z.object({ client_id: z.string().min(1) }),
+      params: z.object({ client_id: z.string().min(1).max(256) }),
     },
     responses: {
       200: {
@@ -193,6 +200,21 @@ oauthServerRoutes.openapi(
 // is awkward for redirects.
 
 const redirectApp = new Hono<HonoEnv>();
+
+// Per-IP rate limits for the anonymous redirect/token endpoints (no org context
+// exists yet). Distinct buckets per logical endpoint.
+redirectApp.use(
+  '/oauth/authorize',
+  perIpRateLimit({ bucket: 'oauth-authorize', tier: 'standard' }),
+);
+redirectApp.use(
+  '/oauth/callback',
+  perIpRateLimit({ bucket: 'oauth-callback', tier: 'standard' }),
+);
+redirectApp.use(
+  '/oauth/token',
+  perIpRateLimit({ bucket: 'oauth-token', tier: 'standard' }),
+);
 
 function errorRedirect(
   redirectUri: string,
@@ -290,7 +312,23 @@ redirectApp.get('/oauth/callback', async (c) => {
     });
   } catch (err) {
     if (err instanceof OAuthError) {
-      return errorRedirect(flow.redirect_uri, 'access_denied', err.message, flow.state ?? null);
+      // err.message embeds raw Google/jose upstream text — log it, return generic.
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+      }).warn('oauth.server_exchange_failed', {
+        reason: 'oauth_exchange_failed',
+        scope: 'oauth-server',
+        client_id: flow.client_id,
+        error_name: err.name,
+        error_message: err.message,
+      });
+      return errorRedirect(
+        flow.redirect_uri,
+        'access_denied',
+        'OAuth exchange failed',
+        flow.state ?? null,
+      );
     }
     throw err;
   }

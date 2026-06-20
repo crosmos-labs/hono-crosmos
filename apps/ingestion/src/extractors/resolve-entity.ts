@@ -66,14 +66,18 @@ async function fetchCandidatePool(
   embeddings: number[][],
 ): Promise<CandidateRow[]> {
   const ids = new Set<number>();
-  for (const emb of embeddings) {
-    const matches = await vectorStore.queryNearest(
-      'entities',
-      emb,
-      { orgId: scope.orgId, spaceId: scope.spaceId },
-      { topK: CANDIDATE_POOL_LIMIT, minScore: 1 - CANDIDATE_POOL_THRESHOLD },
-    );
-    for (const m of matches) ids.add(m.id);
+  const scopeArg = { orgId: scope.orgId, spaceId: scope.spaceId };
+  const opts = { topK: CANDIDATE_POOL_LIMIT, minScore: 1 - CANDIDATE_POOL_THRESHOLD };
+  if (vectorStore.queryNearestBatch) {
+    // Batched: one backend call for all extracted-entity embeddings. Matters for
+    // HTTP-backed stores (Qdrant) where each query is a counted subrequest.
+    const batched = await vectorStore.queryNearestBatch('entities', embeddings, scopeArg, opts);
+    for (const matches of batched) for (const m of matches) ids.add(m.id);
+  } else {
+    for (const emb of embeddings) {
+      const matches = await vectorStore.queryNearest('entities', emb, scopeArg, opts);
+      for (const m of matches) ids.add(m.id);
+    }
   }
   if (ids.size === 0) return [];
 
@@ -208,6 +212,10 @@ export async function resolveEntities(
 
   const upsertStart = performance.now();
   const out: ResolvedEntity[] = [];
+  // Collect index-backed vector upserts and flush them in ONE call after the
+  // loop (vs one per entity). Each is a counted subrequest on HTTP-backed
+  // stores (Qdrant), so batching keeps ingestion under the per-invocation cap.
+  const vectorUpserts: { id: number; vector: number[]; orgId: number; spaceId: number }[] = [];
   for (let i = 0; i < extracted.length; i++) {
     const e = extracted[i]!;
     const emb = vectors[i] ?? null;
@@ -221,16 +229,32 @@ export async function resolveEntities(
     // the row and gets the vector upserted to the index after insert.
     const columnEmbedding = vectorStore.persistsInColumn ? emb : null;
     const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, columnEmbedding);
-    if (upserted.isNew && !vectorStore.persistsInColumn && emb) {
-      await vectorStore.upsert('entities', [
-        { id: upserted.entityId, vector: emb, orgId: scope.orgId, spaceId: scope.spaceId },
-      ]);
+    // Index-backed stores (vectorize): upsert the vector for EVERY resolved
+    // entity in this run, not only freshly-inserted ones. The row commits in
+    // autocommit above; if a prior run's vector upsert failed AFTER the row
+    // committed (Workers-AI/Vectorize 429/503 — the documented prod ceiling),
+    // `purgeSourceArtifacts` preserves the entity, so the retry sees
+    // `isNew=false` and would otherwise NEVER re-upsert — leaving the entity
+    // permanently invisible to ANN resolution. Vectorize upsert is idempotent,
+    // so re-upserting an existing vector is safe and cheap. The pg backend
+    // persists the vector in-column, so it's excluded here.
+    if (!vectorStore.persistsInColumn && emb) {
+      vectorUpserts.push({
+        id: upserted.entityId,
+        vector: emb,
+        orgId: scope.orgId,
+        spaceId: scope.spaceId,
+      });
     }
     out.push({
       extracted: e,
       entityId: upserted.entityId,
       isNew: upserted.isNew,
     });
+  }
+  // Single batched vector upsert for all resolved entities in this source.
+  if (vectorUpserts.length > 0) {
+    await vectorStore.upsert('entities', vectorUpserts);
   }
   logger?.info('ingestion.stage_completed', {
     stage: 'entity_upsert',

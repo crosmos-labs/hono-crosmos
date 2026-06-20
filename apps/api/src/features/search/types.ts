@@ -42,6 +42,8 @@ export interface RankedCandidate {
   source: SourceSignal;
   sourceChunk: string | null; // filled later in the orchestrator
   sourceId: number | null; // filled later in the orchestrator
+  sourceUuid: string | null; // source UUID, filled by attachSourceText
+  sessionId: string | null; // source meta.session_id, filled by attachSourceText
 }
 
 /** The fused/scored output the orchestrator builds. */
@@ -61,9 +63,13 @@ export interface CandidateMemory {
   sourceSignals: SourceSignal[]; // which signals surfaced this memory
   sourceChunk: string | null;
   sourceId: number | null;
+  sourceUuid: string | null;
+  sessionId: string | null;
   fusedScore: number; // RRF score from the pool
   persistenceScore: number; // compute_persistence(...) — carried, NOT a multiplier
   finalScore: number; // base × (1 + clamp(boost))
+  rerankScore: number; // the `base` score: calibrated CE relevance, or rank-remap fallback
+  ceRelevance: boolean; // true when rerankScore is the cross-encoder's calibrated [0,1] score
 }
 
 export interface RetrievalResult {

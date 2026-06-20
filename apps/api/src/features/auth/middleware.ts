@@ -7,7 +7,7 @@ import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getCacheStore } from '../../integrations/cache';
 import { waitUntilLogged } from '../../lib/runtime';
-import { createLogger } from '@crosmos/observability';
+import { createLogger, createMetrics } from '@crosmos/observability';
 import {
   resolveApiKeyByHash,
   touchApiKeyLastUsed,
@@ -17,6 +17,32 @@ import { getUserById } from './users';
 type AuthContext = Context<HonoEnv>;
 
 const API_KEY_CACHE_TTL_SECONDS = 5 * 60;
+
+/**
+ * Reject a request as unauthenticated, emitting a structured `auth.failed` log
+ * + an `auth_failure` metric first (low-cardinality `reason` + `auth_method`,
+ * NEVER the token) so brute-force / credential-stuffing / expired-key churn is
+ * observable and alertable. The client message stays generic — in particular
+ * JWT-library reasons are collapsed so the 401 isn't an oracle.
+ */
+function failAuth(
+  c: AuthContext,
+  reason: string,
+  authMethod: 'jwt' | 'api_key' | 'none',
+  message: string,
+  err?: unknown,
+): never {
+  createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+    base: { request_id: c.var.requestId },
+  }).warn('auth.failed', { reason, auth_method: authMethod, status_code: 401 }, err);
+  createMetrics(c.env.ANALYTICS, {
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+  }).count('auth_failure', { tags: [reason, authMethod], index: 'auth_failure' });
+  throw new HTTPException(401, { message });
+}
 
 interface CachedApiKey {
   apiKeyId: number;
@@ -59,11 +85,11 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
     const db = getDb(c);
     const resolved = await resolveApiKeyByHash(db, hash);
     if (!resolved) {
-      throw new HTTPException(401, { message: 'Invalid or revoked API key' });
+      failAuth(c, 'api_key_invalid', 'api_key', 'Invalid or revoked API key');
     }
     const { apiKey, user } = resolved;
     if (apiKey.expiresAt && apiKey.expiresAt.getTime() < now) {
-      throw new HTTPException(401, { message: 'API key has expired' });
+      failAuth(c, 'api_key_expired', 'api_key', 'API key has expired');
     }
     cached = {
       apiKeyId: apiKey.id,
@@ -112,7 +138,9 @@ async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
     claims = await decodeAccessTokenClaims(c.env.JWT_SECRET, token);
   } catch (err) {
     if (err instanceof InvalidTokenError) {
-      throw new HTTPException(401, { message: err.message });
+      // Collapse expired/bad-sig/wrong-aud into one generic message so the 401
+      // isn't a token-validity oracle; the real reason is logged server-side.
+      failAuth(c, 'jwt_invalid', 'jwt', 'Invalid or expired token', err);
     }
     throw err;
   }
@@ -120,10 +148,10 @@ async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
   const db = getDb(c);
   const user = await getUserById(db, claims.userId);
   if (!user) {
-    throw new HTTPException(401, { message: 'User not found' });
+    failAuth(c, 'user_not_found', 'jwt', 'Invalid or expired token');
   }
   if (!user.isActive) {
-    throw new HTTPException(401, { message: 'User account inactive' });
+    failAuth(c, 'user_inactive', 'jwt', 'User account inactive');
   }
 
   c.set('userId', user.id);
@@ -139,11 +167,11 @@ async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
 function extractBearer(c: AuthContext): string {
   const header = c.req.header('Authorization');
   if (!header || !header.startsWith('Bearer ')) {
-    throw new HTTPException(401, { message: 'Missing or malformed Authorization header' });
+    failAuth(c, 'missing_bearer', 'none', 'Missing or malformed Authorization header');
   }
   const token = header.slice('Bearer '.length).trim();
   if (!token) {
-    throw new HTTPException(401, { message: 'Empty bearer token' });
+    failAuth(c, 'empty_bearer', 'none', 'Empty bearer token');
   }
   return token;
 }

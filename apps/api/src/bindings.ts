@@ -27,6 +27,13 @@ export interface Env {
   // Vectorize indexes (used when VECTOR_STORE=vectorize).
   MEMORIES_INDEX: VectorizeIndex;
   ENTITIES_INDEX: VectorizeIndex;
+  // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
+  // local dev / tests, where createMetrics() degrades to a no-op.
+  ANALYTICS?: AnalyticsEngineDataset;
+  // Durable-Object rate limiter (class RateLimiterDO) for per-IP limits on
+  // pre-org-context auth/OAuth routes (see integrations/rate-limit/ip.ts).
+  // Optional: unbound in local dev, where the limiter fails open.
+  RATE_LIMITER?: DurableObjectNamespace;
 
   // Vars
   ENVIRONMENT: 'development' | 'production';
@@ -51,15 +58,37 @@ export interface Env {
   BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
   // Provider selection. Defaults: workers-ai / workers-ai / vectorize.
-  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai';
+  EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
   RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
-  VECTOR_STORE?: 'vectorize' | 'pg';
+  VECTOR_STORE?: 'vectorize' | 'pg' | 'qdrant';
+  // Qdrant config (only needed when VECTOR_STORE=qdrant). Collection names
+  // default to crosmos-memories/crosmos-entities if unset.
+  QDRANT_URL?: string;
+  QDRANT_API_KEY?: string;
+  QDRANT_MEMORIES_COLLECTION?: string;
+  QDRANT_ENTITIES_COLLECTION?: string;
+  // Deployment vector-space dimension (= Vectorize index dimension). Default
+  // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small (indexes
+  // must be recreated at that dimension). Must match the ingestion worker.
+  EMBEDDING_DIMENSIONS?: string;
   // Only needed for the non-default (fallback) providers.
   OPENAI_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it
   // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
   RETRIEVAL_RERANKER_ENABLED?: string;
+  // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
+  ADMIN_TOOLS?: string;
+
+  // Operational limits (issue #6) — env overrides for the admission/backpressure
+  // knobs. Optional: each falls back to its compile-time default (see
+  // lib/limits.ts → getOperationalLimits). Integers as strings.
+  MAX_PENDING_JOBS_PER_USER?: string;
+  MAX_QUEUE_DEPTH?: string;
+  STALE_JOB_MINUTES?: string;
+  RETRIEVAL_MAX_CONCURRENT_PER_USER?: string;
+  GLOBAL_AI_RPM_CEILING?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).

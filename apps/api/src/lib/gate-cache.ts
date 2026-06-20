@@ -17,9 +17,12 @@
  *      · org plan / entitlements change → `invalidateEntitlements(env, orgId)`
  *      · member added / removed / role changed → `invalidateMembership(env, orgId, userId)`
  *      · space deleted (or its org/scope changed) → `invalidateSpace(env, uuid)`
- *    (Today the codebase only adds members and creates/deletes spaces, and
- *    never mutates plan in-code, so the TTL alone is already correct — these
- *    hooks future-proof the invariant. See the call sites that use them.)
+ *    Member removal and role changes (orgs/routes.ts DELETE + PATCH member)
+ *    call `invalidateMembership` explicitly so a removed user loses access and
+ *    a demoted admin loses admin powers immediately, rather than waiting out
+ *    the 60s TTL. Plan is never mutated in-code today, so entitlements rely on
+ *    their TTL; the `invalidate*` hooks keep the invariant enforceable. See the
+ *    call sites that use them.
  *  - **Fails open**: any KV error falls back to a direct DB read.
  */
 import type { Context } from 'hono';
