@@ -351,8 +351,8 @@ export function temporalProximityScore(
 }
 
 /**
- * In-memory temporal signal over the pre-loaded candidate memories. Ranks by
- * proximity to the centre of the window. No DB, no tenant awareness.
+ * Temporal signal — selects in-window memories ordered by proximity to the
+ * window centre (bounded SQL range query + LIMIT), then scores them in JS.
  */
 export async function temporalSearch(
   db: Database,
@@ -375,6 +375,11 @@ export async function temporalSearch(
   // ordering is identical to the old score-desc sort (score is monotone in
   // distance); ties are broken by id desc for determinism (the old order
   // depended on row load order). Score is computed in JS, same formula.
+  //
+  // Bounds are passed as ISO strings + an explicit `::timestamptz` cast, NOT raw
+  // Date objects: a `Date` interpolated into a raw `sql` template is handed to
+  // the driver untyped, which the postgres.js driver rejects ("must be string").
+  // (Typed-column comparators serialize Dates for you; raw `sql` does not.)
   const ref = sql`coalesce(${memories.eventTime}, ${memories.recordedAt}, ${memories.createdAt})`;
   const rows = await db
     .select(retrievalMemoryColumns)
@@ -383,11 +388,14 @@ export async function temporalSearch(
       and(
         scopeMemories(scope),
         isNull(memories.forgottenAt),
-        sql`${ref} >= ${start}`,
-        sql`${ref} <= ${end}`,
+        sql`${ref} >= ${start.toISOString()}::timestamptz`,
+        sql`${ref} <= ${end.toISOString()}::timestamptz`,
       ),
     )
-    .orderBy(sql`abs(extract(epoch from (${ref} - ${center}::timestamptz)))`, desc(memories.id))
+    .orderBy(
+      sql`abs(extract(epoch from (${ref} - ${center.toISOString()}::timestamptz)))`,
+      desc(memories.id),
+    )
     .limit(limit);
 
   return rows.map((memory, i) => {

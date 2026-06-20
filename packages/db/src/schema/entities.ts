@@ -62,6 +62,15 @@ export const entities = pgTable(
       'gin',
       sql`to_tsvector('english', ${t.name})`,
     ),
+    // `simple` config (no stemming, no stopword removal) backs the graph
+    // name-seed: it fetches entities sharing a query token by name via an
+    // indexed lookup instead of scanning every in-scope entity. `simple` is
+    // required (not the `english` index above) so the match is exact-word —
+    // a faithful superset of the JS token-overlap the seed then computes.
+    index('entities_name_simple_gin_idx').using(
+      'gin',
+      sql`to_tsvector('simple', ${t.name})`,
+    ),
   ],
 );
 

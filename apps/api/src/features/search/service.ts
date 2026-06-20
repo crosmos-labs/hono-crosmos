@@ -14,7 +14,7 @@ import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { attachSourceText, type RetrievalCandidates } from './candidates';
+import { attachSourceText } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
@@ -64,7 +64,6 @@ export interface RetrieveDeps {
 export interface RetrieveInput {
   query: RetrievalQuery;
   scope: TenantScope;
-  candidates: RetrievalCandidates;
   deps: RetrieveDeps;
   /**
    * Pre-fetched org entitlements (the route fetches once per request and
@@ -76,9 +75,10 @@ export interface RetrieveInput {
   logger?: Logger;
   /**
    * Optional pre-started query embedding. The route kicks this off BEFORE the
-   * visibility + working-set DB loads so the external embedding call (~370ms)
-   * overlaps those round-trips instead of running after them. If omitted,
-   * retrieve embeds lazily as before. Quality-neutral: identical vector + usage.
+   * visibility resolution so the external embedding call (~370ms) overlaps that
+   * round-trip and the signals' bounded DB queries instead of running after
+   * them. If omitted, retrieve embeds lazily as before. Quality-neutral:
+   * identical vector + usage.
    */
   embedPromise?: ReturnType<Embedder['embed']>;
 }
@@ -101,13 +101,9 @@ function failureFields(err: unknown): {
 }
 
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
-  const { query, scope, candidates, deps } = input;
+  const { query, scope, deps } = input;
   const { db, embedder, reranker, vectorStore } = deps;
   const logger = input.logger;
-
-  // Visible working set, keyed by id — the semantic signal resolves ANN hits
-  // against this (which enforces visibility), and it's reused for graph below.
-  const memoryById = new Map(candidates.memories.map((m) => [m.id, m]));
 
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
   const temporalParseStart = performance.now();
@@ -190,29 +186,23 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     await Promise.all([
       timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
         const { vector } = await embedPromise;
-        return semanticSearch(vectorStore, vector, scope, query.candidatePool, memoryById);
+        return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
       }),
       timeSignal(logger, SourceSignal.KEYWORD, () =>
         keywordSearch(query.text, db, scope, query.candidatePool),
       ),
       timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
         if (!graphEnabled) return [];
-        if (candidates.memories.length === 0 || candidates.entities.length === 0) {
-          return [];
-        }
         const { vector } = await embedPromise;
         return graphSearchWithStore(
           db,
           vectorStore,
           query.text,
           vector,
-          candidates.memories,
-          candidates.entities,
-          candidates.memoryToEntities,
+          scope,
           query.candidatePool,
           temporalRange ? temporalRange[1] : null,
           effectiveMaxDepth,
-          scope,
         );
       }),
       timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
@@ -404,6 +394,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
 
     scored.push({
       memoryId,
+      uuid: ranked.uuid,
       content: ranked.content,
       memoryType: ranked.memoryType,
       ownerUserId: ranked.ownerUserId,

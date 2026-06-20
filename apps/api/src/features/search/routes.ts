@@ -24,7 +24,7 @@ import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cach
 import { getBackgroundTasks } from '../../lib/runtime';
 import { recordSearchQueries } from '../usage/service';
 import { resolveReadVisibility } from '../visibility/service';
-import { loadRetrievalCandidates, touchMemories } from './candidates';
+import { touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
@@ -101,7 +101,6 @@ interface SearchCandidateOut {
 }
 
 function buildResponse(
-  uuidById: Map<number, string>,
   ownerById: Map<number, { uuid: string; name: string }>,
   queryText: string,
   result: RetrievalResult,
@@ -118,14 +117,11 @@ function buildResponse(
     return { query: queryText, candidates: [], total: 0, took_ms: tookMs };
   }
 
-  // No DB query: every result candidate came from the already-loaded scoped
-  // memory set, so its uuid is in `uuidById` (built from candidates.memories).
-  const uuidMap = uuidById;
-
   const candidates: SearchCandidateOut[] = raw.map((c: CandidateMemory) => {
     const out: SearchCandidateOut = {
-      // Fall back to the raw int (as Python does) if a uuid is somehow missing.
-      memory_id: uuidMap.get(c.memoryId) ?? String(c.memoryId),
+      // Each result candidate carries its own uuid (hydrated with the row). Fall
+      // back to the raw int (as Python does) if it is somehow missing.
+      memory_id: c.uuid ?? String(c.memoryId),
       content: c.content,
       memory_type: c.memoryType,
       score: c.finalScore,
@@ -377,36 +373,12 @@ searchRoutes.openapi(
         userId,
         visibleUserIds,
       };
-      const candidateLoadStart = performance.now();
-      const candidates = await loadRetrievalCandidates(db, scope);
-      logger.info('retrieval.stage_completed', {
-        stage: 'candidate_load',
-        space_id: space.id,
-        duration_ms: durationMs(candidateLoadStart),
-        memory_count: candidates.memories.length,
-        entity_count: candidates.entities.length,
-      });
-
-      // Resolve owner display names CONCURRENTLY with retrieve() — the signals
-      // and ranking never use them, only the final response does. Prefetching
-      // for every distinct owner in the loaded working set (a superset of the
-      // result owners) overlaps the ~900ms retrieve() instead of adding a
-      // serial ~110ms DB round-trip after it. Queries users by id (indexed).
-      const ownerIdSet = [
-        ...new Set(
-          candidates.memories
-            .map((m) => m.ownerUserId)
-            .filter((id): id is number => id != null),
-        ),
-      ];
-      const ownersPromise =
-        ownerIdSet.length > 0
-          ? db
-              .select({ id: users.id, uuid: users.uuid, name: users.name })
-              .from(users)
-              .where(inArray(users.id, ownerIdSet))
-          : Promise.resolve([] as { id: number; uuid: string; name: string }[]);
-      ownersPromise.catch(() => {}); // guard pre-await window; awaited after retrieve()
+      // No whole-space working-set load anymore — each signal narrows to a
+      // bounded id set then hydrates by id (see candidates.ts). Owner display
+      // names are resolved AFTER retrieve(), from the (≤topK) result candidates
+      // only — the prior prefetch keyed off the full working set, which no
+      // longer exists. One small indexed users-by-id query; not on any signal's
+      // path (only the response uses owner names).
 
       const deps = {
         db,
@@ -426,7 +398,6 @@ searchRoutes.openapi(
             diversify: body.diversify,
           },
           scope,
-          candidates,
           deps,
           entitlements,
           embedPromise,
@@ -435,11 +406,23 @@ searchRoutes.openapi(
         RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
       );
 
-      // Map int id → uuid from the already-loaded scoped memories (no extra
-      // query). Result candidates are a subset of candidates.memories.
-      const uuidById = new Map(candidates.memories.map((m) => [m.id, m.uuid]));
-      // Join the owner-name prefetch kicked off before retrieve() (overlapped).
-      const ownerRows = await ownersPromise;
+      // Resolve owner display names for the result candidates only (≤topK). One
+      // indexed users-by-id query; the result set is tiny, so this is off the
+      // signal path and adds a single small round-trip to the response build.
+      const ownerIdSet = [
+        ...new Set(
+          result.candidates
+            .map((c) => c.ownerUserId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+      const ownerRows =
+        ownerIdSet.length > 0
+          ? await db
+              .select({ id: users.id, uuid: users.uuid, name: users.name })
+              .from(users)
+              .where(inArray(users.id, ownerIdSet))
+          : [];
       const ownerById = new Map(
         ownerRows.map((owner) => [
           owner.id,
@@ -447,7 +430,6 @@ searchRoutes.openapi(
         ]),
       );
       const response = buildResponse(
-        uuidById,
         ownerById,
         body.query,
         result,
@@ -457,7 +439,6 @@ searchRoutes.openapi(
       logger.info('retrieval.request_completed', {
         space_id: space.id,
         duration_ms: durationMs(t0),
-        candidate_count: candidates.memories.length,
         result_count: response.total,
         top_k: body.limit,
       });

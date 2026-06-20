@@ -3,6 +3,13 @@
  * boundary between scoping (here) and the pure engine code (signals). Ports
  * `app/services/retrieval.py` (loader) + `services/memories.py:touch_memories`
  * + the `chunk_memories → chunks → sources` text attach.
+ *
+ * Loading model: there is NO whole-space working-set load. Each signal narrows
+ * to a bounded id set first (ANN, GIN, BFS) and then hydrates only those ids by
+ * id via `hydrateMemories` — so per-query cost is O(candidates), not O(space).
+ * Every hydration goes through `scopeMemories`, which carries the full org +
+ * space + per-user visibility rule, so by-id hydration is visibility-equivalent
+ * to the old pre-loaded visible set (the previous correctness anchor).
  */
 import { type Database, memories, entities, memoryEntities, chunkMemories, chunks, sources } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
@@ -10,21 +17,12 @@ import { and, asc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { scopeEntities, scopeMemories, sourceVisibilityClause } from '../../lib/scope';
 import type { RankedCandidate, RetrievalMemoryRow, RetrievalEntityRow } from './types';
 
-export interface RetrievalCandidates {
-  memories: RetrievalMemoryRow[];
-  entities: RetrievalEntityRow[];
-  /** Empty on the store path (`include_edges = graph_store is None`). */
-  edges: never[];
-  memoryToEntities: Map<number, number[]>;
-}
-
 /**
  * The exact column set ranking reads off a memory row (see `RetrievalMemoryRow`).
- * Shared by every loader/signal that hydrates memory rows so the projection
- * stays in one place — notably the temporal signal reuses it. Deliberately omits
- * `embedding` (vector; null on the qdrant/vectorize backends, fetched by id for
- * MMR), `meta`, `visibility`, `updatedAt`, and the clustering columns — none
- * are read by the ranking pipeline or the response mapper.
+ * Shared by every signal that hydrates memory rows so the projection stays in
+ * one place. Deliberately omits `embedding` (vector; null on the qdrant/vectorize
+ * backends, fetched by id for MMR), `meta`, `visibility`, `updatedAt`, and the
+ * clustering columns — none are read by the ranking pipeline or response mapper.
  */
 export const retrievalMemoryColumns = {
   id: memories.id,
@@ -43,74 +41,147 @@ export const retrievalMemoryColumns = {
   forgottenAt: memories.forgottenAt,
 } as const;
 
-/** Load all non-forgotten memories in scope (projected columns only). */
-export async function getRetrievalMemories(
+/**
+ * Hydrate the given memory ids → row map, filtered to the caller's visible,
+ * non-forgotten set. This is the visibility-enforcement point that replaces the
+ * old pre-loaded working set: `scopeMemories` applies org + space + the per-user
+ * `visibility='org' OR owner ∈ visibleUserIds` clause, so an id that is private
+ * to another user (or forgotten) is simply absent from the result — exactly the
+ * intersection the semantic/graph signals used to do against `memoryById`.
+ */
+export async function hydrateMemories(
   db: Database,
   scope: TenantScope,
-): Promise<RetrievalMemoryRow[]> {
-  return db
+  ids: number[],
+): Promise<Map<number, RetrievalMemoryRow>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db
     .select(retrievalMemoryColumns)
     .from(memories)
-    .where(and(scopeMemories(scope), isNull(memories.forgottenAt)));
-}
-
-/** Load all entities in scope (id + name only — the graph signal's needs). */
-export async function getRetrievalEntities(
-  db: Database,
-  scope: TenantScope,
-): Promise<RetrievalEntityRow[]> {
-  return db
-    .select({ id: entities.id, name: entities.name })
-    .from(entities)
-    .where(scopeEntities(scope));
+    .where(and(scopeMemories(scope), isNull(memories.forgottenAt), inArray(memories.id, ids)));
+  return new Map(rows.map((r) => [r.id, r]));
 }
 
 /**
- * Build `memory_id → [entity_id, ...]` for the scope. Double-scoped: only
- * links where BOTH endpoints are in scope are kept (the junction carries no
- * org/space of its own). Mirrors `get_memory_to_entities_map`.
+ * In-scope entities whose name shares ≥1 of the given (already-tokenized) query
+ * terms — the graph name-seed's candidate fetch, via the `entities_name_simple_gin_idx`
+ * GIN index. Replaces scanning every in-scope entity: it returns exactly the
+ * entities with non-zero token overlap (the only ones the seed keeps), so the
+ * seed's exact overlap math + normalization are unchanged.
+ *
+ * `simple` config (no stemming/stopwords) makes the index match a faithful
+ * superset of the JS tokenizer: every JS name-token is also a `simple` lexeme,
+ * so any entity the old scan would have scored is returned here. Tokens are
+ * OR-joined and run through `websearch_to_tsquery` (not `to_tsquery`) so they
+ * can never raise a syntax error. Returns [] when there are no query tokens.
  */
-export async function getMemoryToEntitiesMap(
+export async function getEntitiesByNameTokens(
   db: Database,
   scope: TenantScope,
+  tokens: string[],
+): Promise<RetrievalEntityRow[]> {
+  if (tokens.length === 0) return [];
+  const tsquery = tokens.join(' or ');
+  return db
+    .select({ id: entities.id, name: entities.name })
+    .from(entities)
+    .where(
+      and(
+        scopeEntities(scope),
+        sql`to_tsvector('simple', ${entities.name}) @@ websearch_to_tsquery('simple', ${tsquery})`,
+      ),
+    );
+}
+
+/**
+ * `entity_id → [visible memory_id, ...]` for the given entity ids. The join
+ * against `memories` under `scopeMemories` (+ not-forgotten) means only links to
+ * memories the caller can see are returned — so relevance never propagates
+ * through, nor is a seed memory ever drawn from, an invisible memory.
+ */
+export async function getMemoriesForEntities(
+  db: Database,
+  scope: TenantScope,
+  entityIds: number[],
 ): Promise<Map<number, number[]>> {
-  // Single join replaces the old 3 sequential queries (memory ids → entity ids
-  // → links). The joins enforce the same "both endpoints in scope" rule: a link
-  // survives iff its memory is in-scope-and-not-forgotten AND its entity is
-  // in-scope. Identical link set, one round-trip, and no giant IN-list params.
-  // ORDER BY makes the per-memory entity order deterministic (the graph signal
-  // is order-independent anyway — it only does max/set ops).
+  if (entityIds.length === 0) return new Map();
+  const links = await db
+    .select({ entityId: memoryEntities.entityId, memoryId: memoryEntities.memoryId })
+    .from(memoryEntities)
+    .innerJoin(memories, eq(memories.id, memoryEntities.memoryId))
+    .where(
+      and(
+        scopeMemories(scope),
+        isNull(memories.forgottenAt),
+        inArray(memoryEntities.entityId, entityIds),
+      ),
+    )
+    .orderBy(asc(memoryEntities.entityId), asc(memoryEntities.memoryId));
+  const out = new Map<number, number[]>();
+  for (const { entityId, memoryId } of links) {
+    const list = out.get(entityId);
+    if (list) list.push(memoryId);
+    else out.set(entityId, [memoryId]);
+  }
+  return out;
+}
+
+/**
+ * `memory_id → [entity_id, ...]` for the given (visible) memory ids — used to
+ * propagate memory-seed similarity onto entities. The join enforces visibility,
+ * so an ANN memory hit the caller can't see contributes no entities.
+ */
+export async function getEntitiesForMemories(
+  db: Database,
+  scope: TenantScope,
+  memoryIds: number[],
+): Promise<Map<number, number[]>> {
+  if (memoryIds.length === 0) return new Map();
   const links = await db
     .select({ memoryId: memoryEntities.memoryId, entityId: memoryEntities.entityId })
     .from(memoryEntities)
     .innerJoin(memories, eq(memories.id, memoryEntities.memoryId))
-    .innerJoin(entities, eq(entities.id, memoryEntities.entityId))
-    .where(and(scopeMemories(scope), isNull(memories.forgottenAt), scopeEntities(scope)))
+    .where(
+      and(
+        scopeMemories(scope),
+        isNull(memories.forgottenAt),
+        inArray(memoryEntities.memoryId, memoryIds),
+      ),
+    )
     .orderBy(asc(memoryEntities.memoryId), asc(memoryEntities.entityId));
-
-  const result = new Map<number, number[]>();
+  const out = new Map<number, number[]>();
   for (const { memoryId, entityId } of links) {
-    const list = result.get(memoryId);
+    const list = out.get(memoryId);
     if (list) list.push(entityId);
-    else result.set(memoryId, [entityId]);
+    else out.set(memoryId, [entityId]);
   }
-  return result;
+  return out;
 }
 
 /**
- * Load the full scoped working set up front. We use the Postgres graph store,
- * so edges are fetched per-hop inside the BFS (`include_edges = false`).
+ * Of the given entity ids, the subset linked to ≥1 visible, non-forgotten
+ * memory. Used (only when per-user visibility is active) to restrict the graph
+ * seed-entity universe to entities reachable through memories the caller can
+ * see — parity with the old in-memory `entities.filter(linked-to-visible)`.
  */
-export async function loadRetrievalCandidates(
+export async function getEntityIdsLinkedToVisibleMemories(
   db: Database,
   scope: TenantScope,
-): Promise<RetrievalCandidates> {
-  const [mems, ents, memoryToEntities] = await Promise.all([
-    getRetrievalMemories(db, scope),
-    getRetrievalEntities(db, scope),
-    getMemoryToEntitiesMap(db, scope),
-  ]);
-  return { memories: mems, entities: ents, edges: [], memoryToEntities };
+  entityIds: number[],
+): Promise<Set<number>> {
+  if (entityIds.length === 0) return new Set();
+  const rows = await db
+    .selectDistinct({ entityId: memoryEntities.entityId })
+    .from(memoryEntities)
+    .innerJoin(memories, eq(memories.id, memoryEntities.memoryId))
+    .where(
+      and(
+        scopeMemories(scope),
+        isNull(memories.forgottenAt),
+        inArray(memoryEntities.entityId, entityIds),
+      ),
+    );
+  return new Set(rows.map((r) => r.entityId));
 }
 
 /**

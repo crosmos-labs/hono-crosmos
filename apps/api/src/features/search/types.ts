@@ -57,6 +57,7 @@ export interface RetrievalQuery {
  */
 export interface RankedCandidate {
   memoryId: number;
+  uuid: string;
   content: string;
   memoryType: string;
   ownerUserId: number | null;
@@ -80,6 +81,7 @@ export interface RankedCandidate {
 /** The fused/scored output the orchestrator builds. */
 export interface CandidateMemory {
   memoryId: number;
+  uuid: string;
   content: string;
   memoryType: string;
   ownerUserId: number | null;
