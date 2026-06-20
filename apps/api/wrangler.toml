@@ -38,7 +38,7 @@ port = 8787
 inspector_port = 9229
 
 [triggers]
-crons = ["17 3 * * *"]
+crons = ["17 3 * * *", "*/15 * * * *"]
 
 # Hyperdrive: NeonDB connection pooling
 # Replace `id` after running: wrangler hyperdrive create crosmos-db --connection-string=...
@@ -120,6 +120,16 @@ EMBEDDINGS_PROVIDER = "workers-ai"
 RERANKER_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
+# Operational limits (issue #6) — optional overrides for the admission/
+# backpressure knobs. Each falls back to its compile-time default
+# (lib/limits.ts → getOperationalLimits) when unset, so behavior is unchanged
+# unless you set one. Uncomment to tune per-env without a code change:
+#   MAX_PENDING_JOBS_PER_USER = "5000"          # per-user active-job cap
+#   MAX_QUEUE_DEPTH = "5000"                     # global in-flight-job gate
+#   STALE_JOB_MINUTES = "10"                     # orphaned-job window (gates + reaper)
+#   RETRIEVAL_MAX_CONCURRENT_PER_USER = "10"     # per-user concurrent /search
+#   GLOBAL_AI_RPM_CEILING = "3000"               # account-wide AI RPM ceiling
+
 # Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
 #   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small @ 1024-dim)
 #   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small @ 1024-dim)
@@ -146,9 +156,13 @@ ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
 APP_BASE_URL = "https://hono.crosmos.dev"
 RETRIEVAL_RERANKER_ENABLED = "true"
-EMBEDDINGS_PROVIDER = "workers-ai"
-RERANKER_PROVIDER = "workers-ai"
-VECTOR_STORE = "vectorize"
+EMBEDDINGS_PROVIDER = "openai"
+RERANKER_PROVIDER = "zeroentropy"
+VECTOR_STORE = "qdrant"
+EMBEDDING_DIMENSIONS = "1536"
+# Qdrant cloud cluster (us-east-1). API key is a secret (wrangler secret put
+# QDRANT_API_KEY). Collection names default to crosmos-memories/crosmos-entities.
+QDRANT_URL = "https://413d870d-6737-407d-b9f9-7cd92cf76fe7.us-east-1-1.aws.cloud.qdrant.io"
 
 # Workers AI binding (not inherited from top-level).
 [env.production.ai]
@@ -174,14 +188,14 @@ new_sqlite_classes = ["RateLimiterDO"]
 #   wrangler vectorize create crosmos-entities --dimensions=1024 --metric=cosine
 [[env.production.vectorize]]
 binding = "MEMORIES_INDEX"
-index_name = "crosmos-memories"
+index_name = "crosmos-memories-v3"
 
 [[env.production.vectorize]]
 binding = "ENTITIES_INDEX"
-index_name = "crosmos-entities"
+index_name = "crosmos-entities-v3"
 
 [env.production.triggers]
-crons = ["17 3 * * *"]
+crons = ["17 3 * * *", "*/15 * * * *"]
 
 # Smart Placement for production (env config is not inherited from top-level).
 [env.production.placement]
@@ -193,7 +207,9 @@ custom_domain = true
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "334924fce954497fbcc866b74395bca1"
+# crosmos-neon-useast1 → NeonDB us-east-1 (benchmark/US setup). Prior id
+# 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2 (kept for rollback).
+id = "72fcf1cc21b349e490900148469c12e7"
 
 [[env.production.kv_namespaces]]
 binding = "API_KEY_CACHE"

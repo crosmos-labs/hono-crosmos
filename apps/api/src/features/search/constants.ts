@@ -27,6 +27,27 @@ export const GRAPH_EDGE_RECENCY_DAYS = 365.0;
 
 export const RERANKER_MAX_CANDIDATES = 300;
 
+/**
+ * Post-rerank relevance floor (NOT a Python port — an additive precision gate).
+ *
+ * zerank-2 returns a calibrated [0,1] relevance per candidate. Historically it
+ * was used only to ORDER results; the engine always returned `slice(0, topK)`,
+ * so when the true answer is 1–2 memories, up to 8 weak distractors still got
+ * handed to the reader and induced wrong/"unavailable" answers. This floor drops
+ * candidates whose reranker relevance is below it BEFORE the top-K slice, so the
+ * answer context is only the memories that are actually on-topic.
+ *
+ * Applied ONLY when the cross-encoder is active (the score is calibrated then);
+ * the rank-remap fallback uses a different scale and is left untouched. At least
+ * one candidate is always kept, so a genuinely weak query never returns empty —
+ * abstention / sparse-gold queries simply return fewer, which is correct.
+ *
+ * Deliberately CONSERVATIVE so it never demotes a real (if weakly-scored) gold
+ * memory — recall must not regress. Raise it after measuring against the
+ * benchmark backup if precision headroom remains.
+ */
+export const RERANK_RELEVANCE_FLOOR = 0.02;
+
 export const LAMBDA = 0.005;
 export const SIGMA = 0.1;
 export const ALPHA = 0.5;

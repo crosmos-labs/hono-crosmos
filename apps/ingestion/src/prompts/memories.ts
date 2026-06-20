@@ -17,19 +17,23 @@ NEVER extract:
 - Any description of the interaction itself
 - Absence of information: "User's name is not known", "not recorded", "no information available"
 - Questions the user asked (only extract what the user STATED, not asked)
+- The assistant's GENERIC knowledge or broad explanations not specific to this user: definitions, how things work in general, encyclopedic facts. "Blockchain is a decentralized ledger" → skip.
 
-If the content does not contain a direct factual statement from the USER, return {"memories":[]}.
+If the content contains no extractable fact — neither a user statement nor a specific assistant-provided fact (defined in RULES 1–2) — return {"memories":[]}.
 
 ## RULES
-1. Only extract facts stated by the USER, regardless of subject. "Rachit eats pizza" → extract. Do NOT extract what the ASSISTANT says — advice, recommendations, explanations, tips, world knowledge, product comparisons. "Blockchain is a decentralized ledger" → skip. "User is advised to organize their closet" → skip. "Acadia National Park is recommended for families" → skip.
-2. Each memory must be a direct factual statement. Do NOT summarize the conversation, do NOT extract assistant responses or actions.
+1. Extract two kinds of facts:
+   (a) Facts STATED BY THE USER, regardless of subject. "Rachit eats pizza" → extract.
+   (b) SPECIFIC, user-relevant facts the ASSISTANT provides in direct response to the user: computed results/totals, concrete recommendations the assistant commits to FOR THIS USER, and specific answers (numbers, names, dates, prices, settings, step-by-step instructions). "For your 4-person trip the total is $2,340" → extract. "I'd go with the Patagonia Torrentshell for your rainy hikes" → extract. Do NOT extract the assistant's generic world knowledge, definitions, or broad multi-option surveys where it did not commit to a specific answer for the user. "Acadia is generally good for families" → skip; "Based on your toddler and budget I recommend Acadia" → extract.
+2. Each memory must be a direct factual statement phrased STANDALONE — capture the value/name/recommendation itself, NOT "the assistant said ..." or "the user was told ...". Do NOT summarize the conversation or extract conversational actions.
 3. Third person. Resolve pronouns using context. If context is absent: "I" → USER, "we" → USER and companions, "my" → USER's.
-4. Separate topics into separate memories (work, preferences, events).
-5. Do not atomize — keep related facts together, but preserve EVERY specific name and detail verbatim within the combined memory.
-6. Skip greetings, filler, procedural chatter.
-7. Deduplication: exact semantic overlap with existing_memories → skip. Same fact with NEW dates/details → extract. Same topic, different context → extract.
-8. Preserve ALL specific names verbatim: brands, stores, venues, products, people, quantities, amounts, destinations, locations. NEVER drop or generalize.
-9. When user expresses preferences about a specific thing (hotel features, activity types, cuisine), extract the preference WITH the specific details — NOT a vague summary.
+4. Set speaker_role to "user" for facts the user stated, and "assistant" for specific facts the assistant provided.
+5. Separate topics into separate memories (work, preferences, events).
+6. Do not atomize — keep related facts together, but preserve EVERY specific name and detail verbatim within the combined memory.
+7. Skip greetings, filler, procedural chatter.
+8. Deduplication: exact semantic overlap with existing_memories → skip. Same fact with NEW dates/details → extract. Same topic, different context → extract.
+9. Preserve ALL specific names verbatim: brands, stores, venues, products, people, quantities, amounts, destinations, locations. NEVER drop or generalize.
+10. When user expresses preferences about a specific thing (hotel features, activity types, cuisine), extract the preference WITH the specific details — NOT a vague summary.
 
 ## STATE CHANGES
 If text implies a new current state, emit BOTH:
@@ -53,15 +57,18 @@ If text implies a new current state, emit BOTH:
 - If reference_time is null and date is relative, preserve the original phrase and set event_time to null.
 - null for ongoing facts without a specific date.
 
-## ASSISTANT CONTENT FILTER
-- Assistant recommendations are NOT memories: "User is advised to..." → SKIP
-- Generic knowledge is NOT a memory: "Blockchain provides decentralization..." → SKIP
-- Product/brand comparisons by assistant are NOT memories: "Madewell and Kate Spade are known for..." → SKIP
-- Assistant explaining concepts is NOT a memory: "CAAT refers to the use of technology..." → SKIP
-- Absence of information is NOT a memory: "User's name is not recorded" → SKIP
-- User accepting/deciding IS a memory: "I'll go with the ocean view room" → EXTRACT
-- User revealing intent IS a memory: "I'm thinking of organizing my closet this weekend" → EXTRACT
-- User stating a fact about themselves IS a memory: "I've been making my bed every morning for two weeks" → EXTRACT
+## ASSISTANT CONTENT — KEEP vs SKIP
+The line is SPECIFIC-TO-THIS-USER vs GENERIC. Keep the assistant's specific answers; skip its generic teaching.
+- SKIP generic knowledge / definitions: "Blockchain provides decentralization..." , "CAAT refers to the use of technology..." → SKIP
+- SKIP broad multi-option surveys with no commitment: "Madewell and Kate Spade are both known for quality" → SKIP
+- SKIP absence of information: "User's name is not recorded" → SKIP
+- KEEP a specific value the assistant computed/looked up for the user: "Your monthly payment works out to $487" → EXTRACT (speaker_role=assistant)
+- KEEP a concrete recommendation the assistant commits to for the user: "For your toddler-friendly trip I recommend Acadia National Park" → EXTRACT (speaker_role=assistant)
+- KEEP specific instructions/settings the assistant gave: "Bake your sourdough at 450°F for 30 minutes" → EXTRACT (speaker_role=assistant)
+- KEEP a specific fact, answer, or item the assistant provided in response to the user that the user may later refer back to — a named entity, a count, a measurement, a quote, or a specific item from a list: "The study you asked about included 38 participants", "The hostel near the Red Light District is the International Budget Hostel", "The traditional powwow game is the Hoop Dance" → EXTRACT (speaker_role=assistant). Still SKIP generic textbook knowledge not tied to the user's request.
+- KEEP user accepting/deciding: "I'll go with the ocean view room" → EXTRACT (speaker_role=user)
+- KEEP user revealing intent: "I'm thinking of organizing my closet this weekend" → EXTRACT (speaker_role=user)
+- KEEP user stating a fact about themselves: "I've been making my bed every morning for two weeks" → EXTRACT (speaker_role=user)
 
 ## NEGATIVE EXAMPLES
 
@@ -93,6 +100,15 @@ Input: "Sounds good, I'll go with the ocean view room." with reference_time 2026
 
 Input: "I just moved from San Francisco to Boulder." with reference_time 2026-04-18
 {"memories":[{"content":"User lives in Boulder.","memory_type":"semantic","importance_score":0.9,"event_time":null},{"content":"User moved from San Francisco to Boulder on 2026-04-18.","memory_type":"episode","importance_score":0.9,"event_time":"2026-04-18T00:00:00"}]}
+
+Input (assistant turn): "I added up your flights, hotel, and rental car — your Tokyo trip comes to $4,820 total." with reference_time 2026-04-18
+{"memories":[{"content":"The total cost of the user's Tokyo trip (flights, hotel, rental car) is $4,820.","memory_type":"semantic","importance_score":0.6,"speaker_role":"assistant","event_time":null}]}
+
+Input (assistant turn): "Blockchain is a decentralized ledger maintained across many nodes."
+{"memories":[]}
+
+Input (assistant turn): "The binaural-beats study you asked about included 38 participants over an 8-week period."
+{"memories":[{"content":"The binaural beats study the user asked about included 38 participants over an 8-week period.","memory_type":"semantic","importance_score":0.3,"speaker_role":"assistant","event_time":null}]}
 
 ## PITFALLS
 - Do NOT atomize rich facts into thin fragments.

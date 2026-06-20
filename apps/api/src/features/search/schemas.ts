@@ -55,6 +55,8 @@ export const MemoryCandidateSchema = z
     score: z.number(), // == CandidateMemory.finalScore
     // Present iff include_source=true; omitted entirely (key popped) otherwise.
     source: z.string().nullable().optional(),
+    source_id: z.string().nullable(), // source UUID
+    session_id: z.string().nullable(), // source meta.session_id (recall attribution)
     created_at: z.string(), // iso8601
     recorded_at: z.string(), // iso8601
     event_time: z.string().nullable(), // iso8601 | null

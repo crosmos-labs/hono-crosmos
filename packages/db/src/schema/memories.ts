@@ -19,10 +19,16 @@ import { users } from './users';
 
 /**
  * Atomic facts extracted from sources. Embedding-bearing. Soft-deleted via
- * `forgotten_at` — ingestion never physically deletes. The embedding column
- * is `vector(1024)` to match Cloudflare Workers AI `@cf/baai/bge-m3`; changing
- * the embedding model means a schema change here. Only populated when
- * VECTOR_STORE=pg — under Vectorize, vectors live in the Vectorize index.
+ * `forgotten_at` — ingestion never physically deletes.
+ *
+ * The embedding column is ONLY populated by the `pg` vector-store adapter
+ * (`persistsInColumn=true`). Production runs VECTOR_STORE=qdrant (vectors live in
+ * Qdrant) and VECTOR_STORE=vectorize leaves it null too — in both the dimension
+ * here is irrelevant. It is `vector(1024)` (bge-m3 default). The `pg` adapter is
+ * therefore only usable with a 1024-dim embedder unless this column is migrated
+ * to the deployed embedder's dimension (e.g. 1536 for OpenAI text-embedding-3);
+ * the runtime validates vectors against `embedder.dimensions`, so a mismatch is
+ * caught, not silently mis-stored. See issue #3.
  *
  * See .codex/code-architecture.md.
  */

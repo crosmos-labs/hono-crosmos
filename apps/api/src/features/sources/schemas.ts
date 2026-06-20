@@ -42,9 +42,21 @@ export const IngestSourcesRequestSchema = z
 
 export const IngestAcceptedResponseSchema = z
   .object({
+    // First job's id, kept for backward compatibility. A request's sources are
+    // split into one or more jobs of at most MAX_SOURCES_PER_JOB; poll each via
+    // `jobs[].job_id`. For single-job requests (the common case) this equals
+    // `jobs[0].job_id`.
     job_id: UuidSchema,
     status: z.literal('pending'),
     source_ids: z.array(UuidSchema),
+    jobs: z
+      .array(
+        z.object({
+          job_id: UuidSchema,
+          source_ids: z.array(UuidSchema),
+        }),
+      )
+      .openapi({ description: 'One entry per job the request was split into.' }),
   })
   .openapi('IngestAcceptedResponse');
 

@@ -7,16 +7,19 @@ import type { QueueService } from './port';
 /**
  * Cloudflare Queues producer adapter.
  *
- * `queueDepth` uses Postgres (`COUNT(*) ingestion_jobs WHERE status IN
- * (pending, processing)`) rather than a Durable Object counter. Slightly stale, but bounded at
- * the 5000 ceiling and runs over Hyperdrive, so adds maybe ~20ms per
- * `POST /sources`. Revisit if it shows up in p95.
+ * `inFlightJobCount` uses Postgres (`COUNT(*) ingestion_jobs` over the non-stale
+ * pending+processing rows) rather than a Durable Object counter — Cloudflare
+ * Queues expose no native backlog depth, so this DB count is the proxy. Slightly
+ * stale, but bounded by the queue-depth ceiling and runs over Hyperdrive, so
+ * adds maybe ~20ms per `POST /sources`. Revisit if it shows up in p95.
  */
 export class CloudflareQueueService implements QueueService {
   constructor(
     private readonly queue: Queue<IngestionJobMessage>,
     private readonly db: Database,
     private readonly ingestion: IngestionRpc,
+    /** Staleness window for the in-flight count (issue #3/#6). */
+    private readonly staleMinutes?: number,
   ) {}
 
   async enqueue(message: IngestionJobMessage): Promise<void> {
@@ -30,7 +33,7 @@ export class CloudflareQueueService implements QueueService {
     await this.ingestion.ingest(message);
   }
 
-  async queueDepth(): Promise<number> {
-    return countActiveIngestionJobs(this.db);
+  async inFlightJobCount(): Promise<number> {
+    return countActiveIngestionJobs(this.db, this.staleMinutes);
   }
 }

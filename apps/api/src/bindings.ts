@@ -60,7 +60,13 @@ export interface Env {
   // Provider selection. Defaults: workers-ai / workers-ai / vectorize.
   EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
   RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
-  VECTOR_STORE?: 'vectorize' | 'pg';
+  VECTOR_STORE?: 'vectorize' | 'pg' | 'qdrant';
+  // Qdrant config (only needed when VECTOR_STORE=qdrant). Collection names
+  // default to crosmos-memories/crosmos-entities if unset.
+  QDRANT_URL?: string;
+  QDRANT_API_KEY?: string;
+  QDRANT_MEMORIES_COLLECTION?: string;
+  QDRANT_ENTITIES_COLLECTION?: string;
   // Deployment vector-space dimension (= Vectorize index dimension). Default
   // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small (indexes
   // must be recreated at that dimension). Must match the ingestion worker.
@@ -74,6 +80,15 @@ export interface Env {
   RETRIEVAL_RERANKER_ENABLED?: string;
   // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
   ADMIN_TOOLS?: string;
+
+  // Operational limits (issue #6) — env overrides for the admission/backpressure
+  // knobs. Optional: each falls back to its compile-time default (see
+  // lib/limits.ts → getOperationalLimits). Integers as strings.
+  MAX_PENDING_JOBS_PER_USER?: string;
+  MAX_QUEUE_DEPTH?: string;
+  STALE_JOB_MINUTES?: string;
+  RETRIEVAL_MAX_CONCURRENT_PER_USER?: string;
+  GLOBAL_AI_RPM_CEILING?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).

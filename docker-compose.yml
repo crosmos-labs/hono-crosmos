@@ -32,5 +32,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local vector store for the benchmark stack (VECTOR_STORE=qdrant). Reached by
+  # both workers at http://localhost:6333 with api-key `local-dev-key` (see
+  # scripts/bench-setup.sh and the QDRANT_* vars in .dev.vars). Container name
+  # matches scripts/qdrant-watchdog.sh (crosmos-dev-qdrant).
+  #
+  # ulimits/nofile is LOAD-BEARING, not a tuning knob: under sustained ingestion
+  # Qdrant accumulates segment + WAL file handles, and the container's default
+  # nofile (~1024) is far too low. Once it's hit, Qdrant can't open files to
+  # flush (`Too many open files (os error 24)` → `Failed to flush id_tracker
+  # mapping`) and the collection corrupts to `red`, 500ing every upsert and
+  # silently dropping memories. 65536 is Qdrant's recommended minimum. Verify
+  # inside the container with `cat /proc/1/limits`. (Backend issue #5.)
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: crosmos-dev-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    environment:
+      QDRANT__SERVICE__API_KEY: local-dev-key
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - crosmos_qdrant:/qdrant/storage
+
 volumes:
   crosmos_pgdata:
+  crosmos_qdrant:
