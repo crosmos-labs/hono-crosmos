@@ -169,6 +169,7 @@ sourceRoutes.openapi(
       orgId,
       userId,
       spaceUuid: body.space_id,
+      skipPlanRateLimit: c.var.planRateLimitEnforced,
     });
     logger.info('ingestion.enqueue_stage_completed', {
       stage: 'preflight',
