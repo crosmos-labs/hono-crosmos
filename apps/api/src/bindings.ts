@@ -110,6 +110,9 @@ export interface Variables {
   // API key info, if auth was via API key
   apiKeyId?: number;
   apiKeyUuid?: string;
+  // Set once the per-org plan rate limit has been enforced for this request, so
+  // the default-on catch-all and any route-level enforcement don't double-count.
+  planRateLimitEnforced?: boolean;
 }
 
 export type HonoEnv = {

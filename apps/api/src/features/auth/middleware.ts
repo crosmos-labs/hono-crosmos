@@ -6,8 +6,16 @@ import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getCacheStore } from '../../integrations/cache';
+import { errorEnvelope } from '../../lib/errors';
+import { getCachedEntitlements } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { createLogger, createMetrics } from '@crosmos/observability';
+import {
+  enforcePlanRateLimit,
+  getRateLimiter,
+  RateLimitError,
+} from '../../integrations/rate-limit';
+import { isAccessTokenRevoked } from './access-revocation';
 import {
   resolveApiKeyByHash,
   touchApiKeyLastUsed,
@@ -16,7 +24,12 @@ import { getUserById } from './users';
 
 type AuthContext = Context<HonoEnv>;
 
-const API_KEY_CACHE_TTL_SECONDS = 5 * 60;
+// API-key auth caches the resolved key in KV to avoid a DB lookup per request.
+// The TTL is also the worst-case revocation lag: if the cache-invalidation on
+// revoke is ever lost (KV blip), a revoked key keeps working until the entry
+// TTLs out. 60s keeps that window tight (was 5 min) while still cutting almost
+// all DB lookups. Revoke also actively invalidates the entry (see routes.ts).
+const API_KEY_CACHE_TTL_SECONDS = 60;
 
 /**
  * Reject a request as unauthenticated, emitting a structured `auth.failed` log
@@ -145,6 +158,13 @@ async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
     throw err;
   }
 
+  // Reject explicitly-revoked access tokens (e.g. after /logout) before doing
+  // any DB work. Tokens minted before jti existed have no jti → nothing to
+  // check; their short TTL bounds the exposure.
+  if (claims.jti && (await isAccessTokenRevoked(c.env, claims.jti))) {
+    failAuth(c, 'jwt_revoked', 'jwt', 'Invalid or expired token');
+  }
+
   const db = getDb(c);
   const user = await getUserById(db, claims.userId);
   if (!user) {
@@ -177,9 +197,71 @@ function extractBearer(c: AuthContext): string {
 }
 
 /**
+ * Default-on per-org plan rate limit, run right after authentication for every
+ * `requireAuth` route. Previously the plan limiter was opt-in per route, so any
+ * new authenticated route shipped *unlimited* by default; baking it into the
+ * shared auth gate makes coverage default-on. Routes that still call
+ * `enforcePlanRateLimit` themselves set `planRateLimitEnforced` (or observe it)
+ * so we never double-count.
+ *
+ * Only enforces when an org context exists (JWT with `active_org_id`, or an API
+ * key — which is always org-pinned). Counter WRITES are deferred via
+ * `waitUntil` so this stays off the latency-critical path. Fails **open** on
+ * any non-RateLimitError (a KV/entitlements hiccup must not 500 real traffic),
+ * matching the limiter's stance elsewhere.
+ */
+async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
+  const orgId = c.var.activeOrgId;
+  if (orgId == null || c.var.planRateLimitEnforced) return;
+
+  const db = getDb(c);
+  const limiter = getRateLimiter(c.env, (task) => c.executionCtx.waitUntil(task));
+  try {
+    // Use KV-cached entitlements so the default-on check doesn't add a DB
+    // org-fetch to every authenticated request.
+    const entitlements = await getCachedEntitlements(c, orgId);
+    await enforcePlanRateLimit(db, limiter, orgId, entitlements);
+    c.set('planRateLimitEnforced', true);
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      c.set('planRateLimitEnforced', true);
+      createMetrics(c.env.ANALYTICS, {
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+      }).count('plan_rate_limited', { tags: [err.scope], index: 'plan_rate_limited' });
+      const requestId = c.var.requestId;
+      const body = new Response(
+        JSON.stringify(
+          errorEnvelope('Rate limit exceeded', { code: 'rate_limited', requestId }),
+        ),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': String(err.retryAfterSeconds),
+            ...(requestId ? { 'X-Request-Id': requestId } : {}),
+          },
+        },
+      );
+      throw new HTTPException(429, { res: body });
+    }
+    // Anything else: fail open (the limiter already swallows KV errors; this
+    // guards entitlements-resolution failures too).
+    createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
+      'ratelimit.plan_catchall_failure',
+      { stage: 'plan_rate_limit', scope: 'org' },
+      err,
+    );
+  }
+}
+
+/**
  * Requires either a valid JWT access token or a `csk_…` API key.
  * Populates user/auth context on `c.var`. Does NOT require an org context —
  * for that, chain `requireOrg` after this.
+ *
+ * Also applies the default-on per-org plan rate limit (see
+ * `enforceOrgPlanRateLimit`) so authenticated routes are throttled by default.
  */
 export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   const token = extractBearer(c);
@@ -188,6 +270,7 @@ export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   } else {
     await authenticateJwt(c, token);
   }
+  await enforceOrgPlanRateLimit(c);
   await next();
 });
 

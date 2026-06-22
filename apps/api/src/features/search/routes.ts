@@ -233,35 +233,39 @@ searchRoutes.openapi(
 
     // 2. Per-org plan rate limit.
     //
-    // The counter WRITE is deferred (passes `defer`) so it stays off the
-    // critical path — a KV write is ~350ms cross-region from this Smart-Placed
-    // worker, and search latency is the priority. The reads (edge-cached, fast)
-    // still gate synchronously. Tradeoff: under high concurrency the per-org cap
-    // can admit a few extra requests at the boundary (the ±1-2 fuzz that the KV
-    // limiter design explicitly accepts, decisions.md §7); the coarse per-org
-    // RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
+    // Normally already applied by the default-on catch-all in `requireAuth`
+    // (which also defers its counter writes); this block only runs if that
+    // didn't fire, and reuses the entitlements already loaded above to enforce
+    // with deferred writes so search latency stays the priority. The reads
+    // (edge-cached, fast) still gate synchronously. Tradeoff: under high
+    // concurrency the per-org cap can admit a few extra requests at the boundary
+    // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
+    // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
     // global-AI throttle below is what actually bounds aggregate AI cost.
-    const limiter = getRateLimiter(c.env, defer);
-    try {
-      await logger.time('retrieval.stage_completed', {
-        stage: 'plan_rate_limit',
-      }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
-    } catch (err) {
-      if (err instanceof RateLimitError) {
-        logger.warn('retrieval.request_rejected', {
+    if (!c.var.planRateLimitEnforced) {
+      const limiter = getRateLimiter(c.env, defer);
+      try {
+        await logger.time('retrieval.stage_completed', {
           stage: 'plan_rate_limit',
-          status_code: 429,
-        });
-        metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
-        throw new HTTPException(429, {
-          res: jsonError(
-            { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
-            429,
-            { 'Retry-After': String(err.retryAfterSeconds) },
-          ),
-        });
+        }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
+        c.set('planRateLimitEnforced', true);
+      } catch (err) {
+        if (err instanceof RateLimitError) {
+          logger.warn('retrieval.request_rejected', {
+            stage: 'plan_rate_limit',
+            status_code: 429,
+          });
+          metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
+          throw new HTTPException(429, {
+            res: jsonError(
+              { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
+              429,
+              { 'Retry-After': String(err.retryAfterSeconds) },
+            ),
+          });
+        }
+        throw err;
       }
-      throw err;
     }
 
     // 4. Monthly search-query quota (optimistic +1, enforce-only).

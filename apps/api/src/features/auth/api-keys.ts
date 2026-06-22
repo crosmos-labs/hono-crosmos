@@ -36,12 +36,15 @@ export async function createApiKey(
 export async function listApiKeysForUser(
   db: Database,
   userId: number,
+  opts?: { limit?: number; offset?: number },
 ): Promise<ApiKey[]> {
   return db
     .select()
     .from(apiKeys)
     .where(eq(apiKeys.userId, userId))
-    .orderBy(desc(apiKeys.createdAt));
+    .orderBy(desc(apiKeys.createdAt))
+    .limit(opts?.limit ?? 200)
+    .offset(opts?.offset ?? 0);
 }
 
 export async function getApiKeyByUuid(

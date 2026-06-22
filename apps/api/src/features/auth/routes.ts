@@ -1,9 +1,11 @@
 import {
   createAccessToken,
   createTokenPair,
+  decodeAccessTokenClaims,
   decodeRefreshTokenClaims,
   InvalidTokenError,
 } from './jwt';
+import { revokeAccessToken } from './access-revocation';
 import {
   ApiKeyCreatedSchema,
   ApiKeyListResponseSchema,
@@ -19,12 +21,12 @@ import {
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
+import { PaginationQuerySchema } from '../../lib/zod-common';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { perIpRateLimit } from '../../integrations/rate-limit/ip';
-import { waitUntilLogged } from '../../lib/runtime';
 import { invalidateApiKeyCacheByHash, requireAuth } from './middleware';
 import { requirePrincipal } from './principal';
 import {
@@ -203,7 +205,13 @@ authRoutes.openapi(
     tags: ['auth'],
     summary: 'Create API key',
     security: [{ bearerAuth: [] }],
-    middleware: [requireAuth, requirePrincipal] as const,
+    middleware: [
+      // Per-IP strict cap on key creation (each call writes an api_keys row),
+      // in front of auth. Fails closed for the same reason as /oauth/register.
+      perIpRateLimit({ bucket: 'api-key-create', tier: 'strict', failClosed: true }),
+      requireAuth,
+      requirePrincipal,
+    ] as const,
     request: {
       body: {
         content: { 'application/json': { schema: CreateApiKeySchema } },
@@ -247,6 +255,7 @@ authRoutes.openapi(
     summary: 'List API keys',
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth] as const,
+    request: { query: PaginationQuerySchema },
     responses: {
       200: {
         description: 'API keys',
@@ -257,7 +266,8 @@ authRoutes.openapi(
   }),
   async (c) => {
     const db = getDb(c);
-    const rows = await listApiKeysForUser(db, c.var.userId!);
+    const { limit, offset } = c.req.valid('query');
+    const rows = await listApiKeysForUser(db, c.var.userId!, { limit, offset });
     return c.json(
       {
         keys: rows.map((k) => ({
@@ -327,14 +337,19 @@ authRoutes.openapi(
     if (!revoked) {
       throw new HTTPException(404, { message: 'API key not found' });
     }
-    // Best-effort: drop KV cache entry so revocation takes effect immediately.
-    waitUntilLogged(
-      c,
-      createLogger({ service: 'api', environment: c.env.ENVIRONMENT }),
-      'auth.api_key_cache_invalidation_failed',
-      invalidateApiKeyCacheByHash(c.env, revoked.keyHash),
-      { stage: 'api_key_cache_invalidation' },
-    );
+    // Drop the KV cache entry so revocation takes effect immediately. Awaited
+    // (not fire-and-forget) so the 204 only returns once we've attempted the
+    // invalidation; on a KV error we log and still return success — the now-60s
+    // cache TTL is the bounded backstop so a revoked key can't linger for long.
+    try {
+      await invalidateApiKeyCacheByHash(c.env, revoked.keyHash);
+    } catch (err) {
+      createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
+        'auth.api_key_cache_invalidation_failed',
+        { stage: 'api_key_cache_invalidation' },
+        err,
+      );
+    }
     return c.body(null, 204);
   },
 );
@@ -466,6 +481,24 @@ authRoutes.openapi(
     } catch (err) {
       // Idempotent: ignore invalid/expired tokens.
       if (!(err instanceof InvalidTokenError)) throw err;
+    }
+
+    // Also denylist the *access* token carried in the Authorization header so it
+    // can't outlive the logout (its short TTL bounds the window even if this is
+    // skipped, but explicit revocation makes logout take effect immediately).
+    const authz = c.req.header('Authorization');
+    if (authz?.startsWith('Bearer ')) {
+      const token = authz.slice('Bearer '.length).trim();
+      try {
+        const access = await decodeAccessTokenClaims(c.env.JWT_SECRET, token);
+        if (access.jti) {
+          await revokeAccessToken(c.env, access.jti, access.expiresAt);
+        }
+      } catch (err) {
+        // Not a valid access token (API key, expired, malformed) → nothing to
+        // revoke. Logout stays idempotent.
+        if (!(err instanceof InvalidTokenError)) throw err;
+      }
     }
     return c.body(null, 204);
   },

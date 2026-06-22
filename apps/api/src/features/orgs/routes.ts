@@ -17,6 +17,7 @@ import {
 } from './schemas';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
+import { PaginationQuerySchema } from '../../lib/zod-common';
 import { HTTPException } from 'hono/http-exception';
 import { createLogger } from '@crosmos/observability';
 import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
@@ -626,9 +627,14 @@ orgRoutes.openapi(
 
     // Per-org rate limit so a compromised/abusive admin can't mail-bomb arbitrary
     // addresses (Resend cost + reputation). Reuses the org's plan RPM/daily caps.
+    // Normally already applied by the default-on catch-all in `requireAuth`;
+    // guarded so we don't double-count the org's quota.
     const limiter = getRateLimiter(c.env);
     try {
-      await enforcePlanRateLimit(db, limiter, orgId);
+      if (!c.var.planRateLimitEnforced) {
+        await enforcePlanRateLimit(db, limiter, orgId);
+        c.set('planRateLimitEnforced', true);
+      }
     } catch (err) {
       if (err instanceof RateLimitError) {
         // Thrown (not returned) so it bypasses the OpenAPI response-type
@@ -727,6 +733,7 @@ orgRoutes.openapi(
     middleware: [requireAuth, requireRole('owner', 'admin')] as const,
     request: {
       params: z.object({ org_uuid: z.string().uuid() }),
+      query: PaginationQuerySchema,
     },
     responses: {
       200: {
@@ -738,6 +745,7 @@ orgRoutes.openapi(
   }),
   async (c) => {
     const { org_uuid } = c.req.valid('param');
+    const { limit, offset } = c.req.valid('query');
     const db = getDb(c);
     const orgId = await resolveOrgIdFromUuid(db, org_uuid);
     if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
@@ -748,7 +756,9 @@ orgRoutes.openapi(
       .from(organizationInvites)
       .innerJoin(users, eq(users.id, organizationInvites.invitedBy))
       .where(and(eq(organizationInvites.orgId, orgId), isNull(organizationInvites.acceptedAt)))
-      .orderBy(desc(organizationInvites.createdAt));
+      .orderBy(desc(organizationInvites.createdAt))
+      .limit(limit)
+      .offset(offset);
 
     return c.json({ invites: rows.map(inviteToResponse) }, 200);
   },
