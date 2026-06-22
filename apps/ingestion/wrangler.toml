@@ -128,6 +128,15 @@ EMBEDDING_DIMENSIONS = "1536"
 # secret (wrangler secret put QDRANT_API_KEY).
 QDRANT_URL = "https://413d870d-6737-407d-b9f9-7cd92cf76fe7.us-east-1-1.aws.cloud.qdrant.io"
 
+# Targeted Placement: pin the ingestion Worker to the CF data center closest to
+# AWS us-east-1, co-locating it with Neon (Hyperdrive origin) and the Qdrant
+# cluster. The ingestion pipeline makes many sequential DB writes + Qdrant
+# upserts per source; without this it ran at the request's entry PoP and paid
+# the cross-region crossing on every hop. Mirrors the API worker's placement.
+[env.production.placement]
+mode = "targeted"
+region = "aws:us-east-1"
+
 # Workers AI binding (not inherited from top-level).
 [env.production.ai]
 binding = "AI"

@@ -214,9 +214,17 @@ index_name = "crosmos-entities-v3"
 [env.production.triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
 
-# Smart Placement for production (env config is not inherited from top-level).
+# Targeted Placement for production (env config is not inherited from top-level).
+# `mode = "smart"` (automatic) was NOT relocating the Worker for India-origin
+# traffic — measured took_ms stayed flat at ~4.2s, dominated by sequential
+# cross-region DB/Qdrant round-trips (graph signal alone ~3.1s). `targeted`
+# pins execution to the CF data center closest to AWS us-east-1, where BOTH
+# Neon (Hyperdrive origin) and the Qdrant cluster live, so the retrieval path's
+# DB/vector hops are region-local and the India user pays the cross-region
+# distance ONCE (user→Worker) instead of on every hop.
 [env.production.placement]
-mode = "smart"
+mode = "targeted"
+region = "aws:us-east-1"
 
 [[env.production.routes]]
 pattern = "hono.crosmos.dev"
