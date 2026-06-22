@@ -24,6 +24,7 @@ import {
   RECENCY_CENTER,
   RERANK_RELEVANCE_FLOOR,
   RERANKER_MAX_CANDIDATES,
+  SESSION_DIVERSITY_PENALTY,
   TEMPORAL_CANDIDATE_LIMIT,
   TEMPORAL_CENTER,
   TEMPORAL_PROXIMITY_ALPHA,
@@ -85,6 +86,46 @@ export interface RetrieveInput {
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
+}
+
+/**
+ * Session-diversified top-K selection. Greedily pick the highest-scoring
+ * candidate after subtracting `SESSION_DIVERSITY_PENALTY * n`, where `n` is how
+ * many already-selected results share the candidate's source session. This
+ * spreads the top-K across DISTINCT sessions (the multi-session aggregation axis)
+ * so one on-query cluster can't monopolise it and drop other gold sessions —
+ * while a far-more-relevant same-session memory still wins (single-session
+ * questions keep their dominant session). Input MUST be pre-sorted by finalScore
+ * desc. O(topK · N); N ≤ RERANKER_MAX_CANDIDATES. Penalty 0 ⇒ plain slice.
+ */
+function selectSessionDiverse(scored: CandidateMemory[], topK: number): CandidateMemory[] {
+  if (SESSION_DIVERSITY_PENALTY <= 0 || scored.length <= topK) {
+    return scored.slice(0, topK);
+  }
+  const remaining = [...scored];
+  const selected: CandidateMemory[] = [];
+  const perSession = new Map<string, number>();
+  // A null session must NOT group with other null sessions (each is its own
+  // distinct source), so key those by memoryId.
+  const sessionKey = (c: CandidateMemory): string =>
+    c.sessionId ?? `__nosession_${c.memoryId}`;
+  while (selected.length < topK && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestAdj = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i]!;
+      const used = perSession.get(sessionKey(c)) ?? 0;
+      const adj = c.finalScore - SESSION_DIVERSITY_PENALTY * used;
+      if (adj > bestAdj) {
+        bestAdj = adj;
+        bestIdx = i;
+      }
+    }
+    const picked = remaining.splice(bestIdx, 1)[0]!;
+    perSession.set(sessionKey(picked), (perSession.get(sessionKey(picked)) ?? 0) + 1);
+    selected.push(picked);
+  }
+  return selected;
 }
 
 function failureFields(err: unknown): {
@@ -449,7 +490,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     );
     top = mmrRerank(selectable, embeddingsLookup, query.topK);
   } else {
-    top = selectable.slice(0, query.topK);
+    top = selectSessionDiverse(selectable, query.topK);
   }
   logger?.info('retrieval.stage_completed', {
     stage: 'score_and_select',

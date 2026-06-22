@@ -238,11 +238,13 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // this and NOT to ingestion wall-clock: anchoring "yesterday" to now is wrong
   // for any backfilled / replayed source (issue #8). `recordedAt` is when we
   // learned the fact and is always a concrete timestamp (now if no date given).
+  // Reject NaN AND degenerate years (e.g. `0000-01-01`, a valid JS year-0 Date
+  // that Postgres `timestamptz` refuses) so a malformed session date falls back
+  // to wall-clock `recordedAt` instead of failing the source on the DB write.
   const parsedSessionDate = sessionDate ? new Date(sessionDate) : null;
-  const validSessionDate =
-    parsedSessionDate && !Number.isNaN(parsedSessionDate.getTime())
-      ? parsedSessionDate
-      : null;
+  const validSessionDate = isSafePgDate(parsedSessionDate)
+    ? parsedSessionDate
+    : null;
   const referenceTime = validSessionDate ? validSessionDate.toISOString() : null;
   const temporalBase = validSessionDate;
   const recordedAt = validSessionDate ?? new Date();
@@ -457,7 +459,10 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     for (const f of facts) {
       if (f.eventTime) continue;
       const inferred = inferTemporalDate(f.content, temporalBase);
-      if (inferred) f.eventTime = new Date(inferred);
+      if (inferred) {
+        const inferredDate = new Date(inferred);
+        if (isSafePgDate(inferredDate)) f.eventTime = inferredDate;
+      }
     }
 
     // Stage 6 — batch embed memory contents (month suffix when event_time set)
@@ -659,6 +664,19 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     resolvedEntityIds: resolved.filter((r) => !r.isNew).map((r) => r.entityId),
     chunkCount,
   };
+}
+
+/**
+ * A `Date` Postgres `timestamptz` will accept: parseable AND within a sane year
+ * range. JS parses `0000-01-01` (and other degenerate values) into a valid
+ * year-0 Date that is NOT NaN, but the DB write then fails with "date/time field
+ * value out of range", taking the whole source down. Mirrors the same guard in
+ * `extractors/normalize.ts:parseIsoDate`.
+ */
+function isSafePgDate(d: Date | null | undefined): d is Date {
+  if (!d || Number.isNaN(d.getTime())) return false;
+  const year = d.getUTCFullYear();
+  return year >= 1 && year <= 9999;
 }
 
 /** Append `(happened in {Month YYYY})` when event_time is set — improves recall. */

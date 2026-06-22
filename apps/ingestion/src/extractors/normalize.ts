@@ -74,10 +74,22 @@ export function normalizeRelationName(s: string): string {
     .replace(/_+/g, '_');
 }
 
+// Postgres `timestamptz` rejects degenerate years (e.g. `0000-01-01`, which JS
+// happily parses as a valid year-0 Date — NOT NaN — so the old NaN-only guard
+// let it through and the whole source's ingestion failed on the DB write). Clamp
+// to a sane year range; an out-of-range or unparseable date becomes null (the
+// column is nullable), so a bad LLM `event_time` drops that one date instead of
+// failing the source.
+const MIN_SAFE_YEAR = 1;
+const MAX_SAFE_YEAR = 9999;
+
 function parseIsoDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  if (year < MIN_SAFE_YEAR || year > MAX_SAFE_YEAR) return null;
+  return d;
 }
 
 /**

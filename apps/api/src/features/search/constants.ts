@@ -48,6 +48,28 @@ export const RERANKER_MAX_CANDIDATES = 300;
  */
 export const RERANK_RELEVANCE_FLOOR = 0.02;
 
+/**
+ * Per-session diversity penalty for the final top-K selection (NOT a Python port
+ * — an additive recall-preserving gate, sibling to RERANK_RELEVANCE_FLOOR).
+ *
+ * The extraction prompt now also stores assistant-provided facts, which roughly
+ * doubled memories/session and let one on-query session's cluster monopolise the
+ * top-K. For multi-session aggregation ("how many X") the gold instances live in
+ * several DISTINCT sessions; when one cluster fills the top-K the other gold
+ * sessions fall out and recall@K drops (counting then undercounts). This penalty
+ * subtracts `n * PENALTY` from a candidate's final score, where `n` = how many
+ * already-selected results share its session — so the 1st memory of each session
+ * is prioritised and additional same-session memories must be materially more
+ * relevant to still be picked. Diversifies BY SESSION (the aggregation axis),
+ * complementing the embedding-space MMR path (`query.diversify`).
+ *
+ * Tuned conservatively: a strongly dominant single session (single-session-user /
+ * single-session-assistant questions, where the answer is one session) still
+ * fills the top-K because its relevance gap exceeds the penalty — restoring
+ * multi-session recall WITHOUT regressing single-session categories. 0 disables.
+ */
+export const SESSION_DIVERSITY_PENALTY = 0.1;
+
 export const LAMBDA = 0.005;
 export const SIGMA = 0.1;
 export const ALPHA = 0.5;
