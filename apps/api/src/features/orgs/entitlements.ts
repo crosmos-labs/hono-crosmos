@@ -23,6 +23,12 @@ const COMMON_FEATURES: Entitlements = {
   zeroentropy_rerank_candidates: 15,
 };
 
+// `rate_limit_rpm` / `rate_limit_per_day` gate the EXPENSIVE AI paths only
+// (search + ingestion); they're enforced in those routes' own gates.
+// `mgmt_rate_limit_rpm` / `mgmt_rate_limit_per_day` are a separate, much looser
+// guard applied default-on to every authenticated route (CRUD, dashboard, etc.)
+// so a normal dashboard load — which fans out several calls — isn't choked by
+// the tight AI budget, while abuse is still bounded. See `requireAuth`.
 const FREE: Entitlements = {
   ...COMMON_FEATURES,
   max_memory_spaces: 3,
@@ -30,6 +36,8 @@ const FREE: Entitlements = {
   monthly_search_queries: 5_000,
   rate_limit_rpm: 10,
   rate_limit_per_day: 1_000,
+  mgmt_rate_limit_rpm: 300,
+  mgmt_rate_limit_per_day: 30_000,
 };
 
 const DEVELOPER: Entitlements = {
@@ -39,6 +47,8 @@ const DEVELOPER: Entitlements = {
   monthly_search_queries: 50_000,
   rate_limit_rpm: 60,
   rate_limit_per_day: 10_000,
+  mgmt_rate_limit_rpm: 1_200,
+  mgmt_rate_limit_per_day: 150_000,
 };
 
 const PRO: Entitlements = {
@@ -48,6 +58,8 @@ const PRO: Entitlements = {
   monthly_search_queries: 300_000,
   rate_limit_rpm: 300,
   rate_limit_per_day: 50_000,
+  mgmt_rate_limit_rpm: 3_000,
+  mgmt_rate_limit_per_day: 500_000,
 };
 
 const ENTERPRISE: Entitlements = {
@@ -57,6 +69,8 @@ const ENTERPRISE: Entitlements = {
   monthly_search_queries: -1,
   rate_limit_rpm: -1,
   rate_limit_per_day: -1,
+  mgmt_rate_limit_rpm: -1,
+  mgmt_rate_limit_per_day: -1,
 };
 
 export const PLAN_DEFAULTS: Record<string, Entitlements> = {

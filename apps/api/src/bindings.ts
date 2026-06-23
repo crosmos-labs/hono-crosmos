@@ -110,9 +110,13 @@ export interface Variables {
   // API key info, if auth was via API key
   apiKeyId?: number;
   apiKeyUuid?: string;
-  // Set once the per-org plan rate limit has been enforced for this request, so
-  // the default-on catch-all and any route-level enforcement don't double-count.
+  // Set once the strict AI-path plan rate limit has been enforced for this
+  // request (search/ingest gates), so route-level enforcement doesn't
+  // double-count.
   planRateLimitEnforced?: boolean;
+  // Set once the looser default-on management rate limit has been enforced by
+  // `requireAuth`, guarding against a double-count if it ever runs twice.
+  mgmtRateLimitEnforced?: boolean;
 }
 
 export type HonoEnv = {

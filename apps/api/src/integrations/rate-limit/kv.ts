@@ -9,6 +9,15 @@ import { createLogger } from '@crosmos/observability';
 const RPM_PREFIX = 'rl:rpm:';
 const DAY_PREFIX = 'rl:day:';
 
+/**
+ * Key prefix for a window. A `namespace` segments independent limits for the
+ * same org (e.g. `'mgmt'` → `rl:mgmt:rpm:`); omitting it preserves the original
+ * `rl:rpm:` / `rl:day:` keys so existing AI-path counters need no migration.
+ */
+function windowPrefix(base: 'rpm' | 'day', namespace?: string): string {
+  return namespace ? `rl:${namespace}:${base}:` : base === 'rpm' ? RPM_PREFIX : DAY_PREFIX;
+}
+
 /** Two minutes — keeps the key alive a little past the active window. */
 const RPM_TTL_SECONDS = 120;
 /** Two days — same idea for the daily bucket. */
@@ -58,7 +67,7 @@ export class KvRateLimiter implements RateLimiter {
     }> = [];
     if (input.rpmLimit !== -1) {
       windows.push({
-        key: `${RPM_PREFIX}${input.orgId}:${minuteBucket}`,
+        key: `${windowPrefix('rpm', input.namespace)}${input.orgId}:${minuteBucket}`,
         limit: input.rpmLimit,
         scope: 'rpm',
         ttlSeconds: RPM_TTL_SECONDS,
@@ -66,7 +75,7 @@ export class KvRateLimiter implements RateLimiter {
     }
     if (input.dailyLimit !== -1) {
       windows.push({
-        key: `${DAY_PREFIX}${input.orgId}:${dayBucket}`,
+        key: `${windowPrefix('day', input.namespace)}${input.orgId}:${dayBucket}`,
         limit: input.dailyLimit,
         scope: 'day',
         ttlSeconds: DAY_TTL_SECONDS,
