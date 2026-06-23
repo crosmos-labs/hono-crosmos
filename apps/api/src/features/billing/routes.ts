@@ -7,6 +7,7 @@ import { getDb } from '../../db';
 import { ErrorResponseSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requireRole } from '../auth/principal';
+import { perIpRateLimit } from '../../integrations/rate-limit/ip';
 import { getOrganizationByIdOrThrow } from '../orgs/service';
 import {
   BillingConfigError,
@@ -256,6 +257,11 @@ billingWebhookRoutes.openapi(
     path: '/polar',
     tags: ['webhooks'],
     summary: 'Receive Polar webhook',
+    // Per-IP throttle in front of the HMAC verify + JSON parse + DB work, so an
+    // attacker can't burn CPU/DB by flooding forged payloads (signature failures
+    // still cost a hash). Fails open — a degraded limiter must not drop genuine
+    // Polar deliveries. Polar's real webhook volume is far under 30/min/IP.
+    middleware: [perIpRateLimit({ bucket: 'polar-webhook', tier: 'standard' })] as const,
     request: {
       body: {
         content: {

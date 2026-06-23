@@ -13,7 +13,9 @@ export interface Env {
   // Vars
   ENVIRONMENT: 'development' | 'production';
   LLM_PROVIDER: 'openrouter' | 'openai';
-  // Provider selection. Defaults: workers-ai / vectorize. Must match the API.
+  // Code-fallback defaults if unset: workers-ai / vectorize. PRODUCTION runs
+  // openai / qdrant (see docs/deployed-architecture.md and [env.production.vars]);
+  // the Workers AI + Vectorize bindings are DORMANT in prod. Must match the API.
   EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
   // Deployment vector-space dimension (= Vectorize index dimension). Default
   // 1024 (bge-m3). Set 1536 for native OpenAI text-embedding-3-small. Must

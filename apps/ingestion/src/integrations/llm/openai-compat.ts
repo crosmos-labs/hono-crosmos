@@ -73,6 +73,7 @@ export class OpenAICompatLLM implements LLM {
       model: opts.model ?? this.defaultModel,
       temperature: opts.temperature ?? 0,
       messages: this.messages(opts.system, opts.user),
+      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
     };
     const json = await this.request(body);
     return this.parseTextResponse(json);
@@ -83,6 +84,7 @@ export class OpenAICompatLLM implements LLM {
       model: opts.model ?? this.defaultModel,
       temperature: opts.temperature ?? 0,
       messages: this.messages(opts.system, opts.user),
+      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       response_format: {
         type: 'json_schema',
         json_schema: {
@@ -93,6 +95,17 @@ export class OpenAICompatLLM implements LLM {
       },
     };
     const json = await this.request(body);
+    // A response truncated at the token limit (or the model's own cap) yields
+    // structurally invalid JSON. Detect it explicitly so the failure is a clear,
+    // diagnosable error (issue #7) rather than an opaque "non-JSON content" parse
+    // error. The real mitigation is bounding the input (chunking) so this is rare.
+    const finishReason = json.choices[0]?.finish_reason;
+    if (finishReason === 'length') {
+      throw new Error(
+        `${this.config.providerLabel} response was truncated (finish_reason=length); ` +
+          'the input chunk is too large for the extraction output budget',
+      );
+    }
     const { content, usage } = this.parseTextResponse(json);
     let data: T;
     try {

@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import { IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
+import { BoundedMetaSchema, IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
 import {
   MAX_CONTENT_LENGTH_PER_SOURCE,
   MAX_SOURCES_PER_REQUEST,
@@ -29,7 +29,7 @@ const SourcePayloadSchema = z
     content_type: ContentTypeSchema.default('text'),
     role: z.string().min(1).max(50).optional(),
     visibility: VisibilitySchema.default('private'),
-    meta: z.record(z.unknown()).nullable().optional(),
+    meta: BoundedMetaSchema.nullable().optional(),
   })
   .openapi('SourcePayload');
 

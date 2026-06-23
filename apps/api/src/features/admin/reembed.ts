@@ -12,6 +12,7 @@
 import { entities, memories, memorySpaces } from '@crosmos/db';
 import { createLogger, durationMs } from '@crosmos/observability';
 import { and, eq, isNull } from 'drizzle-orm';
+import { z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
 import { createApiApp } from '../../lib/openapi';
 import { getDb } from '../../db';
@@ -23,6 +24,8 @@ import { requirePrincipal } from '../auth/principal';
 export const adminRoutes = createApiApp();
 
 const EMBED_BATCH = 96;
+
+const ReembedBodySchema = z.object({ space_id: z.string().uuid() });
 
 function memoryText(content: string, eventTime: Date | null): string {
   if (!eventTime) return content;
@@ -41,7 +44,11 @@ adminRoutes.post('/reembed', requireAuth, requirePrincipal, async (c) => {
   if (c.var.orgRole !== 'owner') {
     throw new HTTPException(403, { message: 'Owner only' });
   }
-  const body = await c.req.json<{ space_id: string }>();
+  const parsed = ReembedBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'Invalid body: space_id (uuid) required' });
+  }
+  const body = parsed.data;
   const db = getDb(c);
   const orgId = c.var.activeOrgId!;
   const logger = createLogger({ service: 'api', environment: c.env.ENVIRONMENT });

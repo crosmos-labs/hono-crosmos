@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import { UuidSchema } from '../../lib/zod-common';
+import { BoundedMetaSchema, UuidSchema } from '../../lib/zod-common';
 import {
   MAX_CONTENT_LENGTH_PER_SOURCE,
   MAX_CONVERSATION_MESSAGES,
@@ -23,7 +23,7 @@ export const IngestConversationRequestSchema = z
     session_id: z.string().min(1).max(255).optional(),
     session_date: z.string().min(1).optional(),
     visibility: VisibilitySchema.default('private'),
-    meta: z.record(z.unknown()).nullable().optional(),
+    meta: BoundedMetaSchema.nullable().optional(),
   })
   .openapi('IngestConversationRequest');
 

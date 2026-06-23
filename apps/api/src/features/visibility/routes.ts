@@ -4,6 +4,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
+import { PaginationQuerySchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requireRole } from '../auth/principal';
 import { getMembership } from '../orgs/memberships';
@@ -163,7 +164,10 @@ visibilityRoutes.openapi(
     tags: ['visibility'],
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requireRole('owner', 'admin')] as const,
-    request: { params: z.object({ org_uuid: z.string().uuid() }) },
+    request: {
+      params: z.object({ org_uuid: z.string().uuid() }),
+      query: PaginationQuerySchema,
+    },
     responses: {
       200: { description: 'Groups', content: { 'application/json': { schema: GroupListSchema } } },
       ...errorResponses,
@@ -172,8 +176,9 @@ visibilityRoutes.openapi(
   async (c) => {
     const db = getDb(c);
     const orgId = await scopedOrgId(c, c.req.valid('param').org_uuid);
+    const { limit, offset } = c.req.valid('query');
     const [groups, counts] = await Promise.all([
-      listVisibilityGroups(db, orgId),
+      listVisibilityGroups(db, orgId, { limit, offset }),
       countGroupMembers(db, orgId),
     ]);
     return c.json({ groups: groups.map((g) => groupToResponse(g, counts.get(g.id) ?? 0)) }, 200);
@@ -248,7 +253,10 @@ visibilityRoutes.openapi(
     tags: ['visibility'],
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requireRole('owner', 'admin')] as const,
-    request: { params: z.object({ org_uuid: z.string().uuid(), group_uuid: z.string().uuid() }) },
+    request: {
+      params: z.object({ org_uuid: z.string().uuid(), group_uuid: z.string().uuid() }),
+      query: PaginationQuerySchema,
+    },
     responses: {
       200: { description: 'Members', content: { 'application/json': { schema: GroupMemberListSchema } } },
       ...errorResponses,
@@ -257,9 +265,10 @@ visibilityRoutes.openapi(
   async (c) => {
     const db = getDb(c);
     const { org_uuid, group_uuid } = c.req.valid('param');
+    const { limit, offset } = c.req.valid('query');
     const orgId = await scopedOrgId(c, org_uuid);
     const group = await getVisibilityGroupByUuid(db, { orgId, groupUuid: group_uuid });
-    const members = await listGroupMembersWithUsers(db, { orgId, groupId: group.id });
+    const members = await listGroupMembersWithUsers(db, { orgId, groupId: group.id, limit, offset });
     return c.json({
       members: members.map(({ user }) => ({
         user_id: user.uuid,
@@ -412,7 +421,10 @@ visibilityRoutes.openapi(
     tags: ['visibility'],
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requireRole('owner', 'admin')] as const,
-    request: { params: z.object({ org_uuid: z.string().uuid() }) },
+    request: {
+      params: z.object({ org_uuid: z.string().uuid() }),
+      query: PaginationQuerySchema,
+    },
     responses: {
       200: { description: 'Grants', content: { 'application/json': { schema: GrantListSchema } } },
       ...errorResponses,
@@ -421,7 +433,8 @@ visibilityRoutes.openapi(
   async (c) => {
     const db = getDb(c);
     const orgId = await scopedOrgId(c, c.req.valid('param').org_uuid);
-    const grants = await listGrants(db, orgId);
+    const { limit, offset } = c.req.valid('query');
+    const grants = await listGrants(db, orgId, { limit, offset });
     return c.json({ grants: await Promise.all(grants.map((g) => grantResponseFromGroups(db, g))) }, 200);
   },
 );

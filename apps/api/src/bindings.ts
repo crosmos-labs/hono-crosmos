@@ -57,7 +57,10 @@ export interface Env {
   BILLING_METADATA_SECRET?: string;
   BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
-  // Provider selection. Defaults: workers-ai / workers-ai / vectorize.
+  // Code-fallback defaults if the var is unset: workers-ai / workers-ai / vectorize.
+  // PRODUCTION runs openai / zeroentropy / qdrant (see docs/deployed-architecture.md
+  // and [env.production.vars] in wrangler.toml). The Workers AI + Vectorize bindings
+  // are declared but DORMANT in prod — these vars route around them.
   EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
   RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
   VECTOR_STORE?: 'vectorize' | 'pg' | 'qdrant';
@@ -107,6 +110,9 @@ export interface Variables {
   // API key info, if auth was via API key
   apiKeyId?: number;
   apiKeyUuid?: string;
+  // Set once the per-org plan rate limit has been enforced for this request, so
+  // the default-on catch-all and any route-level enforcement don't double-count.
+  planRateLimitEnforced?: boolean;
 }
 
 export type HonoEnv = {

@@ -17,6 +17,15 @@ export const MODEL_NAME = 'openai/gpt-4.1-mini';
 // collection / Vectorize index dimension. See issue #3.
 export const MIN_IMPORTANCE_SCORE = 0.2;
 export const MIN_RELATION_CONFIDENCE = 0.7;
+// Minimum word count for a fact to survive normalization (issue #8). Drops
+// 1–2 word fragments ("ok thanks", "yes") while KEEPING terse-but-real facts
+// like "User likes ramen" (3 words). Previously hardcoded at <4, which silently
+// dropped valid 3-word facts the extraction prompt explicitly produces.
+export const MIN_FACT_WORDS = 3;
+// Upper bound on extraction output so a runaway / pathological chunk can't emit
+// an unbounded completion. Generous — a bounded chunk yields a handful of facts;
+// truncation (finish_reason=length) is surfaced as a clear error (issue #7).
+export const EXTRACTION_MAX_TOKENS = 4_000;
 
 // Entity name shape
 export const ENTITY_NAME_MAX_LENGTH = 80;
@@ -62,6 +71,15 @@ export const BACKSTOP_RETRY_DELAY_SECONDS = 60;
 // Session ingestion
 export const SESSION_SEGMENT_SIZE = 4;
 export const SESSION_LOOKBACK_WINDOW = 4;
+
+// Text / markdown chunking (issue #7). Until the full chonkie port lands, a
+// recursive character splitter keeps text/markdown sources from being a single
+// unbounded chunk — which both risked extraction-output truncation and blew the
+// embedder's input token limit on the Stage-1 dedup hint. Target ~2k chars per
+// chunk (a few paragraphs ≈ ~500 tokens, comparable to a 4-turn conversation
+// window); never emit a chunk larger than the hard cap.
+export const TEXT_CHUNK_TARGET_CHARS = 2_000;
+export const TEXT_CHUNK_MAX_CHARS = 4_000;
 
 // Conversation chunking — a source runs entirely in ONE Cloudflare invocation,
 // which is bounded to 1000 subrequests; each chunk spends ~6 of them (search
