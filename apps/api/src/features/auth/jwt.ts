@@ -2,7 +2,11 @@ import { SignJWT, jwtVerify, errors as joseErrors } from 'jose';
 import { tokenUrlSafe } from '../../lib/crypto';
 
 export const JWT_ALG = 'HS256';
-export const ACCESS_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+// Access tokens are short-lived so a leaked/stolen one has a tight blast radius
+// even before explicit revocation kicks in. Continuity comes from the 30-day
+// refresh token (rotated on every use). Previously 7 days, which meant a stolen
+// access token survived a /logout for up to a week.
+export const ACCESS_TOKEN_TTL_SECONDS = 30 * 60; // 30 minutes
 export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 export type TokenType = 'access' | 'refresh';
@@ -12,6 +16,7 @@ export interface AccessTokenPayload {
   type: 'access';
   iat: number;
   exp: number;
+  jti: string;
   active_org_id?: number;
 }
 
@@ -26,6 +31,7 @@ export interface RefreshTokenPayload {
 export interface AccessTokenClaims {
   userId: number;
   activeOrgId: number | null;
+  jti: string | null;
   expiresAt: Date;
 }
 
@@ -53,10 +59,14 @@ export async function createAccessToken(
 ): Promise<string> {
   const ttl = options.ttlSeconds ?? ACCESS_TOKEN_TTL_SECONDS;
   const iat = Math.floor(Date.now() / 1000);
+  // Unique token id so an individual access token can be revoked (denylisted)
+  // before it expires — e.g. on /logout.
+  const jti = tokenUrlSafe(16);
 
   const payload: Record<string, unknown> = {
     sub: String(userId),
     type: 'access',
+    jti,
   };
   if (options.activeOrgId != null) {
     payload.active_org_id = options.activeOrgId;
@@ -66,6 +76,7 @@ export async function createAccessToken(
     .setProtectedHeader({ alg: JWT_ALG })
     .setIssuedAt(iat)
     .setExpirationTime(iat + ttl)
+    .setJti(jti)
     .sign(secretKey(jwtSecret));
 }
 
@@ -147,6 +158,7 @@ export async function decodeAccessTokenClaims(
     userId,
     activeOrgId:
       typeof payload.active_org_id === 'number' ? payload.active_org_id : null,
+    jti: typeof payload.jti === 'string' ? payload.jti : null,
     expiresAt: new Date(payload.exp * 1000),
   };
 }

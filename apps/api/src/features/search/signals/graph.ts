@@ -5,12 +5,28 @@
  * NOT re-sorted in JS (the SQL `ORDER BY effective_time DESC, id DESC` is the
  * order). Seeding uses three strategies; an entity's relevance is the max
  * across them. See .codex/pipelines.md.
+ *
+ * Working-set model: this signal is self-contained and BOUNDED. It does not
+ * receive a pre-loaded space. It loads in-scope entities (id+name) for the
+ * lexical/embedding seeds, fetches memory↔entity links only for the handful of
+ * seed/ANN ids it touches, and hydrates the reached memories by id at the end.
+ * Every memory read goes through `scopeMemories` (org + space + per-user
+ * visibility), so relevance never propagates through, nor is a candidate ever
+ * emitted from, a memory the caller cannot see — the final hydration is the
+ * visibility gate.
  */
-import { type Database, type Entity, type Memory, edges } from '@crosmos/db';
+import { type Database, edges } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { graphEdgeVisibilityClause } from '../../../lib/scope';
+import {
+  getEntitiesByNameTokens,
+  getEntitiesForMemories,
+  getEntityIdsLinkedToVisibleMemories,
+  getMemoriesForEntities,
+  hydrateMemories,
+} from '../candidates';
 import {
   DEPTH_DECAY,
   GRAPH_EDGE_RECENCY_DAYS,
@@ -25,7 +41,7 @@ import {
 } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { intersectionSize, tokenize } from '../tokenize';
-import { type RankedCandidate, SourceSignal } from '../types';
+import { type RankedCandidate, type RetrievalEntityRow, SourceSignal } from '../types';
 
 const SEC_PER_DAY = 86400;
 
@@ -63,7 +79,10 @@ export async function getEdgesForEntities(
   conditions.push(eq(edges.orgId, scope.orgId), eq(edges.spaceId, scope.spaceId));
   const edgeVisibility = graphEdgeVisibilityClause(scope);
   if (edgeVisibility !== undefined) conditions.push(edgeVisibility);
-  if (asOf !== null) conditions.push(sql`${effectiveTime} <= ${asOf}`);
+  // ISO string + cast, not a raw Date: a Date in a raw `sql` template is sent
+  // untyped and the postgres.js driver rejects it ("must be string"). Only bites
+  // when asOf is set (temporal + graph queries), so it was a latent bug.
+  if (asOf !== null) conditions.push(sql`${effectiveTime} <= ${asOf.toISOString()}::timestamptz`);
 
   return db
     .select({
@@ -96,59 +115,46 @@ function edgeRecencyFactor(
  * Seed via memory-embedding similarity; propagate to that memory's entities.
  * ANN query against the vector store (top-`GRAPH_SEED_LIMIT` above
  * `GRAPH_SEED_THRESHOLD`), then propagate each hit's similarity to the entities
- * linked to that memory (max). Only in-scope memories (present in
- * `memoryToEntities`) contribute. Approximate under Vectorize vs. the exact
- * in-memory cosine the pg path would do — accepted for the latency win.
+ * linked to that memory (max). Links are fetched only for the (few) hit ids and
+ * the join enforces visibility, so an ANN hit the caller can't see contributes
+ * nothing. Approximate under an external ANN store vs. the exact in-memory
+ * cosine the pg path would do — accepted for the latency win.
  */
 async function seedByMemory(
+  db: Database,
   vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
-  memoryMap: Map<number, Memory>,
-  memoryToEntities: Map<number, number[]>,
 ): Promise<Map<number, number>> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
     topK: GRAPH_SEED_LIMIT,
     minScore: GRAPH_SEED_THRESHOLD,
   });
+  if (matches.length === 0) return new Map();
+  const links = await getEntitiesForMemories(db, scope, matches.map((m) => m.id));
   const entityScores = new Map<number, number>();
   for (const { id, score } of matches) {
-    if (!memoryMap.has(id)) continue; // not in the visible working set
-    for (const eid of memoryToEntities.get(id) ?? []) {
+    for (const eid of links.get(id) ?? []) {
       if (score > (entityScores.get(eid) ?? 0.0)) entityScores.set(eid, score);
     }
   }
   return entityScores;
 }
 
-/** Seed via entity-embedding similarity (ANN query against the vector store). */
-async function seedByEntityEmbedding(
-  vectorStore: VectorStore,
-  queryEmbedding: number[],
-  scope: TenantScope,
-  allowedEntityIds: Set<number>,
-): Promise<Map<number, number>> {
-  const matches = await vectorStore.queryNearest('entities', queryEmbedding, scope, {
-    topK: GRAPH_SEED_LIMIT,
-    minScore: GRAPH_SEED_THRESHOLD,
-  });
-  const out = new Map<number, number>();
-  for (const { id, score } of matches) {
-    if (!allowedEntityIds.has(id)) continue;
-    out.set(id, score);
-  }
-  return out;
-}
-
-/** Seed via token overlap on entity names (normalized to the top match). */
+/**
+ * Seed via token overlap on entity names (normalized to the top match). Operates
+ * over the bounded candidate set fetched by `getEntitiesByNameTokens` (entities
+ * sharing a query token) rather than the whole space; the overlap math and
+ * top-of-set normalization are identical to scanning every entity, since only
+ * overlap>0 entities ever contributed.
+ */
 function seedByEntityName(
-  queryText: string,
-  entities: Entity[],
+  queryTokens: Set<string>,
+  entities: RetrievalEntityRow[],
 ): Map<number, number> {
-  const queryTokens = tokenize(queryText);
   if (queryTokens.size === 0) return new Map();
 
-  const scored: Array<{ entity: Entity; score: number }> = [];
+  const scored: Array<{ entity: RetrievalEntityRow; score: number }> = [];
   for (const entity of entities) {
     const overlap = intersectionSize(queryTokens, tokenize(entity.name));
     if (overlap > 0) scored.push({ entity, score: overlap / queryTokens.size });
@@ -170,36 +176,50 @@ export async function graphSearchWithStore(
   vectorStore: VectorStore,
   queryText: string,
   queryEmbedding: number[],
-  memories: Memory[],
-  entities: Entity[],
-  memoryToEntities: Map<number, number[]>,
+  scope: TenantScope,
   limit: number,
   asOf: Date | null,
   maxDepth: number,
-  scope: TenantScope,
 ): Promise<RankedCandidate[]> {
   const effectiveMaxDepth = maxDepth ?? MAX_DEPTH;
   const now = new Date();
 
-  const memoryMap = new Map<number, Memory>();
-  for (const m of memories) if (m.forgottenAt === null) memoryMap.set(m.id, m);
-  if (memoryMap.size === 0) return [];
+  const queryTokens = tokenize(queryText);
 
-  const seedEntities =
-    scope.visibleUserIds == null
-      ? entities
-      : entities.filter((entity) =>
-          new Set([...memoryToEntities.values()].flat()).has(entity.id),
-        );
-
-  // Seed: entity relevance = max score across the three strategies. The two
-  // embedding seeds are ANN queries (run in parallel); the name seed is local.
-  const seedEntityIdSet = new Set(seedEntities.map((e) => e.id));
-  const [memSeed, entSeed] = await Promise.all([
-    seedByMemory(vectorStore, queryEmbedding, scope, memoryMap, memoryToEntities),
-    seedByEntityEmbedding(vectorStore, queryEmbedding, scope, seedEntityIdSet),
+  // Bounded seed inputs — NO whole-space entity scan. Run in parallel:
+  //  - name candidates: simple-GIN lookup of in-scope entities sharing a query token
+  //  - entity ANN hits (already org+space scoped by queryNearest)
+  //  - memory ANN seed (propagates to entities via visible links)
+  const [nameCandidatesRaw, entityAnnHits, memSeed] = await Promise.all([
+    getEntitiesByNameTokens(db, scope, [...queryTokens]),
+    vectorStore.queryNearest('entities', queryEmbedding, scope, {
+      topK: GRAPH_SEED_LIMIT,
+      minScore: GRAPH_SEED_THRESHOLD,
+    }),
+    seedByMemory(db, vectorStore, queryEmbedding, scope),
   ]);
-  const seedResults = [memSeed, entSeed, seedByEntityName(queryText, seedEntities)];
+
+  // Visibility gate for the entity seeds: when per-user visibility is active,
+  // keep only entities linked to ≥1 visible memory — parity with the old
+  // universe filter, but computed over the bounded candidate ids (name matches ∪
+  // ANN hits), never all entities. (The memory seed already propagates only
+  // through visible links, so it needs no extra filter.)
+  let nameCandidates = nameCandidatesRaw;
+  let entityHits = entityAnnHits;
+  if (scope.visibleUserIds != null) {
+    const candidateIds = [
+      ...new Set([...nameCandidatesRaw.map((e) => e.id), ...entityAnnHits.map((h) => h.id)]),
+    ];
+    const visible = await getEntityIdsLinkedToVisibleMemories(db, scope, candidateIds);
+    nameCandidates = nameCandidatesRaw.filter((e) => visible.has(e.id));
+    entityHits = entityAnnHits.filter((h) => visible.has(h.id));
+  }
+
+  const entSeed = new Map<number, number>();
+  for (const { id, score } of entityHits) entSeed.set(id, score);
+
+  // Seed: entity relevance = max score across the three strategies.
+  const seedResults = [memSeed, entSeed, seedByEntityName(queryTokens, nameCandidates)];
   const entityRelevance = new Map<number, number>();
   for (const sd of seedResults) {
     for (const [eid, score] of sd) {
@@ -212,15 +232,22 @@ export async function graphSearchWithStore(
     .sort((a, b) => b[1] - a[1])
     .slice(0, GRAPH_MAX_SEED_ENTITIES)
     .map(([eid]) => eid);
-  const seedEntitySet = new Set(seedEntityIds);
 
-  // Initial memory scores: max relevance among a memory's seed entities.
+  // Initial memory scores: max relevance among a memory's seed entities. Fetch
+  // only the (visible) memories linked to the seed entities — bounded by the ≤10
+  // seed entities, not the space.
+  const seedEntityMemLinks = await getMemoriesForEntities(db, scope, seedEntityIds);
+  const memoryToSeedEntities = new Map<number, number[]>();
+  for (const [eid, mids] of seedEntityMemLinks) {
+    for (const mid of mids) {
+      const list = memoryToSeedEntities.get(mid);
+      if (list) list.push(eid);
+      else memoryToSeedEntities.set(mid, [eid]);
+    }
+  }
   const scores = new Map<number, number>();
-  for (const [mid, eids] of memoryToEntities) {
-    if (!memoryMap.has(mid)) continue;
-    const seedRel = eids
-      .filter((eid) => seedEntitySet.has(eid))
-      .map((eid) => entityRelevance.get(eid) ?? 0.0);
+  for (const [mid, eids] of memoryToSeedEntities) {
+    const seedRel = eids.map((eid) => entityRelevance.get(eid) ?? 0.0);
     if (seedRel.length > 0) scores.set(mid, Math.max(...seedRel));
   }
 
@@ -272,8 +299,11 @@ export async function graphSearchWithStore(
       const score =
         confidence * Math.exp(-DEPTH_DECAY * depth) * anchorRelevance * recency;
 
+      // Score the edge's memory. Visibility is enforced at the final hydration
+      // (this id set may include not-yet-verified memories; non-visible ones are
+      // dropped before normalization below).
       const memoryId = edge.memoryId;
-      if (memoryId !== null && memoryMap.has(memoryId)) {
+      if (memoryId !== null) {
         if (score > (scores.get(memoryId) ?? 0.0)) scores.set(memoryId, score);
       }
 
@@ -292,12 +322,24 @@ export async function graphSearchWithStore(
 
   if (scores.size === 0) return [];
 
-  const maxScore = Math.max(...scores.values());
+  // Visibility gate + hydration: one by-id fetch for every scored memory.
+  // `scopeMemories` drops ids the caller can't see / forgotten ids, so they
+  // never reach the candidate list — and are excluded BEFORE normalization so
+  // the max is taken over the visible set (parity with the old visible-only
+  // `scores` map).
+  const rows = await hydrateMemories(db, scope, [...scores.keys()]);
+  const visibleScores = new Map<number, number>();
+  for (const [mid, s] of scores) {
+    if (rows.has(mid)) visibleScores.set(mid, s);
+  }
+  if (visibleScores.size === 0) return [];
+
+  const maxScore = Math.max(...visibleScores.values());
   const normalized = new Map<number, number>();
   if (maxScore > 0) {
-    for (const [mid, s] of scores) normalized.set(mid, s / maxScore);
+    for (const [mid, s] of visibleScores) normalized.set(mid, s / maxScore);
   } else {
-    for (const [mid, s] of scores) normalized.set(mid, s);
+    for (const [mid, s] of visibleScores) normalized.set(mid, s);
   }
 
   const sortedIds = [...normalized.entries()]
@@ -308,7 +350,7 @@ export async function graphSearchWithStore(
   const candidates: RankedCandidate[] = [];
   let rank = 1;
   for (const memoryId of sortedIds) {
-    const memory = memoryMap.get(memoryId);
+    const memory = rows.get(memoryId);
     if (memory === undefined) continue;
     candidates.push(
       toRankedCandidate(memory, rank, normalized.get(memoryId)!, SourceSignal.GRAPH),

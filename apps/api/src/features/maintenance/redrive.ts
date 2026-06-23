@@ -56,7 +56,36 @@ export interface RedriveResult {
   jobsCreated: number;
   sourcesRequeued: number;
   skippedNoOwner: number;
+  /** No-owner sources marked terminally `failed` so they leave limbo (issue #6). */
+  markedOwnerDeleted: number;
+  /** Budget-exhausted stuck sources marked terminally `failed` (issue #6). */
+  markedExhausted: number;
   capHit: boolean;
+}
+
+/**
+ * Drive a set of stuck sources to a terminal `failed` state with a reason in
+ * `meta`, so abandoned rows leave `pending`/`processing` limbo and surface in
+ * monitoring instead of being silently skipped forever (issue #6). Scoped to the
+ * given ids; returns how many rows were updated.
+ */
+async function markSourcesTerminallyFailed(
+  db: Database,
+  ids: number[],
+  reason: string,
+  flag: string,
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const rows = await db
+    .update(sources)
+    .set({
+      extractionStatus: 'failed',
+      updatedAt: new Date(),
+      meta: sql`coalesce(${sources.meta}, '{}'::jsonb) || ${JSON.stringify({ error_message: reason, [flag]: true })}::jsonb`,
+    })
+    .where(inArray(sources.id, ids))
+    .returning({ id: sources.id });
+  return rows.length;
 }
 
 export async function runIngestionRedrive(env: Env): Promise<RedriveResult> {
@@ -74,6 +103,8 @@ export async function redriveStuckSources(
     jobsCreated: 0,
     sourcesRequeued: 0,
     skippedNoOwner: 0,
+    markedOwnerDeleted: 0,
+    markedExhausted: 0,
     capHit: false,
   };
 
@@ -113,15 +144,42 @@ export async function redriveStuckSources(
     .limit(MAX_SOURCES_PER_SWEEP);
 
   result.candidates = candidates.length;
+
+  // Budget-exhausted cleanup (issue #6) — runs independently of the candidate
+  // set. Sources that burned through their re-drive budget (attempts >= MAX)
+  // while still non-terminal are excluded from the candidate query above and
+  // would otherwise sit `pending`/`processing` forever. Mark them terminally
+  // failed so they leave limbo and surface in monitoring.
+  const exhausted = await db
+    .select({ id: sources.id })
+    .from(sources)
+    .where(
+      and(
+        gt(sources.updatedAt, recencyFloor),
+        sql`${attempts} >= ${MAX_REDRIVE_ATTEMPTS}`,
+        sql`${sources.extractionStatus} in ('pending','processing')`,
+        lt(sources.updatedAt, stuckCutoff),
+      ),
+    )
+    .limit(MAX_SOURCES_PER_SWEEP);
+  result.markedExhausted = await markSourcesTerminallyFailed(
+    db,
+    exhausted.map((s) => s.id),
+    'Ingestion re-drive budget exhausted',
+    'redrive_exhausted',
+  );
+
   if (candidates.length === 0) return result;
 
   // Group by tenant (org, space, owner) — a job is scoped to one (org, space,
   // user). Sources whose owner was deleted (owner_user_id NULL) can't form a
-  // job; count and skip them.
+  // job: collect them and mark them terminally failed (they can never re-drive).
   const groups = new Map<string, { orgId: number; spaceId: number; userId: number; ids: number[] }>();
+  const noOwnerIds: number[] = [];
   for (const s of candidates) {
     if (s.ownerUserId == null) {
       result.skippedNoOwner++;
+      noOwnerIds.push(s.id);
       continue;
     }
     const key = `${s.orgId}:${s.spaceId}:${s.ownerUserId}`;
@@ -129,6 +187,12 @@ export async function redriveStuckSources(
     if (g) g.ids.push(s.id);
     else groups.set(key, { orgId: s.orgId, spaceId: s.spaceId, userId: s.ownerUserId, ids: [s.id] });
   }
+  result.markedOwnerDeleted = await markSourcesTerminallyFailed(
+    db,
+    noOwnerIds,
+    'Source owner was deleted; cannot re-drive ingestion',
+    'owner_deleted',
+  );
 
   const limits = getOperationalLimits(env);
   const jobStore = getJobStore(db, limits.staleJobMinutes);
@@ -203,6 +267,8 @@ export async function redriveStuckSources(
     jobs_created: result.jobsCreated,
     sources_requeued: result.sourcesRequeued,
     skipped_no_owner: result.skippedNoOwner,
+    marked_owner_deleted: result.markedOwnerDeleted,
+    marked_exhausted: result.markedExhausted,
     cap_hit: result.capHit,
   });
   return result;

@@ -14,6 +14,7 @@ import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { invalidateSpace } from '../../lib/gate-cache';
+import { PaginationQuerySchema } from '../../lib/zod-common';
 import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
@@ -148,9 +149,11 @@ spaceRoutes.openapi(
     security: [{ bearerAuth: [] }],
     middleware: [requireAuth, requirePrincipal] as const,
     request: {
-      query: z.object({
-        name: z.string().min(1).optional(),
-      }),
+      query: z
+        .object({
+          name: z.string().min(1).optional(),
+        })
+        .merge(PaginationQuerySchema),
     },
     responses: {
       200: {
@@ -161,11 +164,11 @@ spaceRoutes.openapi(
     },
   }),
   async (c) => {
-    const { name } = c.req.valid('query');
+    const { name, limit, offset } = c.req.valid('query');
     const db = getDb(c);
     const orgId = c.var.activeOrgId!;
 
-    const spaces = await listSpaces(db, { orgId, name: name ?? null });
+    const spaces = await listSpaces(db, { orgId, name: name ?? null, limit, offset });
     const out = await Promise.all(spaces.map((s) => toResponse(c, s)));
     return c.json({ spaces: out, total: out.length }, 200);
   },

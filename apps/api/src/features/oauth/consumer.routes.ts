@@ -214,6 +214,7 @@ oauthConsumerRoutes.openapi(
       provider: userInfo.provider,
       providerUserId: userInfo.providerUserId,
       email: userInfo.email,
+      emailVerified: userInfo.emailVerified,
       name: userInfo.name,
     });
     if (!result.user.isActive) {

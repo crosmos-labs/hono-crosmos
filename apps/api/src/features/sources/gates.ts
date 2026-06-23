@@ -40,10 +40,18 @@ export async function preflight(input: {
   orgId: number;
   userId: number;
   spaceUuid: string;
+  /**
+   * Skip the per-org plan rate-limit gate (step 1) when the caller already
+   * enforced it — e.g. the default-on catch-all in `requireAuth`. Avoids
+   * double-counting the org's RPM/daily quota.
+   */
+  skipPlanRateLimit?: boolean;
 }): Promise<MemorySpace> {
   // 1. Plan rate limit (per-org RPM/RPD).
   try {
-    await enforcePlanRateLimit(input.db, input.limiter, input.orgId);
+    if (!input.skipPlanRateLimit) {
+      await enforcePlanRateLimit(input.db, input.limiter, input.orgId);
+    }
   } catch (err) {
     if (err instanceof RateLimitError) {
       throw new HTTPException(429, {

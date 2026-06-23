@@ -70,6 +70,20 @@ app.use('*', async (c, next) => {
   c.header('X-Request-Id', requestId);
 });
 
+// Baseline security headers on every response. HSTS tells browsers to pin
+// HTTPS for this host (and its subdomains) for two years — closes the
+// "Domains without HSTS" finding for hono.crosmos.dev. `includeSubDomains` is
+// safe here because hono.crosmos.dev has no sub-subdomains; `preload` is left
+// off deliberately (that's an apex-domain commitment, not the API's to make).
+// nosniff / frame-deny / referrer are cheap hardening for a JSON API + docs UI.
+app.use('*', async (c, next) => {
+  await next();
+  c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Referrer-Policy', 'no-referrer');
+});
+
 // Cap request body size early (413 before any handler/JSON.parse runs).
 app.use(
   '*',
@@ -154,6 +168,23 @@ app.onError((err, c) => {
 
 app.get('/health', (c) =>
   c.json({ status: 'ok', environment: c.env.ENVIRONMENT, ts: Date.now() }),
+);
+
+// RFC 9116 security contact. Served on the API host so researchers have a
+// disclosure channel; the apex marketing site (crosmos.dev) should serve its
+// own copy too. Update `Expires` before it lapses (scanners flag stale files).
+app.get('/.well-known/security.txt', (c) =>
+  c.text(
+    [
+      'Contact: mailto:security@crosmos.dev',
+      'Expires: 2027-01-01T00:00:00.000Z',
+      'Preferred-Languages: en',
+      'Canonical: https://hono.crosmos.dev/.well-known/security.txt',
+      '',
+    ].join('\n'),
+    200,
+    { 'Content-Type': 'text/plain; charset=utf-8' },
+  ),
 );
 
 app.route('/api/v1/auth', authRoutes);

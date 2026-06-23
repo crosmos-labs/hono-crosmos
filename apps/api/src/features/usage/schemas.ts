@@ -27,4 +27,8 @@ export const UsageQuerySchema = z
     start_date: z.string().date().optional(),
     end_date: z.string().date().optional(),
   })
+  .refine(
+    (q) => !q.start_date || !q.end_date || q.start_date <= q.end_date,
+    { message: 'start_date must be on or before end_date', path: ['start_date'] },
+  )
   .openapi('UsageQuery');

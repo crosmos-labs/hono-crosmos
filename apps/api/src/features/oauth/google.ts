@@ -13,6 +13,7 @@ export interface OAuthUserInfo {
   provider: 'google';
   providerUserId: string;
   email: string;
+  emailVerified: boolean;
   name: string;
 }
 
@@ -89,6 +90,21 @@ export async function exchangeGoogleCode(input: {
   if (!sub || !email) {
     throw new OAuthError('Google ID token missing sub or email');
   }
+
+  // CRITICAL (account-takeover defense): Google only proves the holder controls
+  // `email` when `email_verified` is true. Without this gate, an attacker who
+  // makes Google issue an ID token asserting a *victim's* email (e.g. an
+  // unverified Workspace alias) would get auto-linked into the victim's account
+  // by the email-match path in `getOrCreateOauthUser`. Google encodes this as a
+  // boolean, but some token paths stringify it — accept both. Reject anything
+  // that isn't an affirmative true.
+  const emailVerifiedRaw = payload.email_verified;
+  const emailVerified =
+    emailVerifiedRaw === true || emailVerifiedRaw === 'true';
+  if (!emailVerified) {
+    throw new OAuthError('Google account email is not verified');
+  }
+
   const name =
     (typeof payload.name === 'string' && payload.name) ||
     email.split('@')[0] ||
@@ -98,6 +114,7 @@ export async function exchangeGoogleCode(input: {
     provider: 'google',
     providerUserId: sub,
     email,
+    emailVerified,
     name,
   };
 }

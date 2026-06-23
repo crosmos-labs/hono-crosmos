@@ -84,13 +84,26 @@ describe('chunkSource dispatch', () => {
     expect(chunks[0]!.chunker).toBe('conversation');
   });
 
-  test('passes text/markdown through as a single legacy chunk', () => {
+  test('chunks short text/markdown into a single recursive chunk', () => {
     const text = chunkSource('text', 'hello world', {});
     expect(text).toEqual([
-      { sequence: 0, content: 'hello world', context: null, chunker: 'legacy' },
+      { sequence: 0, content: 'hello world', context: null, chunker: 'recursive' },
     ]);
     const md = chunkSource('markdown', '# Title\n\nbody', {});
     expect(md.length).toBe(1);
-    expect(md[0]!.chunker).toBe('legacy');
+    expect(md[0]!.chunker).toBe('recursive');
+    expect(md[0]!.context).toBeNull();
+  });
+
+  test('splits long text into multiple bounded recursive chunks', () => {
+    // ~30 paragraphs of ~300 chars each ≈ 9k chars → several ~2k-char chunks.
+    const para = `${'word '.repeat(60)}`.trim();
+    const long = Array.from({ length: 30 }, () => para).join('\n\n');
+    const chunks = chunkSource('text', long, {});
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.chunker === 'recursive')).toBe(true);
+    // Sequences are contiguous from 0; no chunk exceeds the hard cap.
+    chunks.forEach((c, i) => expect(c.sequence).toBe(i));
+    expect(chunks.every((c) => c.content.length <= 4_000)).toBe(true);
   });
 });
