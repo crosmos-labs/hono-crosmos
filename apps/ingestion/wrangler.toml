@@ -12,7 +12,10 @@ compatibility_flags = ["nodejs_compat"]
 # truth: docs/deployed-architecture.md. Do NOT call prod "Workers AI"/"Vectorize".
 # ───────────────────────────────────────────────────────────────────────────
 
-workers_dev = true
+# This Worker is invoked ONLY via the service binding (IngestionWorker RPC) and
+# the queue consumer — it has no public HTTP surface, so the *.workers.dev route
+# is disabled. Not inherited by named envs; repeated under [env.production].
+workers_dev = false
 
 [observability]
 enabled = true
@@ -103,6 +106,9 @@ EMBEDDINGS_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
 [env.production]
+# No *.workers.dev for prod — invoked only via service binding + queue.
+workers_dev = false
+
 [env.production.observability]
 enabled = true
 head_sampling_rate = 1
