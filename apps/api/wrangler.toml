@@ -3,7 +3,22 @@ main = "src/index.ts"
 compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
 
-workers_dev = true
+# ───────────────────────────────────────────────────────────────────────────
+# PRODUCTION STACK (the [ai] + [[vectorize]] bindings below are DORMANT in prod):
+#   vector store = Qdrant   ·   embeddings = OpenAI text-embedding-3-small @1536
+#   reranker = ZeroEntropy  ·   extraction LLM = OpenRouter   ·   DB = Neon/Hyperdrive
+# The real provider switches live in [env.production.vars] further down. The
+# top-level [vars] (workers-ai / vectorize) are only the bare-`wrangler dev`
+# default. Source of truth: docs/deployed-architecture.md. Do NOT call prod
+# "Workers AI" or "Vectorize".
+# ───────────────────────────────────────────────────────────────────────────
+
+# Disable the *.workers.dev default route. The Worker is reachable ONLY via the
+# custom domain (hono.crosmos.dev) below, so the public
+# crosmos-api*.crosmos-ai.workers.dev hostname — which bypasses the zone's WAF /
+# Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
+# inherited by named environments, so it's repeated under [env.production].
+workers_dev = false
 
 [observability]
 enabled = true
@@ -72,7 +87,10 @@ binding = "INGESTION_SERVICE"
 service = "crosmos-ingestion"
 entrypoint = "IngestionWorker"
 
-# Workers AI: embeddings (bge-m3) + cross-encoder reranker (bge-reranker-base).
+# Workers AI binding (embeddings bge-m3 + reranker bge-reranker-base) — DORMANT
+# in production. Kept as a swappable fallback; prod uses OpenAI + ZeroEntropy
+# (EMBEDDINGS_PROVIDER / RERANKER_PROVIDER below). Only active if those vars are
+# set to "workers-ai".
 [ai]
 binding = "AI"
 
@@ -97,8 +115,9 @@ new_sqlite_classes = ["RateLimiterDO"]
 # binding = "ANALYTICS"
 # dataset = "crosmos_api_dev"
 
-# Vectorize: vector storage for the retrieval read path (VECTOR_STORE=vectorize).
-# Create with:
+# Vectorize: vector storage for the retrieval read path (only when
+# VECTOR_STORE=vectorize). DORMANT in production — prod sets VECTOR_STORE=qdrant,
+# so these indexes are bound but unused. Create with:
 #   wrangler vectorize create crosmos-memories-dev --dimensions=1024 --metric=cosine
 #   wrangler vectorize create crosmos-entities-dev --dimensions=1024 --metric=cosine
 [[vectorize]]
@@ -115,7 +134,10 @@ OAUTH_SERVER_BASE_URL = "http://localhost:8787"
 APP_BASE_URL = "http://localhost:3000"
 # Retrieval cross-encoder reranker toggle. Anything other than "false" = on.
 RETRIEVAL_RERANKER_ENABLED = "true"
-# Provider selection (defaults if unset: workers-ai / workers-ai / vectorize).
+# Provider selection. THESE ARE THE BARE-`wrangler dev` DEFAULTS, NOT PRODUCTION.
+# Production overrides to openai / zeroentropy / qdrant in [env.production.vars]
+# below; the local benchmark overrides via .dev.vars. (Code fallback if unset is
+# also workers-ai / workers-ai / vectorize.)
 EMBEDDINGS_PROVIDER = "workers-ai"
 RERANKER_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
@@ -131,11 +153,14 @@ VECTOR_STORE = "vectorize"
 #   GLOBAL_AI_RPM_CEILING = "3000"               # account-wide AI RPM ceiling
 
 # Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
-#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small @ 1024-dim)
-#   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small @ 1024-dim)
+#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small; dim = EMBEDDING_DIMENSIONS, prod 1536)
+#   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small; dim = EMBEDDING_DIMENSIONS)
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
+# No *.workers.dev for prod — only the hono.crosmos.dev custom domain route.
+workers_dev = false
+
 [env.production.observability]
 enabled = true
 head_sampling_rate = 1
@@ -197,9 +222,17 @@ index_name = "crosmos-entities-v3"
 [env.production.triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
 
-# Smart Placement for production (env config is not inherited from top-level).
+# Targeted Placement for production (env config is not inherited from top-level).
+# `mode = "smart"` (automatic) was NOT relocating the Worker for India-origin
+# traffic — measured took_ms stayed flat at ~4.2s, dominated by sequential
+# cross-region DB/Qdrant round-trips (graph signal alone ~3.1s). `targeted`
+# pins execution to the CF data center closest to AWS us-east-1, where BOTH
+# Neon (Hyperdrive origin) and the Qdrant cluster live, so the retrieval path's
+# DB/vector hops are region-local and the India user pays the cross-region
+# distance ONCE (user→Worker) instead of on every hop.
 [env.production.placement]
-mode = "smart"
+mode = "targeted"
+region = "aws:us-east-1"
 
 [[env.production.routes]]
 pattern = "hono.crosmos.dev"

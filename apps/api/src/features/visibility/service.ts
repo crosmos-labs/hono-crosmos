@@ -135,12 +135,15 @@ export async function createVisibilityGroup(
 export async function listVisibilityGroups(
   db: Database,
   orgId: number,
+  opts?: { limit?: number; offset?: number },
 ): Promise<VisibilityGroup[]> {
   return db
     .select()
     .from(visibilityGroups)
     .where(eq(visibilityGroups.orgId, orgId))
-    .orderBy(asc(visibilityGroups.createdAt));
+    .orderBy(asc(visibilityGroups.createdAt))
+    .limit(opts?.limit ?? 200)
+    .offset(opts?.offset ?? 0);
 }
 
 export async function countGroupMembers(
@@ -292,14 +295,16 @@ export async function removeUserFromAllGroups(
 
 export async function listGroupMembersWithUsers(
   db: Database,
-  input: { orgId: number; groupId: number },
+  input: { orgId: number; groupId: number; limit?: number; offset?: number },
 ): Promise<Array<{ member: VisibilityGroupMember; user: User }>> {
   return db
     .select({ member: visibilityGroupMembers, user: users })
     .from(visibilityGroupMembers)
     .innerJoin(users, eq(users.id, visibilityGroupMembers.userId))
     .where(and(eq(visibilityGroupMembers.orgId, input.orgId), eq(visibilityGroupMembers.groupId, input.groupId)))
-    .orderBy(asc(visibilityGroupMembers.createdAt));
+    .orderBy(asc(visibilityGroupMembers.createdAt))
+    .limit(input.limit ?? 200)
+    .offset(input.offset ?? 0);
 }
 
 async function groupReaches(
@@ -364,12 +369,18 @@ export async function createGrant(
   return row;
 }
 
-export async function listGrants(db: Database, orgId: number): Promise<VisibilityGrant[]> {
+export async function listGrants(
+  db: Database,
+  orgId: number,
+  opts?: { limit?: number; offset?: number },
+): Promise<VisibilityGrant[]> {
   return db
     .select()
     .from(visibilityGrants)
     .where(eq(visibilityGrants.orgId, orgId))
-    .orderBy(asc(visibilityGrants.createdAt));
+    .orderBy(asc(visibilityGrants.createdAt))
+    .limit(opts?.limit ?? 200)
+    .offset(opts?.offset ?? 0);
 }
 
 async function closureForGroupMembers(

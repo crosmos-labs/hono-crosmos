@@ -3,12 +3,12 @@
  * Ports `app/engine/ingestion/pipeline.py:_chunk_source`.
  *
  * Conversations (or any source carrying a `session_id`) are segmented into
- * turn windows. Text and markdown currently pass through as a single chunk:
- * Python sub-chunks them with `chonkie` (recursive / heading-aware), which is a
- * separate, larger port — this preserves today's one-chunk-per-source behavior
- * for those types while making the conversation path finer-grained.
+ * turn windows. Text and markdown are split by a recursive character splitter
+ * (issue #7) so a large document isn't one unbounded chunk — the full `chonkie`
+ * port (heading-aware) is a separate, larger effort.
  */
 import { chunkConversation } from './conversation';
+import { chunkText } from './text';
 
 export interface SourceChunk {
   sequence: number;
@@ -33,9 +33,16 @@ export function chunkSource(
     }));
   }
 
-  // text / markdown — single chunk (no chonkie port yet).
-  return [{ sequence: 0, content, context: null, chunker: 'legacy' }];
+  // text / markdown — recursive character splitter (issue #7). No lookback
+  // context: unlike conversations, prose windows aren't turn-coreferent.
+  return chunkText(content).map((chunkContent, i) => ({
+    sequence: i,
+    content: chunkContent,
+    context: null,
+    chunker: 'recursive',
+  }));
 }
 
 export { chunkConversation, parseConversationTurns } from './conversation';
+export { chunkText } from './text';
 export type { ConversationChunk } from './conversation';

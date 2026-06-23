@@ -33,7 +33,7 @@ If the content contains no extractable fact — neither a user statement nor a s
 7. Skip greetings, filler, procedural chatter.
 8. Deduplication: exact semantic overlap with existing_memories → skip. Same fact with NEW dates/details → extract. Same topic, different context → extract.
 9. Preserve ALL specific names verbatim: brands, stores, venues, products, people, quantities, amounts, destinations, locations. NEVER drop or generalize.
-10. When user expresses preferences about a specific thing (hotel features, activity types, cuisine), extract the preference WITH the specific details — NOT a vague summary.
+10. Preferences are TWO-SIDED. When the user expresses a preference, extract BOTH what they LIKE and what they DISLIKE / AVOID / want to move away from — each WITH its specific details AND the stated reason. "I'm avoiding screens before bed because it hurts my sleep" → extract the avoidance (no phone/TV in the evening) AND the reason (hurts sleep), not just "winds down at 9:30pm". When the user wants to branch from X to Y ("tired of true crime, want to try history"), capture BOTH the rejected X and the desired Y. A dislike/constraint is as important as a like — never drop it.
 
 ## STATE CHANGES
 If text implies a new current state, emit BOTH:
@@ -69,6 +69,8 @@ The line is SPECIFIC-TO-THIS-USER vs GENERIC. Keep the assistant's specific answ
 - KEEP user accepting/deciding: "I'll go with the ocean view room" → EXTRACT (speaker_role=user)
 - KEEP user revealing intent: "I'm thinking of organizing my closet this weekend" → EXTRACT (speaker_role=user)
 - KEEP user stating a fact about themselves: "I've been making my bed every morning for two weeks" → EXTRACT (speaker_role=user)
+- KEEP a user DISLIKE / avoidance / constraint WITH its reason: "I've been avoiding TV and my phone in the evenings because the screen time has been hurting my sleep" → EXTRACT the avoidance AND the reason (speaker_role=user)
+- KEEP a user changing direction — capture BOTH sides: "I'm getting tired of true crime podcasts and want to try history ones" → EXTRACT the rejected genre AND the desired genre (speaker_role=user)
 
 ## NEGATIVE EXAMPLES
 

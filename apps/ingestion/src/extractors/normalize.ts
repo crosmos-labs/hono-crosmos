@@ -8,6 +8,7 @@
 import {
   DEFAULT_ENTITY_TYPE,
   ENTITY_NAME_MAX_WORDS,
+  MIN_FACT_WORDS,
   MIN_IMPORTANCE_SCORE,
   MIN_RELATION_CONFIDENCE,
 } from '../constants';
@@ -73,10 +74,22 @@ export function normalizeRelationName(s: string): string {
     .replace(/_+/g, '_');
 }
 
+// Postgres `timestamptz` rejects degenerate years (e.g. `0000-01-01`, which JS
+// happily parses as a valid year-0 Date — NOT NaN — so the old NaN-only guard
+// let it through and the whole source's ingestion failed on the DB write). Clamp
+// to a sane year range; an out-of-range or unparseable date becomes null (the
+// column is nullable), so a bad LLM `event_time` drops that one date instead of
+// failing the source.
+const MIN_SAFE_YEAR = 1;
+const MAX_SAFE_YEAR = 9999;
+
 function parseIsoDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  if (year < MIN_SAFE_YEAR || year > MAX_SAFE_YEAR) return null;
+  return d;
 }
 
 /**
@@ -176,7 +189,7 @@ function normalizeFact(
     drops.bump('low_signal_content');
     return null;
   }
-  if (wordCount(content) < 4) {
+  if (wordCount(content) < MIN_FACT_WORDS) {
     drops.bump('low_signal_content');
     return null;
   }
@@ -244,17 +257,40 @@ function normalizeFact(
  * Drive normalization across all Pass-1 memories, joining each with its
  * Pass-2 graph result by index. Drops duplicates by
  * `(content.casefold(), memory_type, speaker_role, event_time.isoformat())`.
+ *
+ * `seen` is the dedup key set. Pass a shared set across a source's chunks to
+ * dedup facts that recur in overlapping chunks (issue #8); omit it for
+ * standalone normalization.
+ *
+ * The graph join is defensive (issue #8): a result whose `index` is out of range
+ * or duplicated (the LLM occasionally repeats/reorders indices) is dropped rather
+ * than silently clobbering another memory's entities/relations. First valid
+ * result per index wins.
  */
 export function normalizeFacts(
   rawMemories: RawExtractedMemory[],
   graphResults: RawGraphResult[],
   drops: DropCounter,
+  seen: Set<string> = new Set(),
 ): NormalizedFact[] {
   const graphByIndex = new Map<number, RawGraphResult>();
-  for (const g of graphResults) graphByIndex.set(g.index, g);
+  for (const g of graphResults) {
+    if (
+      !Number.isInteger(g.index) ||
+      g.index < 0 ||
+      g.index >= rawMemories.length
+    ) {
+      drops.bump('invalid_graph_index');
+      continue;
+    }
+    if (graphByIndex.has(g.index)) {
+      drops.bump('duplicate_graph_index');
+      continue;
+    }
+    graphByIndex.set(g.index, g);
+  }
 
   const out: NormalizedFact[] = [];
-  const seen = new Set<string>();
 
   for (let i = 0; i < rawMemories.length; i++) {
     const raw = rawMemories[i]!;

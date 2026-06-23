@@ -103,8 +103,9 @@ oauthServerRoutes.openapi(
     tags: ['oauth-server'],
     summary: 'Dynamic client registration',
     middleware: [
-      // Tight: each call writes an oauth_clients row.
-      perIpRateLimit({ bucket: 'oauth-register', tier: 'strict' }),
+      // Tight: each call writes an oauth_clients row. Fail closed — a degraded
+      // limiter must not let unbounded row-creating registration through.
+      perIpRateLimit({ bucket: 'oauth-register', tier: 'strict', failClosed: true }),
     ] as const,
     request: {
       body: { content: { 'application/json': { schema: ClientRegistrationRequest } } },
@@ -338,6 +339,7 @@ redirectApp.get('/oauth/callback', async (c) => {
     provider: userInfo.provider,
     providerUserId: userInfo.providerUserId,
     email: userInfo.email,
+    emailVerified: userInfo.emailVerified,
     name: userInfo.name,
   });
   if (!user.isActive) {
@@ -399,11 +401,13 @@ redirectApp.post('/oauth/token', async (c) => {
     if (grant_type === 'authorization_code') {
       const code = params.get('code');
       const redirect_uri = params.get('redirect_uri');
+      const code_verifier = params.get('code_verifier');
       if (!code) return tokenError(c, 'invalid_request', "Missing 'code' parameter");
       const tokens = await exchangeAuthorizationCode(db, c.env.JWT_SECRET, {
         code,
         clientId: client_id,
         redirectUri: redirect_uri,
+        codeVerifier: code_verifier,
       });
       return c.json(tokens, 200);
     }

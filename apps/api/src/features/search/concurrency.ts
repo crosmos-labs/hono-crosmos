@@ -93,6 +93,58 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
   }
 }
 
+/**
+ * Durable-Object-backed concurrency limiter — strongly consistent, so it does
+ * NOT suffer the KV limiter's false-429 drift (KV's deferred, eventually-
+ * consistent decrement lags the increment under rapid sequential traffic, so the
+ * counter creeps up and rejects requests that aren't actually concurrent).
+ *
+ * One DO instance per user (`idFromName(`conc:${userId}`)`), separate from the
+ * rate limiter's `${bucket}:${ip}` instances of the same class. `acquire` is a
+ * single round-trip that atomically checks-and-increments, so it MUST be awaited
+ * (~single-digit ms when the DO is co-located with the worker). `release` is
+ * fire-and-forget (the route schedules it on `waitUntil`), so it never adds to
+ * response latency.
+ */
+export class DoConcurrencyLimiter implements ConcurrencyLimiter {
+  constructor(private readonly ns: DurableObjectNamespace) {}
+
+  private stub(userKey: string): DurableObjectStub {
+    const id = this.ns.idFromName(`conc:${userKey}`);
+    // `enam` (eastern North America) pins the DO near the prod workers' pinned
+    // region (aws:us-east-1), keeping the acquire round-trip intra-region.
+    // Honored only at first creation; a no-op on subsequent gets.
+    return this.ns.get(id, { locationHint: 'enam' });
+  }
+
+  async acquire(userKey: string, limit: number, ttlSeconds: number): Promise<boolean> {
+    try {
+      const res = await this.stub(userKey).fetch('https://concurrency/acquire', {
+        method: 'POST',
+        body: JSON.stringify({ limit, ttlSeconds }),
+      });
+      const { success } = (await res.json()) as { success: boolean };
+      return success;
+    } catch (err) {
+      // Fail open — a DO blip must not 429 real traffic (matches the KV limiter).
+      createLogger({ service: 'api' }).error('retrieval.concurrency_acquire_failed', {
+        stage: 'concurrency_acquire',
+      }, err);
+      return true;
+    }
+  }
+
+  async release(userKey: string): Promise<void> {
+    try {
+      await this.stub(userKey).fetch('https://concurrency/release', { method: 'POST' });
+    } catch (err) {
+      createLogger({ service: 'api' }).error('retrieval.concurrency_release_failed', {
+        stage: 'concurrency_release',
+      }, err);
+    }
+  }
+}
+
 /** Dev/test fallback: always acquires, never blocks. */
 export class NoopConcurrencyLimiter implements ConcurrencyLimiter {
   async acquire(): Promise<boolean> {
@@ -102,11 +154,14 @@ export class NoopConcurrencyLimiter implements ConcurrencyLimiter {
 }
 
 /**
- * Returns the configured limiter. Reuses the API-key KV namespace (counters
- * live under the `retrieval:concurrency:*` prefix) — same wiring as the
- * ingestion rate limiter.
+ * Returns the configured limiter. Prefers the strongly-consistent DO (the
+ * `RATE_LIMITER` binding, reused with a `conc:*` key namespace) so bursts of
+ * sequential searches don't false-429. Falls back to the KV counter when the DO
+ * binding is absent (older envs / no binding), then to a no-op (tests). The KV
+ * path still defers its writes via `defer`.
  */
 export function getConcurrencyLimiter(env: Env, defer?: DeferFn): ConcurrencyLimiter {
+  if (env.RATE_LIMITER) return new DoConcurrencyLimiter(env.RATE_LIMITER);
   if (env.API_KEY_CACHE) return new KvConcurrencyLimiter(env.API_KEY_CACHE, defer);
   return new NoopConcurrencyLimiter();
 }
