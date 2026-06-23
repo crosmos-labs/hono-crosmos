@@ -13,7 +13,12 @@ compatibility_flags = ["nodejs_compat"]
 # "Workers AI" or "Vectorize".
 # ───────────────────────────────────────────────────────────────────────────
 
-workers_dev = true
+# Disable the *.workers.dev default route. The Worker is reachable ONLY via the
+# custom domain (hono.crosmos.dev) below, so the public
+# crosmos-api*.crosmos-ai.workers.dev hostname — which bypasses the zone's WAF /
+# Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
+# inherited by named environments, so it's repeated under [env.production].
+workers_dev = false
 
 [observability]
 enabled = true
@@ -153,6 +158,9 @@ VECTOR_STORE = "vectorize"
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
+# No *.workers.dev for prod — only the hono.crosmos.dev custom domain route.
+workers_dev = false
+
 [env.production.observability]
 enabled = true
 head_sampling_rate = 1
