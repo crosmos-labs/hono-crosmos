@@ -41,9 +41,10 @@ export async function preflight(input: {
   userId: number;
   spaceUuid: string;
   /**
-   * Skip the per-org plan rate-limit gate (step 1) when the caller already
-   * enforced it — e.g. the default-on catch-all in `requireAuth`. Avoids
-   * double-counting the org's RPM/daily quota.
+   * Skip the strict per-org AI-path rate-limit gate (step 1) when the caller
+   * already enforced it. `requireAuth` only applies the looser management limit
+   * (different counter), so this is normally false and ingestion enforces the
+   * AI limit here. Avoids double-counting the org's RPM/daily quota.
    */
   skipPlanRateLimit?: boolean;
 }): Promise<MemorySpace> {

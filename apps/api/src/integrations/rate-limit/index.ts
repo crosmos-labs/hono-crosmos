@@ -29,8 +29,9 @@ export function getRateLimiter(env: Env, defer?: DeferFn): RateLimiter {
 
 /**
  * Convenience: resolve the org's `rate_limit_rpm` / `rate_limit_per_day`
- * entitlements and run the check. Throws `RateLimitError` (which the route
- * translates into 429 + Retry-After).
+ * entitlements and run the check. This is the STRICT, AI-path limit — enforced
+ * by the search and ingestion gates only (10 RPM on free). Throws
+ * `RateLimitError` (which the route translates into 429 + Retry-After).
  */
 export async function enforcePlanRateLimit(
   db: Database,
@@ -43,6 +44,30 @@ export async function enforcePlanRateLimit(
   const daily =
     typeof ent.rate_limit_per_day === 'number' ? ent.rate_limit_per_day : -1;
   await limiter.check({ orgId, rpmLimit: rpm, dailyLimit: daily });
+}
+
+/**
+ * The LOOSER management limit (`mgmt_rate_limit_rpm` / `mgmt_rate_limit_per_day`)
+ * applied default-on to every authenticated route by `requireAuth`. It uses its
+ * own `'mgmt'` counter namespace so it never shares a budget with the strict
+ * AI-path limit above — a dashboard fanning out a handful of CRUD calls won't
+ * eat into (or be choked by) the search/ingest allowance. Throws
+ * `RateLimitError` like its sibling.
+ */
+export async function enforceMgmtRateLimit(
+  db: Database,
+  limiter: RateLimiter,
+  orgId: number,
+  entitlements?: Entitlements,
+): Promise<void> {
+  const ent = entitlements ?? (await getEntitlements(db, orgId));
+  const rpm =
+    typeof ent.mgmt_rate_limit_rpm === 'number' ? ent.mgmt_rate_limit_rpm : -1;
+  const daily =
+    typeof ent.mgmt_rate_limit_per_day === 'number'
+      ? ent.mgmt_rate_limit_per_day
+      : -1;
+  await limiter.check({ orgId, rpmLimit: rpm, dailyLimit: daily, namespace: 'mgmt' });
 }
 
 export { RateLimitError as _RateLimitError }; // satisfy bundlers if tree-shaken

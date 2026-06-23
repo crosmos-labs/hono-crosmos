@@ -231,13 +231,13 @@ searchRoutes.openapi(
       });
     }
 
-    // 2. Per-org plan rate limit.
+    // 2. Per-org plan rate limit (the STRICT AI-path limit, 10 RPM on free).
     //
-    // Normally already applied by the default-on catch-all in `requireAuth`
-    // (which also defers its counter writes); this block only runs if that
-    // didn't fire, and reuses the entitlements already loaded above to enforce
-    // with deferred writes so search latency stays the priority. The reads
-    // (edge-cached, fast) still gate synchronously. Tradeoff: under high
+    // `requireAuth` only applies the looser management limit, so this is where
+    // the AI budget is actually enforced for search. It reuses the entitlements
+    // already loaded above and defers its counter writes so search latency stays
+    // the priority. The reads (edge-cached, fast) still gate synchronously. The
+    // `planRateLimitEnforced` guard stays for idempotency. Tradeoff: under high
     // concurrency the per-org cap can admit a few extra requests at the boundary
     // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
     // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the

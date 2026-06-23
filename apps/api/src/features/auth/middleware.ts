@@ -11,7 +11,7 @@ import { getCachedEntitlements } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { createLogger, createMetrics } from '@crosmos/observability';
 import {
-  enforcePlanRateLimit,
+  enforceMgmtRateLimit,
   getRateLimiter,
   RateLimitError,
 } from '../../integrations/rate-limit';
@@ -197,22 +197,25 @@ function extractBearer(c: AuthContext): string {
 }
 
 /**
- * Default-on per-org plan rate limit, run right after authentication for every
- * `requireAuth` route. Previously the plan limiter was opt-in per route, so any
- * new authenticated route shipped *unlimited* by default; baking it into the
- * shared auth gate makes coverage default-on. Routes that still call
- * `enforcePlanRateLimit` themselves set `planRateLimitEnforced` (or observe it)
- * so we never double-count.
+ * Default-on per-org MANAGEMENT rate limit, run right after authentication for
+ * every `requireAuth` route. This is deliberately the *looser* limit
+ * (`mgmt_rate_limit_*`, e.g. 300 RPM on free), kept in its own counter
+ * namespace — the strict AI-path limit (`rate_limit_*`, 10 RPM on free) is
+ * enforced only by the search and ingestion gates, so normal CRUD/dashboard
+ * traffic no longer draws down the tight AI budget. Baking *a* limiter into the
+ * shared auth gate keeps coverage default-on: a new authenticated route can't
+ * accidentally ship completely unlimited.
  *
  * Only enforces when an org context exists (JWT with `active_org_id`, or an API
  * key — which is always org-pinned). Counter WRITES are deferred via
  * `waitUntil` so this stays off the latency-critical path. Fails **open** on
  * any non-RateLimitError (a KV/entitlements hiccup must not 500 real traffic),
- * matching the limiter's stance elsewhere.
+ * matching the limiter's stance elsewhere. Does NOT touch
+ * `planRateLimitEnforced` — the AI-path gates own that flag.
  */
-async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
+async function enforceOrgMgmtRateLimit(c: AuthContext): Promise<void> {
   const orgId = c.var.activeOrgId;
-  if (orgId == null || c.var.planRateLimitEnforced) return;
+  if (orgId == null || c.var.mgmtRateLimitEnforced) return;
 
   const db = getDb(c);
   const limiter = getRateLimiter(c.env, (task) => c.executionCtx.waitUntil(task));
@@ -220,15 +223,15 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
     // Use KV-cached entitlements so the default-on check doesn't add a DB
     // org-fetch to every authenticated request.
     const entitlements = await getCachedEntitlements(c, orgId);
-    await enforcePlanRateLimit(db, limiter, orgId, entitlements);
-    c.set('planRateLimitEnforced', true);
+    await enforceMgmtRateLimit(db, limiter, orgId, entitlements);
+    c.set('mgmtRateLimitEnforced', true);
   } catch (err) {
     if (err instanceof RateLimitError) {
-      c.set('planRateLimitEnforced', true);
+      c.set('mgmtRateLimitEnforced', true);
       createMetrics(c.env.ANALYTICS, {
         service: 'api',
         environment: c.env.ENVIRONMENT,
-      }).count('plan_rate_limited', { tags: [err.scope], index: 'plan_rate_limited' });
+      }).count('mgmt_rate_limited', { tags: [err.scope], index: 'mgmt_rate_limited' });
       const requestId = c.var.requestId;
       const body = new Response(
         JSON.stringify(
@@ -248,8 +251,8 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
     // Anything else: fail open (the limiter already swallows KV errors; this
     // guards entitlements-resolution failures too).
     createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
-      'ratelimit.plan_catchall_failure',
-      { stage: 'plan_rate_limit', scope: 'org' },
+      'ratelimit.mgmt_catchall_failure',
+      { stage: 'mgmt_rate_limit', scope: 'org' },
       err,
     );
   }
@@ -260,8 +263,9 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
  * Populates user/auth context on `c.var`. Does NOT require an org context —
  * for that, chain `requireOrg` after this.
  *
- * Also applies the default-on per-org plan rate limit (see
- * `enforceOrgPlanRateLimit`) so authenticated routes are throttled by default.
+ * Also applies the default-on per-org management rate limit (see
+ * `enforceOrgMgmtRateLimit`) so authenticated routes are throttled by default.
+ * The stricter AI-path limit is enforced separately by the search/ingest gates.
  */
 export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   const token = extractBearer(c);
@@ -270,7 +274,7 @@ export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   } else {
     await authenticateJwt(c, token);
   }
-  await enforceOrgPlanRateLimit(c);
+  await enforceOrgMgmtRateLimit(c);
   await next();
 });
 
