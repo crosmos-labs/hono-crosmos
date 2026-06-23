@@ -1,11 +1,11 @@
 import { z } from '@hono/zod-openapi';
-import { IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
+import { BoundedMetaSchema, IsoDateTimeSchema, UuidSchema } from '../../lib/zod-common';
 
 export const CreateSpaceSchema = z
   .object({
     name: z.string().min(1).max(255),
     description: z.string().nullable().optional(),
-    meta: z.record(z.unknown()).nullable().optional(),
+    meta: BoundedMetaSchema.nullable().optional(),
   })
   .openapi('CreateSpaceRequest');
 

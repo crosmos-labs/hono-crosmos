@@ -14,7 +14,7 @@ import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { attachSourceText, type RetrievalCandidates } from './candidates';
+import { attachSourceText } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
@@ -24,6 +24,7 @@ import {
   RECENCY_CENTER,
   RERANK_RELEVANCE_FLOOR,
   RERANKER_MAX_CANDIDATES,
+  SESSION_DIVERSITY_PENALTY,
   TEMPORAL_CANDIDATE_LIMIT,
   TEMPORAL_CENTER,
   TEMPORAL_PROXIMITY_ALPHA,
@@ -64,7 +65,6 @@ export interface RetrieveDeps {
 export interface RetrieveInput {
   query: RetrievalQuery;
   scope: TenantScope;
-  candidates: RetrievalCandidates;
   deps: RetrieveDeps;
   /**
    * Pre-fetched org entitlements (the route fetches once per request and
@@ -76,15 +76,56 @@ export interface RetrieveInput {
   logger?: Logger;
   /**
    * Optional pre-started query embedding. The route kicks this off BEFORE the
-   * visibility + working-set DB loads so the external embedding call (~370ms)
-   * overlaps those round-trips instead of running after them. If omitted,
-   * retrieve embeds lazily as before. Quality-neutral: identical vector + usage.
+   * visibility resolution so the external embedding call (~370ms) overlaps that
+   * round-trip and the signals' bounded DB queries instead of running after
+   * them. If omitted, retrieve embeds lazily as before. Quality-neutral:
+   * identical vector + usage.
    */
   embedPromise?: ReturnType<Embedder['embed']>;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
+}
+
+/**
+ * Session-diversified top-K selection. Greedily pick the highest-scoring
+ * candidate after subtracting `SESSION_DIVERSITY_PENALTY * n`, where `n` is how
+ * many already-selected results share the candidate's source session. This
+ * spreads the top-K across DISTINCT sessions (the multi-session aggregation axis)
+ * so one on-query cluster can't monopolise it and drop other gold sessions —
+ * while a far-more-relevant same-session memory still wins (single-session
+ * questions keep their dominant session). Input MUST be pre-sorted by finalScore
+ * desc. O(topK · N); N ≤ RERANKER_MAX_CANDIDATES. Penalty 0 ⇒ plain slice.
+ */
+function selectSessionDiverse(scored: CandidateMemory[], topK: number): CandidateMemory[] {
+  if (SESSION_DIVERSITY_PENALTY <= 0 || scored.length <= topK) {
+    return scored.slice(0, topK);
+  }
+  const remaining = [...scored];
+  const selected: CandidateMemory[] = [];
+  const perSession = new Map<string, number>();
+  // A null session must NOT group with other null sessions (each is its own
+  // distinct source), so key those by memoryId.
+  const sessionKey = (c: CandidateMemory): string =>
+    c.sessionId ?? `__nosession_${c.memoryId}`;
+  while (selected.length < topK && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestAdj = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i]!;
+      const used = perSession.get(sessionKey(c)) ?? 0;
+      const adj = c.finalScore - SESSION_DIVERSITY_PENALTY * used;
+      if (adj > bestAdj) {
+        bestAdj = adj;
+        bestIdx = i;
+      }
+    }
+    const picked = remaining.splice(bestIdx, 1)[0]!;
+    perSession.set(sessionKey(picked), (perSession.get(sessionKey(picked)) ?? 0) + 1);
+    selected.push(picked);
+  }
+  return selected;
 }
 
 function failureFields(err: unknown): {
@@ -101,13 +142,9 @@ function failureFields(err: unknown): {
 }
 
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
-  const { query, scope, candidates, deps } = input;
+  const { query, scope, deps } = input;
   const { db, embedder, reranker, vectorStore } = deps;
   const logger = input.logger;
-
-  // Visible working set, keyed by id — the semantic signal resolves ANN hits
-  // against this (which enforces visibility), and it's reused for graph below.
-  const memoryById = new Map(candidates.memories.map((m) => [m.id, m]));
 
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
   const temporalParseStart = performance.now();
@@ -190,35 +227,30 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     await Promise.all([
       timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
         const { vector } = await embedPromise;
-        return semanticSearch(vectorStore, vector, scope, query.candidatePool, memoryById);
+        return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
       }),
       timeSignal(logger, SourceSignal.KEYWORD, () =>
         keywordSearch(query.text, db, scope, query.candidatePool),
       ),
       timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
         if (!graphEnabled) return [];
-        if (candidates.memories.length === 0 || candidates.entities.length === 0) {
-          return [];
-        }
         const { vector } = await embedPromise;
         return graphSearchWithStore(
           db,
           vectorStore,
           query.text,
           vector,
-          candidates.memories,
-          candidates.entities,
-          candidates.memoryToEntities,
+          scope,
           query.candidatePool,
           temporalRange ? temporalRange[1] : null,
           effectiveMaxDepth,
-          scope,
         );
       }),
       timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
         if (temporalRange === null) return [];
         return temporalSearch(
-          candidates.memories,
+          db,
+          scope,
           temporalRange[0],
           temporalRange[1],
           Math.min(query.candidatePool, TEMPORAL_CANDIDATE_LIMIT),
@@ -403,6 +435,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
 
     scored.push({
       memoryId,
+      uuid: ranked.uuid,
       content: ranked.content,
       memoryType: ranked.memoryType,
       ownerUserId: ranked.ownerUserId,
@@ -457,7 +490,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     );
     top = mmrRerank(selectable, embeddingsLookup, query.topK);
   } else {
-    top = selectable.slice(0, query.topK);
+    top = selectSessionDiverse(selectable, query.topK);
   }
   logger?.info('retrieval.stage_completed', {
     stage: 'score_and_select',

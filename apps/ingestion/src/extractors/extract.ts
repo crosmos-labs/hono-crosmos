@@ -1,3 +1,4 @@
+import { EXTRACTION_MAX_TOKENS } from '../constants';
 import type { LLM } from '../integrations/llm';
 import {
   MEMORY_EXTRACTION_SCHEMA,
@@ -30,6 +31,7 @@ export async function extractMemories(
       schema: MEMORY_EXTRACTION_SCHEMA.schema as Record<string, unknown>,
     },
     model: modelOverride,
+    maxTokens: EXTRACTION_MAX_TOKENS,
   });
   return Array.isArray(data?.memories) ? data.memories : [];
 }
@@ -48,6 +50,7 @@ export async function extractGraph(
       schema: GRAPH_EXTRACTION_SCHEMA.schema as Record<string, unknown>,
     },
     model: modelOverride,
+    maxTokens: EXTRACTION_MAX_TOKENS,
   });
   return Array.isArray(data?.results) ? data.results : [];
 }

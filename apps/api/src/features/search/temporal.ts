@@ -12,7 +12,11 @@
  * The `dateparser` fallback (step 17) returns null in v1 — matching Python
  * when the lib is unavailable (`_dateparser_search is None`). See decisions.md §6.
  */
-import type { Memory } from '@crosmos/db';
+import { type Database, memories } from '@crosmos/db';
+import type { TenantScope } from '@crosmos/types';
+import { and, desc, isNull, sql } from 'drizzle-orm';
+import { scopeMemories } from '../../lib/scope';
+import { retrievalMemoryColumns } from './candidates';
 import { TEMPORAL_CANDIDATE_LIMIT } from './constants';
 import { toRankedCandidate } from './mapping';
 import { type RankedCandidate, SourceSignal } from './types';
@@ -347,36 +351,58 @@ export function temporalProximityScore(
 }
 
 /**
- * In-memory temporal signal over the pre-loaded candidate memories. Ranks by
- * proximity to the centre of the window. No DB, no tenant awareness.
+ * Temporal signal — selects in-window memories ordered by proximity to the
+ * window centre (bounded SQL range query + LIMIT), then scores them in JS.
  */
-export function temporalSearch(
-  memories: Memory[],
+export async function temporalSearch(
+  db: Database,
+  scope: TenantScope,
   start: Date,
   end: Date,
   limit: number = TEMPORAL_CANDIDATE_LIMIT,
-): RankedCandidate[] {
+): Promise<RankedCandidate[]> {
   const center = new Date(start.getTime() + (end.getTime() - start.getTime()) / 2);
   const halfWindowSeconds = Math.max(
     (end.getTime() - start.getTime()) / 1000 / 2.0,
     1.0,
   );
 
-  const scored: Array<{ memory: Memory; score: number }> = [];
-  for (const memory of memories) {
-    if (memory.forgottenAt !== null) continue;
-    const ref = memory.eventTime ?? memory.recordedAt ?? memory.createdAt;
-    if (ref === null) continue;
-    if (ref < start || ref > end) continue;
-    const distance = Math.abs((ref.getTime() - center.getTime()) / 1000);
+  // Reference instant per memory: event_time, else recorded_at, else created_at.
+  // recorded_at/created_at are NOT NULL, so the coalesce never yields null —
+  // matching the old `?? ` chain (whose null-guard was therefore dead). The
+  // range filter + proximity ordering + LIMIT are pushed into Postgres so the
+  // signal no longer scans the whole in-memory working set. Proximity-asc
+  // ordering is identical to the old score-desc sort (score is monotone in
+  // distance); ties are broken by id desc for determinism (the old order
+  // depended on row load order). Score is computed in JS, same formula.
+  //
+  // Bounds are passed as ISO strings + an explicit `::timestamptz` cast, NOT raw
+  // Date objects: a `Date` interpolated into a raw `sql` template is handed to
+  // the driver untyped, which the postgres.js driver rejects ("must be string").
+  // (Typed-column comparators serialize Dates for you; raw `sql` does not.)
+  const ref = sql`coalesce(${memories.eventTime}, ${memories.recordedAt}, ${memories.createdAt})`;
+  const rows = await db
+    .select(retrievalMemoryColumns)
+    .from(memories)
+    .where(
+      and(
+        scopeMemories(scope),
+        isNull(memories.forgottenAt),
+        sql`${ref} >= ${start.toISOString()}::timestamptz`,
+        sql`${ref} <= ${end.toISOString()}::timestamptz`,
+      ),
+    )
+    .orderBy(
+      sql`abs(extract(epoch from (${ref} - ${center.toISOString()}::timestamptz)))`,
+      desc(memories.id),
+    )
+    .limit(limit);
+
+  return rows.map((memory, i) => {
+    const refInstant = memory.eventTime ?? memory.recordedAt ?? memory.createdAt;
+    const distance = Math.abs((refInstant.getTime() - center.getTime()) / 1000);
     const base = Math.max(1.0 - distance / halfWindowSeconds, 0.0);
-    scored.push({ memory, score: 0.5 + 0.5 * base });
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, limit);
-
-  return top.map(({ memory, score }, i) =>
-    toRankedCandidate(memory, i + 1, score, SourceSignal.TEMPORAL),
-  );
+    const score = 0.5 + 0.5 * base;
+    return toRankedCandidate(memory, i + 1, score, SourceSignal.TEMPORAL);
+  });
 }

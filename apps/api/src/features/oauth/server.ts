@@ -6,7 +6,7 @@ import {
   signFlowState,
   verifyFlowState,
 } from '../auth/jwt';
-import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
+import { sha256Base64Url, sha256Hex, tokenUrlSafe } from '../../lib/crypto';
 import {
   authorizationCodes,
   oauthClients,
@@ -145,6 +145,39 @@ export async function createAuthorizationCode(
   return code;
 }
 
+/**
+ * Verify a PKCE `code_verifier` against the stored `code_challenge`. Supports
+ * `S256` (required by our metadata) and `plain`. Throws `invalid_grant` if the
+ * verifier is missing or doesn't match. Constant-timeyness isn't required: the
+ * challenge is single-use and high-entropy, and we compare derived digests.
+ */
+async function verifyPkce(
+  authCode: AuthorizationCode,
+  codeVerifier: string | null | undefined,
+): Promise<void> {
+  const challenge = authCode.codeChallenge;
+  if (!challenge) {
+    // Every authorize flow stores a challenge; absence means a malformed/legacy
+    // code. Refuse rather than silently skip PKCE.
+    throw new OAuthServerError('invalid_grant', 'Missing PKCE challenge on authorization code');
+  }
+  if (!codeVerifier) {
+    throw new OAuthServerError('invalid_request', 'Missing code_verifier');
+  }
+  const method = (authCode.codeChallengeMethod || 'S256').toUpperCase();
+  let derived: string;
+  if (method === 'S256') {
+    derived = await sha256Base64Url(codeVerifier);
+  } else if (method === 'PLAIN') {
+    derived = codeVerifier;
+  } else {
+    throw new OAuthServerError('invalid_request', `Unsupported code_challenge_method: ${method}`);
+  }
+  if (derived !== challenge) {
+    throw new OAuthServerError('invalid_grant', 'PKCE verification failed');
+  }
+}
+
 async function markCodeUsed(db: Database, code: string): Promise<AuthorizationCode | null> {
   const [row] = await db
     .update(authorizationCodes)
@@ -172,7 +205,12 @@ export interface OAuthTokenResponse {
 export async function exchangeAuthorizationCode(
   db: Database,
   jwtSecret: string,
-  input: { code: string; clientId: string; redirectUri?: string | null },
+  input: {
+    code: string;
+    clientId: string;
+    redirectUri?: string | null;
+    codeVerifier?: string | null;
+  },
 ): Promise<OAuthTokenResponse> {
   const rows = await db
     .select()
@@ -192,14 +230,19 @@ export async function exchangeAuthorizationCode(
     throw new OAuthServerError('invalid_grant', 'Redirect URI mismatch');
   }
 
+  // PKCE verification (RFC 7636). All our clients are public
+  // (`token_endpoint_auth_method: none`), so the code is otherwise a pure
+  // bearer credential — an intercepted code could be redeemed by anyone.
+  // Verifying `code_verifier` against the stored `code_challenge` binds the
+  // redemption to the party that began the flow. This is done BEFORE marking
+  // the code used so a failed verification doesn't burn a legitimate code.
+  await verifyPkce(authCode, input.codeVerifier);
+
   const marked = await markCodeUsed(db, authCode.code);
   if (!marked) {
     // Race lost — another request grabbed it first.
     throw new OAuthServerError('invalid_grant', 'Authorization code already used');
   }
-
-  // PKCE validation is intentionally skipped here — the MCP proxy
-  // (skipLocalPkceValidation=true) handles code_verifier upstream.
 
   const activeOrgId = await resolveActiveOrgId(db, authCode.userId);
   const pair = await createTokenPair(jwtSecret, authCode.userId, { activeOrgId });

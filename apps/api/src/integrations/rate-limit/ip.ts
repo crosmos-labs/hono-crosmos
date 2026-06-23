@@ -38,6 +38,15 @@ export interface IpRateLimitOptions {
   bucket: string;
   /** Which limit tier to apply. */
   tier: RateLimitTier;
+  /**
+   * Fail **closed** when the limiter can't make a decision (the DO binding is
+   * present but errors). Use for high-value pre-auth buckets where an
+   * un-throttled flood is worse than briefly rejecting traffic (e.g.
+   * `/oauth/register`, API-key creation). Defaults to false (fail open). A
+   * fully-absent binding (local dev/tests) still fails open regardless, so
+   * development isn't blocked.
+   */
+  failClosed?: boolean;
 }
 
 function clientIp(c: { req: { header(name: string): string | undefined } }): string {
@@ -93,12 +102,34 @@ export function perIpRateLimit(opts: IpRateLimitOptions) {
       }
     } catch (err) {
       if (err instanceof HTTPException) throw err;
-      // DO failure: fail open and log, matching the plan limiter's stance.
+      // DO failure: log, then fail open OR closed per the bucket's policy. The
+      // strict pre-auth buckets fail closed so a degraded limiter can't silently
+      // disable throttling on the highest-value endpoints.
       createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
         'ratelimit.ip_do_failure',
-        { reason: opts.bucket, stage: 'ip_rate_limit' },
+        { reason: opts.bucket, stage: 'ip_rate_limit', fail_closed: opts.failClosed === true },
         err,
       );
+      if (opts.failClosed) {
+        const requestId = c.var.requestId;
+        const body = new Response(
+          JSON.stringify(
+            errorEnvelope('Too many requests', {
+              code: 'ip_rate_limited',
+              requestId,
+            }),
+          ),
+          {
+            status: 429,
+            headers: {
+              'Content-Type': 'application/json',
+              'Retry-After': String(windowSeconds),
+              ...(requestId ? { 'X-Request-Id': requestId } : {}),
+            },
+          },
+        );
+        throw new HTTPException(429, { res: body });
+      }
     }
     await next();
   });

@@ -2,6 +2,37 @@
  * Internal engine types — port of `app/engine/retrieval/types.py`. These never
  * hit the wire directly; the route maps `CandidateMemory` → the API response.
  */
+import type { Memory, Entity } from '@crosmos/db';
+
+/**
+ * Projected memory row loaded for retrieval. The full `Memory` row also carries
+ * an `embedding` vector plus `meta`/`uuid`/clustering columns that the ranking
+ * pipeline never reads; loading the whole space's worth of those on every
+ * /search is the O(N) working-set cost. We select only the columns the signals
+ * and scoring actually touch. (Vectors needed by MMR are fetched separately,
+ * by id, via `vectorStore.fetchVectors`.)
+ */
+export type RetrievalMemoryRow = Pick<
+  Memory,
+  | 'id'
+  | 'uuid'
+  | 'content'
+  | 'memoryType'
+  | 'ownerUserId'
+  | 'orgId'
+  | 'spaceId'
+  | 'importanceScore'
+  | 'createdAt'
+  | 'recordedAt'
+  | 'accessFrequency'
+  | 'lastAccessedAt'
+  | 'eventTime'
+  | 'forgottenAt'
+>;
+
+/** Projected entity row — the graph signal only needs id + name (entity
+ * embeddings are matched via ANN, not off these rows). */
+export type RetrievalEntityRow = Pick<Entity, 'id' | 'name'>;
 
 export enum SourceSignal {
   SEMANTIC = 'semantic',
@@ -26,6 +57,7 @@ export interface RetrievalQuery {
  */
 export interface RankedCandidate {
   memoryId: number;
+  uuid: string;
   content: string;
   memoryType: string;
   ownerUserId: number | null;
@@ -49,6 +81,7 @@ export interface RankedCandidate {
 /** The fused/scored output the orchestrator builds. */
 export interface CandidateMemory {
   memoryId: number;
+  uuid: string;
   content: string;
   memoryType: string;
   ownerUserId: number | null;

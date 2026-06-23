@@ -29,3 +29,14 @@ export async function sha256Hex(input: string): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data);
   return toHex(new Uint8Array(hash));
 }
+
+/**
+ * BASE64URL(SHA-256(input)) — the PKCE `S256` code-challenge transform
+ * (RFC 7636 §4.2). Used to verify a `code_verifier` against the stored
+ * `code_challenge`.
+ */
+export async function sha256Base64Url(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return toBase64Url(new Uint8Array(hash));
+}

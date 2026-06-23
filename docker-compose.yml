@@ -18,6 +18,12 @@ services:
     image: pgvector/pgvector:pg17
     container_name: crosmos-dev-pg
     restart: unless-stopped
+    # max_connections is LOAD-BEARING for benchmark runs: the fan-out of
+    # concurrent wrangler-dev isolates (each holding a pg pool) bursts well past
+    # the pgvector default of 100 -> `PostgresError: sorry, too many clients
+    # already` -> HTTP 500 on /jobs, /search, /conversations. 500 survives a
+    # full LongMemEval-S run. (Backend issue: pg pool exhaustion.)
+    command: ["postgres", "-c", "max_connections=500"]
     environment:
       POSTGRES_USER: crosmos
       POSTGRES_PASSWORD: crosmos
