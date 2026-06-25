@@ -41,6 +41,13 @@ export async function preflight(input: {
   userId: number;
   spaceUuid: string;
   /**
+   * Estimated input tokens for this request — checked against the remaining
+   * monthly token quota so we reject up front when this request would push the
+   * org over, rather than only when it's already over. Defaults to 0 (pure
+   * already-over check) for callers that don't pre-compute it.
+   */
+  incomingTokens?: number;
+  /**
    * Skip the strict per-org AI-path rate-limit gate (step 1) when the caller
    * already enforced it. `requireAuth` only applies the looser management limit
    * (different counter), so this is normally false and ingestion enforces the
@@ -104,9 +111,15 @@ export async function preflight(input: {
     });
   }
 
-  // 5. Monthly token quota.
+  // 5. Monthly token quota — predictive: reject if this request's estimated
+  // input tokens would push the org past its monthly cap.
   try {
-    await checkQuota(input.db, input.orgId, 'monthly_tokens_ingested', 0);
+    await checkQuota(
+      input.db,
+      input.orgId,
+      'monthly_tokens_ingested',
+      input.incomingTokens ?? 0,
+    );
   } catch (err) {
     if (err instanceof QuotaExceededError) {
       throw new HTTPException(429, {
