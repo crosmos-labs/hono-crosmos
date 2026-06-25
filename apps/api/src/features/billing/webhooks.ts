@@ -1,5 +1,5 @@
 import { billingEvents, organizations, type Database } from '@crosmos/db';
-import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, lte, ne, or } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 import { invalidateEntitlements } from '../../lib/gate-cache';
 import {
@@ -244,7 +244,7 @@ async function dispatchActive(
     guards.push(
       or(
         isNull(organizations.currentPeriodEnd),
-        sql`${organizations.currentPeriodEnd} <= ${currentPeriodEnd}`,
+        lte(organizations.currentPeriodEnd, currentPeriodEnd),
       )!,
     );
   }
