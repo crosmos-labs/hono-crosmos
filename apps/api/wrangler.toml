@@ -14,7 +14,7 @@ compatibility_flags = ["nodejs_compat"]
 # ───────────────────────────────────────────────────────────────────────────
 
 # Disable the *.workers.dev default route. The Worker is reachable ONLY via the
-# custom domain (hono.crosmos.dev) below, so the public
+# custom domain (api.crosmos.dev) below, so the public
 # crosmos-api*.crosmos-ai.workers.dev hostname — which bypasses the zone's WAF /
 # Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
 # inherited by named environments, so it's repeated under [env.production].
@@ -158,7 +158,7 @@ VECTOR_STORE = "vectorize"
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
-# No *.workers.dev for prod — only the hono.crosmos.dev custom domain route.
+# No *.workers.dev for prod — only the api.crosmos.dev custom domain route.
 workers_dev = false
 
 [env.production.observability]
@@ -178,8 +178,8 @@ head_sampling_rate = 1
 
 [env.production.vars]
 ENVIRONMENT = "production"
-OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
-APP_BASE_URL = "https://hono.crosmos.dev"
+OAUTH_SERVER_BASE_URL = "https://api.crosmos.dev"
+APP_BASE_URL = "https://api.crosmos.dev"
 RETRIEVAL_RERANKER_ENABLED = "true"
 EMBEDDINGS_PROVIDER = "openai"
 RERANKER_PROVIDER = "zeroentropy"
@@ -235,7 +235,7 @@ mode = "targeted"
 region = "aws:us-east-1"
 
 [[env.production.routes]]
-pattern = "hono.crosmos.dev"
+pattern = "api.crosmos.dev"
 custom_domain = true
 
 [[env.production.hyperdrive]]

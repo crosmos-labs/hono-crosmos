@@ -59,9 +59,15 @@ max_batch_size = 1
 max_batch_timeout = 0
 # Backstop retries serve two roles: ordinary failure retries AND polling a job
 # that's still healthily in flight on the RPC path (see BACKSTOP_RETRY_DELAY_SECONDS
-# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (10m) so a
+# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (5m) so a
 # silently-dead RPC run is reclaimed before the message DLQs: 15 * 60s = 15m.
 max_retries = 15
+# Pin backstop drain concurrency instead of leaving it to the autoscaler (which
+# can throttle down when it sees the many intentional in_flight re-queues). Lets
+# a burst that fell back to the queue drain in parallel rather than one-at-a-time.
+# Each consumer isolate opens at most `max:2` DB connections (multiplexed through
+# Hyperdrive), so 10 is well within the connection budget. Tune under load.
+max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
 # Dead-letter consumer: makes exhausted jobs VISIBLE (error log + metric) and
@@ -181,6 +187,9 @@ max_batch_timeout = 0
 # See dev consumer above: max_retries * BACKSTOP_RETRY_DELAY_SECONDS must
 # outlast JOB_LEASE_MS so a silently-dead RPC run is reclaimed before DLQ.
 max_retries = 15
+# See dev consumer above: pin drain concurrency so a queue-fallback burst drains
+# in parallel. 10 isolates × max:2 DB conns is within the Hyperdrive budget.
+max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dlq"
 
 # Dead-letter consumer (prod): visibility + ack. See dev consumer above.
@@ -254,6 +263,8 @@ queue = "ingestion-jobs-staging"
 max_batch_size = 1
 max_batch_timeout = 0
 max_retries = 15
+# See dev consumer above: pin drain concurrency for queue-fallback bursts.
+max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-staging-dlq"
 
 # Dead-letter consumer (staging): visibility + ack.
