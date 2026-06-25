@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Prod latency + retrieval-quality bench against hono.crosmos.dev.
+ * Prod latency + retrieval-quality bench against api.crosmos.dev.
  *
  * Phase A — ingest 100 dated conversations for ONE persona (Alex Rivera) spread
  *   across categories so multi-session aggregation is real. Measures per-job
@@ -11,7 +11,7 @@
  * Phase C — quality probe: aggregation / single-session / preference /
  *   adversarial queries to eyeball the session-diversity penalty's effect.
  */
-const BASE = process.env.BASE_URL ?? 'https://hono.crosmos.dev';
+const BASE = process.env.BASE_URL ?? 'https://api.crosmos.dev';
 const KEY = process.env.CROSMOS_API_KEY!;
 if (!KEY) throw new Error('set CROSMOS_API_KEY');
 const H = { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' };

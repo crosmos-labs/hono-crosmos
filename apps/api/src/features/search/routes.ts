@@ -91,30 +91,23 @@ interface SearchCandidateOut {
   memory_type: string;
   score: number;
   source?: string | null;
-  source_id: string | null;
-  session_id: string | null;
   created_at: string;
-  recorded_at: string;
   event_time: string | null;
-  owner_id: string | null;
   owner_name: string | null;
 }
 
 function buildResponse(
-  ownerById: Map<number, { uuid: string; name: string }>,
+  ownerById: Map<number, string>,
   queryText: string,
   result: RetrievalResult,
-  tookMs: number,
   includeSource: boolean,
 ): {
   query: string;
   candidates: SearchCandidateOut[];
-  total: number;
-  took_ms: number;
 } {
   const raw = result.candidates;
   if (raw.length === 0) {
-    return { query: queryText, candidates: [], total: 0, took_ms: tookMs };
+    return { query: queryText, candidates: [] };
   }
 
   const candidates: SearchCandidateOut[] = raw.map((c: CandidateMemory) => {
@@ -125,20 +118,16 @@ function buildResponse(
       content: c.content,
       memory_type: c.memoryType,
       score: c.finalScore,
-      source_id: c.sourceUuid,
-      session_id: c.sessionId,
       created_at: c.createdAt.toISOString(),
-      recorded_at: c.recordedAt.toISOString(),
       event_time: c.eventTime ? c.eventTime.toISOString() : null,
-      owner_id: c.ownerUserId != null ? ownerById.get(c.ownerUserId)?.uuid ?? null : null,
-      owner_name: c.ownerUserId != null ? ownerById.get(c.ownerUserId)?.name ?? null : null,
+      owner_name: c.ownerUserId != null ? ownerById.get(c.ownerUserId) ?? null : null,
     };
     // include_source=true → key present (value may be null); false → omit key.
     if (includeSource) out.source = c.sourceChunk ?? null;
     return out;
   });
 
-  return { query: queryText, candidates, total: candidates.length, took_ms: tookMs };
+  return { query: queryText, candidates };
 }
 
 // POST /api/v1/search — hybrid retrieval, run inline (decisions.md §1).
@@ -423,32 +412,28 @@ searchRoutes.openapi(
       const ownerRows =
         ownerIdSet.length > 0
           ? await db
-              .select({ id: users.id, uuid: users.uuid, name: users.name })
+              .select({ id: users.id, name: users.name })
               .from(users)
               .where(inArray(users.id, ownerIdSet))
           : [];
       const ownerById = new Map(
-        ownerRows.map((owner) => [
-          owner.id,
-          { uuid: owner.uuid, name: owner.name },
-        ]),
+        ownerRows.map((owner) => [owner.id, owner.name]),
       );
       const response = buildResponse(
         ownerById,
         body.query,
         result,
-        performance.now() - t0,
         body.include_source,
       );
       logger.info('retrieval.request_completed', {
         space_id: space.id,
         duration_ms: durationMs(t0),
-        result_count: response.total,
+        result_count: response.candidates.length,
         top_k: body.limit,
       });
       metrics.count('search', {
         tags: ['ok'],
-        values: [durationMs(t0), response.total],
+        values: [durationMs(t0), response.candidates.length],
         index: 'search',
       });
 
