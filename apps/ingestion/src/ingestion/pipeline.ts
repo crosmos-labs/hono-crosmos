@@ -69,6 +69,12 @@ export interface IngestResult {
    * chunk budget (issues #1 / #2).
    */
   chunkCount: number;
+  /**
+   * Estimated input tokens of this source's content (set at ingest time). The
+   * job-level handler sums these over COMPLETED sources to meter the monthly
+   * `tokens_ingested` quota on what the user submitted, not pipeline throughput.
+   */
+  tokenCount: number;
 }
 
 /**
@@ -140,13 +146,18 @@ export interface IngestSourceInput {
   isFirstSourceThisInvocation?: boolean;
 }
 
-const EMPTY_RESULT = (sourceId: number, chunkCount = 0): IngestResult => ({
+const EMPTY_RESULT = (
+  sourceId: number,
+  tokenCount = 0,
+  chunkCount = 0,
+): IngestResult => ({
   sourceId,
   memories: [],
   edges: [],
   newEntityIds: [],
   resolvedEntityIds: [],
   chunkCount,
+  tokenCount,
 });
 
 function failureFields(err: unknown): {
@@ -260,7 +271,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // for pronoun resolution); text/markdown pass through as a single chunk.
   // Ports `app/engine/ingestion/pipeline.py:_chunk_source`.
   const sourceChunks = chunkSource(contentType, content, meta);
-  if (sourceChunks.length === 0) return EMPTY_RESULT(sourceId);
+  if (sourceChunks.length === 0) return EMPTY_RESULT(sourceId, source.tokenCount);
   const chunkCount = sourceChunks.length;
   if (chunkCount > CONVERSATION_CHUNK_WARN_THRESHOLD) {
     logger?.warn('ingestion.chunk_count_high', {
@@ -602,7 +613,8 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     await input.heartbeat?.();
     allIngested.push(...(await ingestChunk(chunk)));
   }
-  if (allIngested.length === 0) return EMPTY_RESULT(sourceId, chunkCount);
+  if (allIngested.length === 0)
+    return EMPTY_RESULT(sourceId, source.tokenCount, chunkCount);
 
   // Stage 8 — entity resolution + memory_entities + edges, ONCE across all
   // chunks. Entities are shared, so a single resolution pass dedupes them
@@ -663,6 +675,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     newEntityIds: resolved.filter((r) => r.isNew).map((r) => r.entityId),
     resolvedEntityIds: resolved.filter((r) => !r.isNew).map((r) => r.entityId),
     chunkCount,
+    tokenCount: source.tokenCount,
   };
 }
 
