@@ -180,6 +180,8 @@ head_sampling_rate = 1
 ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://api.crosmos.dev"
 APP_BASE_URL = "https://api.crosmos.dev"
+# Invite-accept links point at the console SPA, not the API host.
+INVITE_ACCEPT_URL = "https://console.crosmos.dev/invites/accept"
 RETRIEVAL_RERANKER_ENABLED = "true"
 EMBEDDINGS_PROVIDER = "openai"
 RERANKER_PROVIDER = "zeroentropy"
