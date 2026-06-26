@@ -431,24 +431,34 @@ export async function handlePolarWebhook(
     })
     .onConflictDoNothing({ target: billingEvents.polarEventId });
 
-  const [eventRow] = await db
-    .select()
-    .from(billingEvents)
-    .where(eq(billingEvents.polarEventId, webhookId))
-    .limit(1);
-  if (!eventRow || eventRow.processedAt) return { received: true };
+  // Atomically claim the event before dispatching: `processedAt IS NULL` in the
+  // WHERE means exactly one concurrent delivery of the same webhook-id wins the
+  // claim and runs `dispatchEvent`; the rest match zero rows and return early.
+  // This closes the read-then-act TOCTOU where two deliveries both observed
+  // `processedAt = null` and both dispatched.
+  const claimed = await db
+    .update(billingEvents)
+    .set({ processedAt: new Date(), error: null })
+    .where(
+      and(
+        eq(billingEvents.polarEventId, webhookId),
+        isNull(billingEvents.processedAt),
+      ),
+    )
+    .returning({ id: billingEvents.id });
+  const eventRow = claimed[0];
+  if (!eventRow) return { received: true };
 
   try {
     await dispatchEvent(db, env, payload, orgId);
-    await db
-      .update(billingEvents)
-      .set({ processedAt: new Date(), error: null })
-      .where(eq(billingEvents.id, eventRow.id));
     if (orgId != null) await invalidateEntitlements(env, orgId);
   } catch (err) {
+    // Release the claim so Polar's retry (driven by the 500 below) can
+    // re-attempt; otherwise a transient dispatch failure would leave the event
+    // permanently marked processed but un-applied.
     await db
       .update(billingEvents)
-      .set({ error: String(err).slice(0, 1000) })
+      .set({ processedAt: null, error: String(err).slice(0, 1000) })
       .where(eq(billingEvents.id, eventRow.id));
     throw new WebhookHttpError(500, 'dispatch_failed');
   }
