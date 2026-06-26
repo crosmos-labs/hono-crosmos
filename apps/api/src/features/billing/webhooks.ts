@@ -171,6 +171,21 @@ function stringField(record: Record<string, unknown>, snake: string, camel?: str
   return typeof value === 'string' && value ? value : null;
 }
 
+// The Polar subscription this event is about. For `subscription.*` events that's
+// the object's own `id`; for `order.*` events the subscription is referenced via
+// `subscription_id`. Used to ensure a state-changing handler only touches the
+// org when the event targets the org's CURRENT subscription — a stale event for
+// a superseded subscription (e.g. an old sub revoking after the user already
+// re-subscribed) must not clobber the live one.
+function eventSubscriptionId(payload: PolarWebhookPayload): string | null {
+  const d = data(payload);
+  if (!d) return null;
+  if (eventType(payload).startsWith('subscription.')) {
+    return stringField(d, 'id');
+  }
+  return stringField(d, 'subscription_id', 'subscriptionId');
+}
+
 async function dispatchActive(
   db: Database,
   env: Env,
@@ -285,11 +300,26 @@ async function dispatchEvent(
     return;
   }
 
+  // State-changing handlers below must only fire for the org's CURRENT
+  // subscription. When a subscription id is present on the event, scope the
+  // update to rows whose stored `polarSubscriptionId` matches — so a stale event
+  // for a superseded subscription (the classic cancel-then-resubscribe-before-
+  // period-end race) cannot downgrade a freshly-paid subscription. When the
+  // event carries no subscription id we fall back to org-scoped matching (legacy
+  // behaviour) rather than ignoring the event.
+  const subId = eventSubscriptionId(payload);
+  const targetsCurrentSubscription = subId
+    ? and(
+        eq(organizations.id, orgId),
+        eq(organizations.polarSubscriptionId, subId),
+      )!
+    : eq(organizations.id, orgId);
+
   if (type === 'subscription.past_due') {
     await db
       .update(organizations)
       .set({ subscriptionStatus: 'past_due', updatedAt: new Date() })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     await bindCustomer(db, payload, orgId);
     return;
   }
@@ -304,7 +334,7 @@ async function dispatchEvent(
         currentPeriodEnd: currentPeriodEnd ?? undefined,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     await bindCustomer(db, payload, orgId);
     return;
   }
@@ -320,7 +350,7 @@ async function dispatchEvent(
         planPending: null,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     return;
   }
 
@@ -332,9 +362,10 @@ async function dispatchEvent(
         subscriptionStatus: 'revoked',
         polarSubscriptionId: null,
         currentPeriodEnd: null,
+        planPending: null,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     return;
   }
 
