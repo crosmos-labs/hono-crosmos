@@ -208,9 +208,18 @@ async function dispatchActive(
   const subscriptionId = stringField(d, 'id');
   const customerId = stringField(d, 'customer_id', 'customerId');
   const currentPeriodEnd = parseDate(d.current_period_end ?? d.currentPeriodEnd);
+  // A `subscription.updated` fired by a cancel-at-period-end carries the sub
+  // still in an "active" Polar status but with `cancel_at_period_end: true`.
+  // Treating it as plain `active` would silently undo a user's cancellation in
+  // our DB (the /subscription endpoint would read `active` again). Honour the
+  // flag so the stored status stays `canceled`; entitlements key off `plan`,
+  // which we leave untouched, so paid access still continues until the period
+  // end / revoke.
+  const cancelAtPeriodEnd =
+    d.cancel_at_period_end === true || d.cancelAtPeriodEnd === true;
   const patch: Partial<typeof organizations.$inferInsert> = {
     plan,
-    subscriptionStatus: 'active',
+    subscriptionStatus: cancelAtPeriodEnd ? 'canceled' : 'active',
     planPending: null,
     updatedAt: new Date(),
   };
