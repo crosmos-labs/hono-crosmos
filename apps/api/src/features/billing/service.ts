@@ -147,8 +147,19 @@ export async function createCheckoutSession(
   input: { orgId: number; plan: PurchasablePlan },
 ): Promise<string> {
   const org = await getOrganizationByIdOrThrow(db, input.orgId);
-  if (org.plan === input.plan && org.subscriptionStatus === 'active') {
-    throw new BillingConfigError(`org is already on plan '${input.plan}'`);
+  // A checkout always creates a NEW Polar subscription. If the org already has a
+  // live subscription (active, in dunning, or canceled-but-still-in-period), a
+  // second checkout would leave two subscriptions billing in parallel while the
+  // org only tracks the last `polarSubscriptionId` — a silent double-charge, and
+  // the old sub's eventual revoke would clobber the new one. Plan changes
+  // (upgrade/downgrade/re-activate) must go through the customer portal instead.
+  const hasLiveSubscription =
+    !!org.polarSubscriptionId &&
+    (org.subscriptionStatus === 'active' ||
+      org.subscriptionStatus === 'past_due' ||
+      org.subscriptionStatus === 'canceled');
+  if (hasLiveSubscription) {
+    throw new BillingConfigError('existing_subscription_must_be_managed_in_portal');
   }
   if (!org.billingEmail) {
     throw new BillingConfigError('billing_email is not set on organization');
