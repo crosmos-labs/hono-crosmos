@@ -278,8 +278,15 @@ export async function verifyCheckoutMetadata(
   if (!Number.isInteger(orgId) || !plan || !nonce || !Number.isInteger(issuedAt) || !sig) {
     return null;
   }
+  // The signature already binds (orgId, plan) authentically, so the only job of
+  // this window is to bound how long a captured metadata blob stays replayable —
+  // and a replay merely re-asserts the true (orgId, plan), so the risk is low.
+  // It must therefore comfortably exceed the lifetime of a Polar checkout link:
+  // a 24h window silently dropped activations when a user paid a day after
+  // generating the link (first purchase → customer not yet bound → no fallback →
+  // money taken, no plan). 30 days covers any realistic pay-later gap.
   const age = Math.floor(Date.now() / 1000) - issuedAt;
-  if (age < 0 || age > 86_400) return null;
+  if (age < 0 || age > 30 * 86_400) return null;
   const expected = await hmacHex(
     env.BILLING_METADATA_SECRET,
     `${orgId}|${plan}|${nonce}|${issuedAt}`,
