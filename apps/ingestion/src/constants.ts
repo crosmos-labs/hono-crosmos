@@ -51,7 +51,15 @@ export const SOURCE_RETRY_DELAY_MS = 5_000; // multiplied by attempt → 5s, 10s
 export const MAX_QUEUE_DEPTH = 5_000;
 export const RETRY_AFTER_SECONDS = 30;
 export const MAX_PENDING_JOBS_PER_USER = 5_000;
-export const STUCK_JOB_TIMEOUT_MINUTES = 10;
+// Lower bound on how long a silently-dead job's lease is held before the queue
+// backstop can re-claim it: this is the dominant term in worst-case recovery
+// latency. Set to 5 min (was 10) — a fire-and-forget RPC run that's evicted
+// mid-flight (`waitUntil` has no auto-retry) is recovered in ~5 min instead of
+// ~10. Stays safely above a healthy job's worst gap between lease heartbeats
+// (~210s with CHUNK_HEARTBEAT_INTERVAL_MS=60s), so it won't double-claim a
+// slow-but-alive job; and `max_retries(15) × BACKSTOP_RETRY_DELAY_SECONDS(60)`
+// = 15 min still outlasts it (see the invariant on BACKSTOP_RETRY_DELAY_SECONDS).
+export const STUCK_JOB_TIMEOUT_MINUTES = 5;
 export const MONITOR_INTERVAL_SECONDS = 60;
 
 // Job lease (claim) — a job is claimed by transitioning pending -> processing
@@ -104,12 +112,14 @@ export const MAX_CHUNKS_PER_INVOCATION = 130;
 // sources do. Producer-side splitting of huge conversations is the real fix.
 export const MAX_CHUNKS_PER_SOURCE = MAX_CHUNKS_PER_INVOCATION;
 // Mid-source lease heartbeat (issue #1). The queue backstop reclaims a job whose
-// `started_at` hasn't advanced for JOB_LEASE_MS (10 min). The per-source status
+// `started_at` hasn't advanced for JOB_LEASE_MS (5 min). The per-source status
 // write only beats BETWEEN sources, so a single long source (many chunks) could
 // blow the lease while perfectly healthy and get double-claimed. Re-stamp
 // `started_at` mid-source at this cadence — well under the lease, throttled so it
-// costs at most a handful of DB writes per long source.
-export const CHUNK_HEARTBEAT_INTERVAL_MS = 120_000;
+// costs at most a handful of DB writes per long source. Lowered to 60s (was
+// 120s) so the worst gap between heartbeats stays comfortably under the now
+// shorter 5-min lease (the extra writes are negligible).
+export const CHUNK_HEARTBEAT_INTERVAL_MS = 60_000;
 
 // Source loader retries (Stage 0)
 export const SOURCE_LOAD_RETRIES = 5;

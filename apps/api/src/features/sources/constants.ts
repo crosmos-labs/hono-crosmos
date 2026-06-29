@@ -29,10 +29,12 @@ export const MAX_PENDING_JOBS_PER_USER = 5000;
  * A healthy `processing` job heartbeats `started_at` once per source (see the
  * ingestion worker's `updateJobStatus`), so it never looks stale; only a job
  * that has made NO progress for this long is treated as orphaned. Kept aligned
- * with the ingestion job lease (`STUCK_JOB_TIMEOUT_MINUTES = 10`) so "abandoned"
- * means the same thing to the gates, the lease/claim, and the reaper.
+ * with the ingestion job lease (`STUCK_JOB_TIMEOUT_MINUTES = 5`) so "abandoned"
+ * means the same thing to the gates, the lease/claim, and the reaper. (The queue
+ * backstop polls every 60s, so it re-claims a stalled job well before the 15-min
+ * cron reaper fires — the reaper is the slower safety net.)
  */
-export const STALE_JOB_MINUTES = 10;
+export const STALE_JOB_MINUTES = 5;
 
 /** Producer-side ceiling on request shape. Matches Python `IngestSourcesRequest`. */
 export const MAX_SOURCES_PER_REQUEST = 100;

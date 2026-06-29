@@ -72,8 +72,8 @@ app.use('*', async (c, next) => {
 
 // Baseline security headers on every response. HSTS tells browsers to pin
 // HTTPS for this host (and its subdomains) for two years — closes the
-// "Domains without HSTS" finding for hono.crosmos.dev. `includeSubDomains` is
-// safe here because hono.crosmos.dev has no sub-subdomains; `preload` is left
+// "Domains without HSTS" finding for api.crosmos.dev. `includeSubDomains` is
+// safe here because api.crosmos.dev has no sub-subdomains; `preload` is left
 // off deliberately (that's an apex-domain commitment, not the API's to make).
 // nosniff / frame-deny / referrer are cheap hardening for a JSON API + docs UI.
 app.use('*', async (c, next) => {
@@ -179,7 +179,7 @@ app.get('/.well-known/security.txt', (c) =>
       'Contact: mailto:security@crosmos.dev',
       'Expires: 2027-01-01T00:00:00.000Z',
       'Preferred-Languages: en',
-      'Canonical: https://hono.crosmos.dev/.well-known/security.txt',
+      'Canonical: https://api.crosmos.dev/.well-known/security.txt',
       '',
     ].join('\n'),
     200,

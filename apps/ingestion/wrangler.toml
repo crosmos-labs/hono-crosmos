@@ -59,9 +59,15 @@ max_batch_size = 1
 max_batch_timeout = 0
 # Backstop retries serve two roles: ordinary failure retries AND polling a job
 # that's still healthily in flight on the RPC path (see BACKSTOP_RETRY_DELAY_SECONDS
-# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (10m) so a
+# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (5m) so a
 # silently-dead RPC run is reclaimed before the message DLQs: 15 * 60s = 15m.
 max_retries = 15
+# Pin backstop drain concurrency instead of leaving it to the autoscaler (which
+# can throttle down when it sees the many intentional in_flight re-queues). Lets
+# a burst that fell back to the queue drain in parallel rather than one-at-a-time.
+# Each consumer isolate opens at most `max:2` DB connections (multiplexed through
+# Hyperdrive), so 10 is well within the connection budget. Tune under load.
+max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
 # Dead-letter consumer: makes exhausted jobs VISIBLE (error log + metric) and
@@ -164,9 +170,10 @@ index_name = "crosmos-entities-v3"
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-# crosmos-neon-useast1 → NeonDB us-east-1 (benchmark/US setup). Prior id
-# 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2 (kept for rollback).
-id = "72fcf1cc21b349e490900148469c12e7"
+# crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
+# 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
+# us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
+id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
@@ -180,11 +187,89 @@ max_batch_timeout = 0
 # See dev consumer above: max_retries * BACKSTOP_RETRY_DELAY_SECONDS must
 # outlast JOB_LEASE_MS so a silently-dead RPC run is reclaimed before DLQ.
 max_retries = 15
+# See dev consumer above: pin drain concurrency so a queue-fallback burst drains
+# in parallel. 10 isolates × max:2 DB conns is within the Hyperdrive budget.
+max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dlq"
 
 # Dead-letter consumer (prod): visibility + ack. See dev consumer above.
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# ───────────────────────────────────────────────────────────────────────────
+# STAGING — mirrors production with ISOLATED data (own Neon branch, Qdrant
+# collections, queues). Invoked only via the service binding + queue (no public
+# route). Deployed as `crosmos-ingestion-staging`. Must match the API worker's
+# staging providers/collections. Deploy: `wrangler deploy --env staging`.
+# Secrets per-env: `wrangler secret put <NAME> --env staging`.
+# ───────────────────────────────────────────────────────────────────────────
+[env.staging]
+workers_dev = false
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[env.staging.observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+LLM_PROVIDER = "openrouter"
+EMBEDDINGS_PROVIDER = "openai"
+VECTOR_STORE = "qdrant"
+EMBEDDING_DIMENSIONS = "1536"
+# SEPARATE staging Qdrant cluster (its own API key) — must match the API worker.
+QDRANT_URL = "https://52fd164c-3af1-41e3-9cc8-400137cb542e.us-east-1-1.aws.cloud.qdrant.io"
+QDRANT_MEMORIES_COLLECTION = "crosmos-memories-staging"
+QDRANT_ENTITIES_COLLECTION = "crosmos-entities-staging"
+
+# Same targeted placement as prod (staging Neon branch + Qdrant in us-east-1).
+[env.staging.placement]
+mode = "targeted"
+region = "aws:us-east-1"
+
+# Workers AI binding (not inherited). DORMANT (VECTOR_STORE=qdrant).
+[env.staging.ai]
+binding = "AI"
+
+# Vectorize (DORMANT). Bound to existing dev indexes so the binding resolves.
+[[env.staging.vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories-dev"
+
+[[env.staging.vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities-dev"
+
+# Hyperdrive → staging NeonDB (ep-curly-mouse, same id as the API worker).
+[[env.staging.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "930052d5e0dc40c8911417c7ef3e8c13"
+
+[[env.staging.queues.consumers]]
+queue = "ingestion-jobs-staging"
+max_batch_size = 1
+max_batch_timeout = 0
+max_retries = 15
+# See dev consumer above: pin drain concurrency for queue-fallback bursts.
+max_concurrency = 10
+dead_letter_queue = "ingestion-jobs-staging-dlq"
+
+# Dead-letter consumer (staging): visibility + ack.
+[[env.staging.queues.consumers]]
+queue = "ingestion-jobs-staging-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3

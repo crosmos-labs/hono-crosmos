@@ -109,7 +109,9 @@ billingRoutes.openapi(
     tags: ['billing'],
     summary: 'Get subscription summary',
     security: [{ bearerAuth: [] }],
-    middleware: [requireAuth, requireRole('owner', 'admin')] as const,
+    // Read-only, non-sensitive plan summary — visible to any org member.
+    // Billing *actions* (checkout/portal/cancel) stay owner-only below.
+    middleware: [requireAuth, requireRole('owner', 'admin', 'member')] as const,
     responses: {
       200: {
         description: 'Subscription summary',

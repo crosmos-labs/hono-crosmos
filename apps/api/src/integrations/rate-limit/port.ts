@@ -13,6 +13,13 @@ export interface RateLimitCheck {
   orgId: number;
   rpmLimit: number;
   dailyLimit: number;
+  /**
+   * Optional key-namespace so independent limits for the same org don't share
+   * a counter. Omitted = the default (AI-path) counter (`rl:rpm:*`, `rl:day:*`),
+   * unchanged from before. `'mgmt'` keys the looser per-route management limit
+   * under `rl:mgmt:rpm:*` / `rl:mgmt:day:*`.
+   */
+  namespace?: string;
 }
 
 export type RateLimitScope = 'rpm' | 'day';
