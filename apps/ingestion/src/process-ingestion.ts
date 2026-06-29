@@ -207,12 +207,16 @@ export async function processIngestion(
         source_count: msg.source_ids.length,
       });
 
-      // Account for the LLM/embedder usage already burned by completed sources
-      // BEFORE bailing out — skipping this leaks free quota on every cancel.
-      const cancelledTokens = llm.totalTokens + embedder.totalTokens;
-      if (cancelledTokens > 0) {
+      // Bill the INPUT tokens of the sources completed before the cancel — the
+      // quota meters submitted content, not pipeline throughput. Completed
+      // sources won't be reprocessed (gate 2), so there's no double-count.
+      // `throughputTokens` (LLM + embedder) is the provider cost, reported to
+      // the outcome metric below — not the quota.
+      const throughputTokens = llm.totalTokens + embedder.totalTokens;
+      const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
+      if (inputTokens > 0) {
         try {
-          await recordIngestionTokens(db, scope, cancelledTokens);
+          await recordIngestionTokens(db, scope, inputTokens);
         } catch (err) {
           logger.warn('ingestion.record_tokens_failed', {}, err);
         }
@@ -241,7 +245,7 @@ export async function processIngestion(
         finalStatus: 'cancelled',
         durationMs: durationMs(jobStart),
         failedSourceCount: remaining.length,
-        tokenCount: cancelledTokens,
+        tokenCount: throughputTokens,
       });
 
       // We owned the job; cancellation is a terminal outcome for this delivery.
@@ -441,7 +445,12 @@ export async function processIngestion(
   // sources run in a fresh invocation with a full budget. No terminal status is
   // written: the job rolls up only once it actually finishes a full pass.
   if (budgetHit) {
-    const budgetTokens = llm.totalTokens + embedder.totalTokens;
+    // Bill the input tokens of the sources completed this invocation; the
+    // deferred/remaining sources are billed when they complete on the re-run
+    // (gate 2 skips the completed ones, so no double-count). Throughput is the
+    // provider cost, reported to the metric below.
+    const throughputTokens = llm.totalTokens + embedder.totalTokens;
+    const budgetTokens = results.reduce((n, r) => n + r.tokenCount, 0);
     if (budgetTokens > 0) {
       try {
         await recordIngestionTokens(db, scope, budgetTokens);
@@ -461,7 +470,7 @@ export async function processIngestion(
       finalStatus: 'pending',
       durationMs: durationMs(jobStart),
       failedSourceCount: failedSourceIds.length,
-      tokenCount: budgetTokens,
+      tokenCount: throughputTokens,
     });
     return 'requeue_incomplete';
   }
@@ -490,13 +499,18 @@ export async function processIngestion(
     for (const id of r.resolvedEntityIds) entityIds.add(id);
   }
   const entityCount = entityIds.size;
-  const totalTokens = llm.totalTokens + embedder.totalTokens;
+  // Provider cost (LLM + embedder throughput) — reported to the outcome metric
+  // and job log for COGS observability, but NOT the quota.
+  const throughputTokens = llm.totalTokens + embedder.totalTokens;
+  // Quota basis: input tokens of the sources that completed. This is what the
+  // user submitted, not what the pipeline burned internally.
+  const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
 
   // Best-effort token recording — failure does not fail the job (Python
   // wraps this in try/except too).
-  if (totalTokens > 0) {
+  if (inputTokens > 0) {
     try {
-      await recordIngestionTokens(db, scope, totalTokens);
+      await recordIngestionTokens(db, scope, inputTokens);
     } catch (err) {
       logger.warn('ingestion.record_tokens_failed', {}, err);
     }
@@ -510,7 +524,8 @@ export async function processIngestion(
     memory_count: memoryCount,
     entity_count: entityCount,
     edge_count: edgeCount,
-    tokens_used: totalTokens,
+    // User-facing usage == the quota basis (submitted input tokens).
+    tokens_used: inputTokens,
   };
   if (Object.keys(sourceErrors).length > 0) resultBody.source_errors = sourceErrors;
   if (rolledUpError) resultBody.error_message = rolledUpError;
@@ -524,13 +539,14 @@ export async function processIngestion(
     memory_count: memoryCount,
     entity_count: entityCount,
     edge_count: edgeCount,
-    token_count: totalTokens,
+    token_count: throughputTokens,
+    input_token_count: inputTokens,
   });
   emitOutcomeMetric(deps, {
     finalStatus,
     durationMs: durationMs(jobStart),
     failedSourceCount: failed,
-    tokenCount: totalTokens,
+    tokenCount: throughputTokens,
     errorCategory: failed > 0 ? rolledUpErrorCategory : undefined,
   });
   return 'processed';

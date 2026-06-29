@@ -25,6 +25,7 @@ import {
 } from './dispatch';
 import { MAX_SOURCES_PER_JOB } from './constants';
 import { getOperationalLimits } from '../../lib/limits';
+import { estimateTokens } from '../../lib/tokens';
 import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
@@ -159,6 +160,12 @@ sourceRoutes.openapi(
     const queue = getQueueService(c.env, db);
     const jobStore = getJobStore(db, limits.staleJobMinutes);
 
+    // Estimated input tokens for this request — the unit the monthly quota
+    // meters (what the user submits, not pipeline throughput). Computed once,
+    // reused for the predictive quota gate and the per-source token_count.
+    const sourceTokenCounts = body.sources.map((s) => estimateTokens(s.content));
+    const incomingTokens = sourceTokenCounts.reduce((n, t) => n + t, 0);
+
     const preflightStart = performance.now();
     const space = await preflight({
       db,
@@ -169,6 +176,7 @@ sourceRoutes.openapi(
       orgId,
       userId,
       spaceUuid: body.space_id,
+      incomingTokens,
       skipPlanRateLimit: c.var.planRateLimitEnforced,
     });
     logger.info('ingestion.enqueue_stage_completed', {
@@ -195,6 +203,9 @@ sourceRoutes.openapi(
         contentType: payload.content_type as ContentType,
         visibility: payload.visibility,
         meta: Object.keys(meta).length > 0 ? meta : null,
+        // Input-token estimate stored per source so the worker can meter the
+        // quota on submitted tokens (sum over the job's sources).
+        tokenCount: sourceTokenCounts[i]!,
       };
     });
     const created = await logger.time('ingestion.enqueue_stage_completed', {
