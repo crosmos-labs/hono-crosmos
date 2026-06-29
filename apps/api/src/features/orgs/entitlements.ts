@@ -43,8 +43,8 @@ const FREE: Entitlements = {
 const DEVELOPER: Entitlements = {
   ...COMMON_FEATURES,
   max_memory_spaces: 7,
-  monthly_tokens_ingested: 5_000_000,
-  monthly_search_queries: 50_000,
+  monthly_tokens_ingested: 3_000_000,
+  monthly_search_queries: 30_000,
   rate_limit_rpm: 60,
   rate_limit_per_day: 10_000,
   mgmt_rate_limit_rpm: 1_200,
@@ -54,8 +54,8 @@ const DEVELOPER: Entitlements = {
 const PRO: Entitlements = {
   ...COMMON_FEATURES,
   max_memory_spaces: 50,
-  monthly_tokens_ingested: 80_000_000,
-  monthly_search_queries: 300_000,
+  monthly_tokens_ingested: 40_000_000,
+  monthly_search_queries: 200_000,
   rate_limit_rpm: 300,
   rate_limit_per_day: 50_000,
   mgmt_rate_limit_rpm: 3_000,
