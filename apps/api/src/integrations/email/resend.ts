@@ -31,12 +31,15 @@ export class ResendEmailSender implements EmailSender {
   }): Promise<void> {
     await this.send({
       to: input.to,
-      subject: `You're invited to ${input.orgName}`,
-      html: [
-        `<p>${escapeHtml(input.inviterName)} invited you to join ${escapeHtml(input.orgName)} as ${escapeHtml(input.role)}.</p>`,
-        `<p><a href="${escapeHtml(input.acceptUrl)}">Accept invite</a></p>`,
-        `<p>This invite expires at ${escapeHtml(input.expiresAt.toISOString())}.</p>`,
-      ].join(''),
+      subject: `You're invited to join ${input.orgName} on Crosmos`,
+      html: renderInviteHtml({
+        orgName: escapeHtml(input.orgName),
+        inviterName: escapeHtml(input.inviterName),
+        role: escapeHtml(input.role),
+        acceptUrl: encodeURI(input.acceptUrl),
+        expiresAt: escapeHtml(formatExpiry(input.expiresAt)),
+      }),
+      text: renderInviteText(input),
       event: 'invite',
     });
   }
@@ -76,46 +79,49 @@ export class ResendEmailSender implements EmailSender {
 
 const WELCOME_EMAIL_SUBJECT = 'Welcome to Crosmos';
 
-// `name` is pre-escaped HTML.
-function renderWelcomeHtml(name: string): string {
+const LOGO_SRC =
+  'https://resend-attachments.s3.amazonaws.com/bb8970a2-436c-4b5c-bb07-9723f7ee0732';
+const BRAND_COLOR = '#0066cc';
+const TEXT_COLOR = '#1a1a1a';
+const MUTED_COLOR = '#6b7280';
+
+/**
+ * Shared HTML chrome (responsive container, logo, social footer) for every
+ * transactional email. Callers pass a pre-escaped `preview` string and an
+ * already-rendered `body` (the content between the logo and the footer).
+ * The inline `<style>` media query is what gives us a comfortable reading
+ * width on desktop and edge-to-edge padding on mobile.
+ */
+function renderLayout(opts: { preview: string; body: string }): string {
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html dir="ltr" lang="en">
   <head>
-    <meta content="width=device-width" name="viewport" />
-    <link
-      rel="preload"
-      as="image"
-      href="https://resend-attachments.s3.amazonaws.com/bb8970a2-436c-4b5c-bb07-9723f7ee0732" />
-    <link
-      rel="preload"
-      as="image"
-      href="https://resend.com/static/email/social-linkedin.png" />
-    <link
-      rel="preload"
-      as="image"
-      href="https://resend.com/static/email/social-x.png" />
-    <link
-      rel="preload"
-      as="image"
-      href="https://resend.com/static/email/social-github.png" />
-    <link
-      rel="preload"
-      as="image"
-      href="https://resend.com/static/email/social-discord.png" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
     <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
-    <meta name="x-apple-disable-message-reformatting" />
     <meta content="IE=edge" http-equiv="X-UA-Compatible" />
     <meta name="x-apple-disable-message-reformatting" />
     <meta
       content="telephone=no,address=no,email=no,date=no,url=no"
       name="format-detection" />
+    <link rel="preload" as="image" href="${LOGO_SRC}" />
+    <link rel="preload" as="image" href="https://resend.com/static/email/social-linkedin.png" />
+    <link rel="preload" as="image" href="https://resend.com/static/email/social-x.png" />
+    <link rel="preload" as="image" href="https://resend.com/static/email/social-github.png" />
+    <link rel="preload" as="image" href="https://resend.com/static/email/social-discord.png" />
+    <style>
+      @media only screen and (max-width: 600px) {
+        .email-container { width: 100% !important; }
+        .email-content { padding-left: 24px !important; padding-right: 24px !important; }
+        .email-button { display: block !important; width: 100% !important; box-sizing: border-box !important; text-align: center !important; }
+      }
+    </style>
   </head>
   <body
-    style="background-color:#ffffff;padding-top:0;padding-bottom:0;padding-right:0;padding-left:0">
+    style="margin:0;padding:0;background-color:#f4f5f7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
     <div
       style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
       data-skip-in-text="true">
-      Welcome to Crosmos — your AI memory engine is ready
+      ${opts.preview}
     </div>
     <table
       border="0"
@@ -123,187 +129,37 @@ function renderWelcomeHtml(name: string): string {
       cellpadding="0"
       cellspacing="0"
       role="presentation"
+      style="background-color:#f4f5f7"
       align="center">
       <tbody>
         <tr>
-          <td
-            style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;font-size:1em;min-height:100%;line-height:155%;background-color:#ffffff;padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px">
+          <td align="center" style="padding-top:24px;padding-bottom:24px">
             <table
-              align="left"
-              width="100%"
+              class="email-container"
+              align="center"
+              width="600"
               border="0"
               cellpadding="0"
               cellspacing="0"
               role="presentation"
-              style="max-width:600px;align:left;width:100%;color:#000000;background-color:#ffffff;padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;border-radius:0px;border-color:#000000;line-height:155%">
+              style="max-width:600px;width:100%;background-color:#ffffff;border-radius:12px">
               <tbody>
-                <tr style="width:100%">
-                  <td>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:8px;padding-bottom:8px;padding-right:8px;padding-left:8px">
-                      <br />
-                    </p>
-                    <table
-                      align="center"
-                      width="100%"
-                      border="0"
-                      cellpadding="0"
-                      cellspacing="0"
-                      role="presentation">
-                      <tbody style="width:100%">
-                        <tr style="width:100%">
-                          <td align="right" data-id="__react-email-column">
-                            <img
-                              alt="Crosmos"
-                              height="37"
-                              src="https://resend-attachments.s3.amazonaws.com/bb8970a2-436c-4b5c-bb07-9723f7ee0732"
-                              style="display:block;outline:none;border:none;text-decoration:none;max-width:100%;border-radius:8px"
-                              width="192" />
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0px;padding-bottom:0px;padding-right:0px;padding-left:0px;line-height:120%">
-                      <br />
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      Hey ${name},
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      Welcome to Crosmos! Your account is ready and you can start building AI agents with persistent memory right away.
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      <strong>Quick Start Guide:</strong>
-                    </p>
-                    <ul style="margin:0;padding-left:20px;font-size:1em">
-                      <li style="padding-top:0.3em;padding-bottom:0.3em"><strong>Create a Memory Space</strong> — Organize memories by project or use case</li>
-                      <li style="padding-top:0.3em;padding-bottom:0.3em"><strong>Add Memories</strong> — Store facts, conversations, or documents via API</li>
-                      <li style="padding-top:0.3em;padding-bottom:0.3em"><strong>Search & Retrieve</strong> — Query with semantic, keyword, or graph traversal</li>
-                    </ul>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      Check out our <a href="https://docs.crosmos.dev" style="color:#0066cc;text-decoration:underline">documentation</a> for detailed guides, API references, and integration examples.
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      If you have any questions, just reply to this email — we're here to help.
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      <br />
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em;line-height:0%">
-                      Regards
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      Team Crosmos
-                    </p>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      <br />
-                    </p>
-                    <table
-                      align="center"
-                      width="100%"
-                      border="0"
-                      cellpadding="0"
-                      cellspacing="0"
-                      role="presentation">
-                      <tbody>
-                        <tr>
-                          <td>
-                            <table
-                              align="center"
-                              width="100%"
-                              border="0"
-                              cellpadding="0"
-                              cellspacing="0"
-                              role="presentation">
-                              <tbody style="width:100%">
-                                <tr style="width:100%">
-                                  <td data-id="__react-email-column"></td>
-                                  <td
-                                    align="center"
-                                    data-id="__react-email-column"
-                                    style="padding-right:8px;width:32px;box-sizing:content-box">
-                                    <a
-                                      href="https://linkedin.com/company/crosmos-ai"
-                                      rel="noopener noreferrer"
-                                      target="_blank"
-                                      ><img
-                                        alt="LinkedIn"
-                                        height="32"
-                                        src="https://resend.com/static/email/social-linkedin.png"
-                                        style="display:block;outline:none;border:none;text-decoration:none"
-                                        width="32"
-                                    /></a>
-                                  </td>
-                                  <td
-                                    align="center"
-                                    data-id="__react-email-column"
-                                    style="padding-right:8px;width:32px;box-sizing:content-box">
-                                    <a
-                                      href="https://x.com/crosmoslabs"
-                                      rel="noopener noreferrer"
-                                      target="_blank"
-                                      ><img
-                                        alt="X (former Twitter)"
-                                        height="32"
-                                        src="https://resend.com/static/email/social-x.png"
-                                        style="display:block;outline:none;border:none;text-decoration:none"
-                                        width="32"
-                                    /></a>
-                                  </td>
-                                  <td
-                                    align="center"
-                                    data-id="__react-email-column"
-                                    style="padding-right:8px;width:32px;box-sizing:content-box">
-                                    <a
-                                      href="https://github.com/crosmos"
-                                      rel="noopener noreferrer"
-                                      target="_blank"
-                                      ><img
-                                        alt="GitHub"
-                                        height="32"
-                                        src="https://resend.com/static/email/social-github.png"
-                                        style="display:block;outline:none;border:none;text-decoration:none"
-                                        width="32"
-                                    /></a>
-                                  </td>
-                                  <td
-                                    align="center"
-                                    data-id="__react-email-column"
-                                    style="padding-right:8px;width:32px;box-sizing:content-box">
-                                    <a
-                                      href="https://discord.gg/Arw5ysGNN6"
-                                      rel="noopener noreferrer"
-                                      target="_blank"
-                                      ><img
-                                        alt="Discord"
-                                        height="32"
-                                        src="https://resend.com/static/email/social-discord.png"
-                                        style="display:block;outline:none;border:none;text-decoration:none"
-                                        width="32"
-                                    /></a>
-                                  </td>
-                                  <td data-id="__react-email-column"></td>
-                                </tr>
-                              </tbody>
-                            </table>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <p
-                      style="margin:0;padding:0;font-size:1em;padding-top:0.5em;padding-bottom:0.5em">
-                      <br />
-                    </p>
+                <tr>
+                  <td
+                    class="email-content"
+                    style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;color:${TEXT_COLOR};font-size:16px;line-height:1.6;padding-top:32px;padding-bottom:32px;padding-left:40px;padding-right:40px">
+                    <img
+                      alt="Crosmos"
+                      height="37"
+                      src="${LOGO_SRC}"
+                      style="display:block;outline:none;border:none;text-decoration:none;max-width:100%;border-radius:8px"
+                      width="192" />
+                    <div style="height:24px;line-height:24px">&nbsp;</div>
+${opts.body}
+                    <div style="height:32px;line-height:32px">&nbsp;</div>
+                    <hr style="border:none;border-top:1px solid #e5e7eb;margin:0" />
+                    <div style="height:24px;line-height:24px">&nbsp;</div>
+                    ${renderSocialFooter()}
                   </td>
                 </tr>
               </tbody>
@@ -316,23 +172,150 @@ function renderWelcomeHtml(name: string): string {
 </html>`;
 }
 
+function renderSocialFooter(): string {
+  return `<table
+                      align="center"
+                      width="100%"
+                      border="0"
+                      cellpadding="0"
+                      cellspacing="0"
+                      role="presentation">
+                      <tbody style="width:100%">
+                        <tr style="width:100%">
+                          <td data-id="__react-email-column"></td>
+                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
+                            <a href="https://linkedin.com/company/crosmos-ai" rel="noopener noreferrer" target="_blank"><img alt="LinkedIn" height="32" src="https://resend.com/static/email/social-linkedin.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
+                          </td>
+                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
+                            <a href="https://x.com/crosmoslabs" rel="noopener noreferrer" target="_blank"><img alt="X (former Twitter)" height="32" src="https://resend.com/static/email/social-x.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
+                          </td>
+                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
+                            <a href="https://github.com/crosmos" rel="noopener noreferrer" target="_blank"><img alt="GitHub" height="32" src="https://resend.com/static/email/social-github.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
+                          </td>
+                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
+                            <a href="https://discord.gg/Arw5ysGNN6" rel="noopener noreferrer" target="_blank"><img alt="Discord" height="32" src="https://resend.com/static/email/social-discord.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
+                          </td>
+                          <td data-id="__react-email-column"></td>
+                        </tr>
+                      </tbody>
+                    </table>`;
+}
+
+/** Bulletproof, table-based CTA button that survives Outlook and scales to
+ * full width on mobile via the `.email-button` media-query rule. */
+function renderButton(href: string, label: string): string {
+  return `<table border="0" cellpadding="0" cellspacing="0" role="presentation" style="margin:8px 0">
+                      <tbody>
+                        <tr>
+                          <td align="center" style="border-radius:8px;background-color:${BRAND_COLOR}">
+                            <a class="email-button" href="${href}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px">${label}</a>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>`;
+}
+
+const P_STYLE = 'margin:0 0 16px 0;font-size:16px;line-height:1.6;color:' + TEXT_COLOR;
+
+// `name` is pre-escaped HTML.
+function renderWelcomeHtml(name: string): string {
+  const body = `<p style="${P_STYLE}">Hey ${name},</p>
+                    <p style="${P_STYLE}">Welcome to Crosmos. Your account is ready and you can start building AI agents with persistent memory right away.</p>
+                    <p style="${P_STYLE}"><strong>Quick start guide</strong></p>
+                    <ul style="margin:0 0 16px 0;padding-left:20px;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">
+                      <li style="padding-bottom:8px"><strong>Create a memory space.</strong> Organize memories by project or use case.</li>
+                      <li style="padding-bottom:8px"><strong>Add memories.</strong> Store facts, conversations, or documents via API.</li>
+                      <li style="padding-bottom:8px"><strong>Search and retrieve.</strong> Query with semantic, keyword, or graph traversal.</li>
+                    </ul>
+                    ${renderButton('https://docs.crosmos.dev', 'Read the docs')}
+                    <p style="${P_STYLE}">You'll find detailed guides, API references, and integration examples there.</p>
+                    <p style="${P_STYLE}">If you have any questions, just reply to this email. We're here to help.</p>
+                    <p style="margin:0;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">Regards,<br />Team Crosmos</p>`;
+  return renderLayout({
+    preview: 'Welcome to Crosmos. Your AI memory engine is ready.',
+    body,
+  });
+}
+
 function renderWelcomeText(name: string): string {
   return `Hey ${name},
 
-Welcome to Crosmos! Your account is ready and you can start building AI agents with persistent memory right away.
+Welcome to Crosmos. Your account is ready and you can start building AI agents with persistent memory right away.
 
-Quick Start Guide:
-- Create a Memory Space — Organize memories by project or use case
-- Add Memories — Store facts, conversations, or documents via API
-- Search & Retrieve — Query with semantic, keyword, or graph traversal
+Quick start guide:
+- Create a memory space. Organize memories by project or use case.
+- Add memories. Store facts, conversations, or documents via API.
+- Search and retrieve. Query with semantic, keyword, or graph traversal.
 
-Check out our documentation at https://docs.crosmos.dev for detailed guides, API references, and integration examples.
+Read the docs at https://docs.crosmos.dev for detailed guides, API references, and integration examples.
 
-If you have any questions, just reply to this email — we're here to help.
+If you have any questions, just reply to this email. We're here to help.
 
-Regards
+Regards,
 Team Crosmos
 `;
+}
+
+// All fields are pre-escaped / encoded HTML.
+function renderInviteHtml(input: {
+  orgName: string;
+  inviterName: string;
+  role: string;
+  acceptUrl: string;
+  expiresAt: string;
+}): string {
+  const body = `<p style="${P_STYLE}">Hi there,</p>
+                    <p style="${P_STYLE}"><strong>${input.inviterName}</strong> invited you to join <strong>${input.orgName}</strong> on Crosmos as <strong>${input.role}</strong>.</p>
+                    <p style="${P_STYLE}">Crosmos is the AI memory engine that gives your team's agents persistent, shared memory. Accept the invite to get access to this organization's memory spaces.</p>
+                    ${renderButton(input.acceptUrl, 'Accept invitation')}
+                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:${MUTED_COLOR}">This invitation expires on ${input.expiresAt}. If the button above doesn't work, copy and paste this link into your browser:</p>
+                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;word-break:break-all"><a href="${input.acceptUrl}" style="color:${BRAND_COLOR};text-decoration:underline">${input.acceptUrl}</a></p>
+                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:${MUTED_COLOR}">If you weren't expecting this invitation, you can safely ignore this email.</p>
+                    <p style="margin:0;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">Regards,<br />Team Crosmos</p>`;
+  return renderLayout({
+    preview: `${input.inviterName} invited you to join ${input.orgName} on Crosmos.`,
+    body,
+  });
+}
+
+function renderInviteText(input: {
+  orgName: string;
+  inviterName: string;
+  role: string;
+  acceptUrl: string;
+  expiresAt: Date;
+}): string {
+  return `Hi there,
+
+${input.inviterName} invited you to join ${input.orgName} on Crosmos as ${input.role}.
+
+Crosmos is the AI memory engine that gives your team's agents persistent, shared memory. Accept the invite to get access to this organization's memory spaces.
+
+Accept the invitation:
+${input.acceptUrl}
+
+This invitation expires on ${formatExpiry(input.expiresAt)}.
+
+If you weren't expecting this invitation, you can safely ignore this email.
+
+Regards,
+Team Crosmos
+`;
+}
+
+/** Human-readable UTC timestamp, e.g. "June 30, 2026 at 14:32 UTC". */
+function formatExpiry(date: Date): string {
+  return (
+    date.toLocaleString('en-US', {
+      timeZone: 'UTC',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }) + ' UTC'
+  );
 }
 
 function escapeHtml(s: string): string {
