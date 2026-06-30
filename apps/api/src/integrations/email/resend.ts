@@ -79,180 +79,244 @@ export class ResendEmailSender implements EmailSender {
 
 const WELCOME_EMAIL_SUBJECT = 'Welcome to Crosmos';
 
-const LOGO_SRC =
-  'https://resend-attachments.s3.amazonaws.com/bb8970a2-436c-4b5c-bb07-9723f7ee0732';
-const BRAND_COLOR = '#0066cc';
-const TEXT_COLOR = '#1a1a1a';
-const MUTED_COLOR = '#6b7280';
+// White Crosmos logo, always shown on the dark email background.
+const DARK_LOGO_SRC =
+  'https://resend-attachments.s3.amazonaws.com/26bccd3d-9102-431f-9e78-71ba19267d1f';
 
 /**
- * Shared HTML chrome (responsive container, logo, social footer) for every
- * transactional email. Callers pass a pre-escaped `preview` string and an
- * already-rendered `body` (the content between the logo and the footer).
- * The inline `<style>` media query is what gives us a comfortable reading
- * width on desktop and edge-to-edge padding on mobile.
+ * Shared chrome for the dark-only transactional emails. Every element carries
+ * inline dark values as the universal baseline (so it renders dark even in
+ * clients that ignore <style>), and the <style> block re-asserts them so
+ * dark-mode clients and Outlook.com cannot invert it to light. Callers pass a
+ * pre-escaped `preview` (the inbox preheader) plus already-rendered `body` and
+ * `footer` HTML — the content and footer cells respectively.
  */
-function renderLayout(opts: { preview: string; body: string }): string {
+function renderDarkLayout(opts: { preview: string; body: string; footer: string }): string {
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
-<html dir="ltr" lang="en">
+<html dir="ltr" lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
   <head>
-    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
-    <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
-    <meta content="IE=edge" http-equiv="X-UA-Compatible" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="x-apple-disable-message-reformatting" />
-    <meta
-      content="telephone=no,address=no,email=no,date=no,url=no"
-      name="format-detection" />
-    <link rel="preload" as="image" href="${LOGO_SRC}" />
-    <link rel="preload" as="image" href="https://resend.com/static/email/social-linkedin.png" />
-    <link rel="preload" as="image" href="https://resend.com/static/email/social-x.png" />
-    <link rel="preload" as="image" href="https://resend.com/static/email/social-github.png" />
-    <link rel="preload" as="image" href="https://resend.com/static/email/social-discord.png" />
+    <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
+    <!-- Dark-only email. Declaring dark stops capable clients from inverting it to light. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="supported-color-schemes" content="dark" />
+    <title>Crosmos</title>
+    <!--[if mso]>
+      <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+    <![endif]-->
     <style>
-      @media only screen and (max-width: 600px) {
-        .email-container { width: 100% !important; }
-        .email-content { padding-left: 24px !important; padding-right: 24px !important; }
-        .email-button { display: block !important; width: 100% !important; box-sizing: border-box !important; text-align: center !important; }
+      :root {
+        color-scheme: dark;
+        supported-color-schemes: dark;
       }
+
+      /*
+        Dark-only email. Dark values are set inline on every element (the
+        universal baseline), so it renders dark everywhere, including clients
+        that ignore <style>. The rules below simply re-assert those same dark
+        values so dark-mode clients and Outlook.com cannot invert it to light.
+        The logo is the white logo, always on the dark background.
+      */
+      @media (prefers-color-scheme: dark) {
+        .dm-bg      { background-color: #0c0c0c !important; }
+        .dm-text    { color: #eaeaea !important; }
+        .dm-muted   { color: #9aa0a6 !important; }
+        .dm-link    { color: #7ab3ff !important; }
+        .dm-divider { border-top-color: #2a2a2a !important; }
+      }
+
+      /* Outlook.com / Office 365 dark mode */
+      [data-ogsb] .dm-bg      { background-color: #0c0c0c !important; }
+      [data-ogsc] .dm-text    { color: #eaeaea !important; }
+      [data-ogsc] .dm-muted   { color: #9aa0a6 !important; }
+      [data-ogsc] .dm-link    { color: #7ab3ff !important; }
+      [data-ogsc] .dm-divider { border-top-color: #2a2a2a !important; }
+
+      @media only screen and (max-width: 600px) {
+        .footer-text { text-align: center !important; }
+        .dm-button   { display: block !important; width: 100% !important; box-sizing: border-box !important; text-align: center !important; }
+      }
+
+      a { text-decoration: underline; }
     </style>
   </head>
   <body
-    style="margin:0;padding:0;background-color:#f4f5f7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
-    <div
-      style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
-      data-skip-in-text="true">
+    class="dm-bg"
+    style="margin:0;padding:0;width:100%;background-color:#0c0c0c;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%"
+  >
+    <!-- Preheader: shown in the inbox preview, hidden in the body. -->
+    <div style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0" aria-hidden="true">
       ${opts.preview}
     </div>
+
     <table
+      class="dm-bg"
+      role="presentation"
       border="0"
-      width="100%"
       cellpadding="0"
       cellspacing="0"
-      role="presentation"
-      style="background-color:#f4f5f7"
-      align="center">
-      <tbody>
-        <tr>
-          <td align="center" style="padding-top:24px;padding-bottom:24px">
-            <table
-              class="email-container"
-              align="center"
-              width="600"
-              border="0"
-              cellpadding="0"
-              cellspacing="0"
-              role="presentation"
-              style="max-width:600px;width:100%;background-color:#ffffff;border-radius:12px">
-              <tbody>
-                <tr>
-                  <td
-                    class="email-content"
-                    style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;color:${TEXT_COLOR};font-size:16px;line-height:1.6;padding-top:32px;padding-bottom:32px;padding-left:40px;padding-right:40px">
-                    <img
-                      alt="Crosmos"
-                      height="37"
-                      src="${LOGO_SRC}"
-                      style="display:block;outline:none;border:none;text-decoration:none;max-width:100%;border-radius:8px"
-                      width="192" />
-                    <div style="height:24px;line-height:24px">&nbsp;</div>
+      width="100%"
+      style="background-color:#0c0c0c"
+    >
+      <tr>
+        <td align="center" style="padding:0">
+          <!--[if mso | IE]>
+          <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" align="center"><tr><td>
+          <![endif]-->
+          <table
+            class="dm-bg dm-text"
+            role="presentation"
+            border="0"
+            cellpadding="0"
+            cellspacing="0"
+            width="100%"
+            style="max-width:600px;width:100%;background-color:#0c0c0c;color:#eaeaea;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;font-size:16px;line-height:1.55"
+          >
+            <tr>
+              <td style="padding:36px 24px 4px 24px">
+                <!-- LOGO — white logo on the dark email background (no swap, no plate). -->
+                <img
+                  alt="Crosmos"
+                  width="280"
+                  height="76"
+                  src="${DARK_LOGO_SRC}"
+                  style="display:block;width:280px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none"
+                />
+              </td>
+            </tr>
+
+            <tr>
+              <td class="dm-text" style="padding:24px 24px 0 24px;color:#eaeaea">
 ${opts.body}
-                    <div style="height:32px;line-height:32px">&nbsp;</div>
-                    <hr style="border:none;border-top:1px solid #e5e7eb;margin:0" />
-                    <div style="height:24px;line-height:24px">&nbsp;</div>
-                    ${renderSocialFooter()}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </td>
-        </tr>
-      </tbody>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:24px 24px 32px 24px">
+${opts.footer}
+              </td>
+            </tr>
+          </table>
+          <!--[if mso | IE]>
+          </td></tr></table>
+          <![endif]-->
+        </td>
+      </tr>
     </table>
   </body>
 </html>`;
 }
 
-function renderSocialFooter(): string {
-  return `<table
-                      align="center"
-                      width="100%"
-                      border="0"
-                      cellpadding="0"
-                      cellspacing="0"
-                      role="presentation">
-                      <tbody style="width:100%">
-                        <tr style="width:100%">
-                          <td data-id="__react-email-column"></td>
-                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
-                            <a href="https://linkedin.com/company/crosmos-ai" rel="noopener noreferrer" target="_blank"><img alt="LinkedIn" height="32" src="https://resend.com/static/email/social-linkedin.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
-                          </td>
-                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
-                            <a href="https://x.com/crosmoslabs" rel="noopener noreferrer" target="_blank"><img alt="X (former Twitter)" height="32" src="https://resend.com/static/email/social-x.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
-                          </td>
-                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
-                            <a href="https://github.com/crosmos" rel="noopener noreferrer" target="_blank"><img alt="GitHub" height="32" src="https://resend.com/static/email/social-github.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
-                          </td>
-                          <td align="center" style="padding-right:8px;width:32px;box-sizing:content-box">
-                            <a href="https://discord.gg/Arw5ysGNN6" rel="noopener noreferrer" target="_blank"><img alt="Discord" height="32" src="https://resend.com/static/email/social-discord.png" style="display:block;outline:none;border:none;text-decoration:none" width="32" /></a>
-                          </td>
-                          <td data-id="__react-email-column"></td>
-                        </tr>
-                      </tbody>
-                    </table>`;
+/**
+ * Bulletproof, table-based CTA button for the dark emails: a light fill with
+ * dark text so it stands out on #0c0c0c, surviving Outlook and scaling to full
+ * width on mobile via the `.dm-button` media-query rule. `href` is pre-encoded.
+ */
+function renderDarkButton(href: string, label: string): string {
+  return `<table border="0" cellpadding="0" cellspacing="0" role="presentation" style="margin:8px 0 20px 0">
+                  <tr>
+                    <td align="center" style="border-radius:8px;background-color:#eaeaea">
+                      <a class="dm-button" href="${href}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:#0c0c0c;text-decoration:none;border-radius:8px">${label}</a>
+                    </td>
+                  </tr>
+                </table>`;
 }
 
-/** Bulletproof, table-based CTA button that survives Outlook and scales to
- * full width on mobile via the `.email-button` media-query rule. */
-function renderButton(href: string, label: string): string {
-  return `<table border="0" cellpadding="0" cellspacing="0" role="presentation" style="margin:8px 0">
-                      <tbody>
-                        <tr>
-                          <td align="center" style="border-radius:8px;background-color:${BRAND_COLOR}">
-                            <a class="email-button" href="${href}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px">${label}</a>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>`;
-}
-
-const P_STYLE = 'margin:0 0 16px 0;font-size:16px;line-height:1.6;color:' + TEXT_COLOR;
-
-// `name` is pre-escaped HTML.
+/**
+ * Dark-only welcome email, built on the shared dark layout. `name` is
+ * pre-escaped HTML. `{{{RESEND_UNSUBSCRIBE_URL}}}` is a Resend merge tag left
+ * intact for Resend to substitute at send time.
+ */
 function renderWelcomeHtml(name: string): string {
-  const body = `<p style="${P_STYLE}">Hey ${name},</p>
-                    <p style="${P_STYLE}">Welcome to Crosmos. Your account is ready and you can start building AI agents with persistent memory right away.</p>
-                    <p style="${P_STYLE}"><strong>Quick start guide</strong></p>
-                    <ul style="margin:0 0 16px 0;padding-left:20px;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">
-                      <li style="padding-bottom:8px"><strong>Create a memory space.</strong> Organize memories by project or use case.</li>
-                      <li style="padding-bottom:8px"><strong>Add memories.</strong> Store facts, conversations, or documents via API.</li>
-                      <li style="padding-bottom:8px"><strong>Search and retrieve.</strong> Query with semantic, keyword, or graph traversal.</li>
-                    </ul>
-                    ${renderButton('https://docs.crosmos.dev', 'Read the docs')}
-                    <p style="${P_STYLE}">You'll find detailed guides, API references, and integration examples there.</p>
-                    <p style="${P_STYLE}">If you have any questions, just reply to this email. We're here to help.</p>
-                    <p style="margin:0;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">Regards,<br />Team Crosmos</p>`;
-  return renderLayout({
-    preview: 'Welcome to Crosmos. Your AI memory engine is ready.',
+  const body = `<p style="margin:0 0 16px 0">Hey ${name},</p>
+
+                <p style="margin:0 0 16px 0">Welcome to <strong>Crosmos</strong>.</p>
+
+                <p style="margin:0 0 16px 0">
+                  We built Crosmos because AI agents have the same problem every time they listen, respond, and forget.
+                  The next conversation starts from zero. We fix that.
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  <strong>The Console</strong>: This is where you manage everything. Create memory spaces, generate API
+                  keys, and track your usage. Think of it as mission control for your agent's memory.
+                  <a class="dm-link" href="https://console.crosmos.dev" target="_blank" rel="noopener noreferrer" style="color:#7ab3ff;text-decoration:underline">console.crosmos.dev</a>
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  <strong>Agent Plugins</strong>: The fastest way to give your coding agent memory. Install the plugin
+                  and Crosmos recalls relevant project context when a session starts and captures your work
+                  automatically as you go, with no manual saving. Available for Claude Code and Codex.
+                  <a class="dm-link" href="https://docs.crosmos.dev/plugins" target="_blank" rel="noopener noreferrer" style="color:#7ab3ff;text-decoration:underline">docs.crosmos.dev/plugins</a>
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  <strong>MCP Server</strong>: One command and your coding assistant gets persistent memory. Works with
+                  Claude Code, Cursor, Windsurf, VS Code, Opencode or any MCP-compatible client. It remembers your
+                  project context, your preferences, your decisions. Across sessions.
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  <strong>SDK</strong>: Integrate Crosmos directly into your own applications. Our SDK makes it simple
+                  to add persistent memory to any AI agent or LLM-powered app.
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  Full setup guides and reference are in the docs:
+                  <a class="dm-link" href="https://docs.crosmos.dev" target="_blank" rel="noopener noreferrer" style="color:#7ab3ff;text-decoration:underline">docs.crosmos.dev</a>
+                </p>
+
+                <p style="margin:0 0 16px 0">
+                  Crosmos clicks the moment you feed it something real. Not test data. Not "hello world." Start there,
+                  search for something inside it, and you'll see what we mean.
+                </p>
+
+                <p style="margin:24px 0 0 0"><strong>Crosmos Team</strong></p>`;
+  const footer = `<hr class="dm-divider" style="width:100%;border:none;border-top:1px solid #2a2a2a;margin:0 0 16px 0" />
+                <p class="footer-text dm-muted" style="margin:0;font-size:13px;line-height:1.6;color:#9aa0a6;text-align:left">
+                  You are receiving this email because you opted in via our site.<br /><br />
+                  Want to change how you receive these emails?<br />
+                  You can
+                  <a
+                    class="dm-link"
+                    href="{{{RESEND_UNSUBSCRIBE_URL}}}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    ses:no-track="true"
+                    style="color:#7ab3ff;text-decoration:underline"
+                    >unsubscribe from this list</a
+                  >.
+                </p>`;
+  return renderDarkLayout({
+    preview: "One command is all it takes. Let's get started.",
     body,
+    footer,
   });
 }
 
 function renderWelcomeText(name: string): string {
   return `Hey ${name},
 
-Welcome to Crosmos. Your account is ready and you can start building AI agents with persistent memory right away.
+Welcome to Crosmos.
 
-Quick start guide:
-- Create a memory space. Organize memories by project or use case.
-- Add memories. Store facts, conversations, or documents via API.
-- Search and retrieve. Query with semantic, keyword, or graph traversal.
+We built Crosmos because AI agents have the same problem every time they listen, respond, and forget. The next conversation starts from zero. We fix that.
 
-Read the docs at https://docs.crosmos.dev for detailed guides, API references, and integration examples.
+The Console: This is where you manage everything. Create memory spaces, generate API keys, and track your usage. Think of it as mission control for your agent's memory. https://console.crosmos.dev
 
-If you have any questions, just reply to this email. We're here to help.
+Agent Plugins: The fastest way to give your coding agent memory. Install the plugin and Crosmos recalls relevant project context when a session starts and captures your work automatically as you go, with no manual saving. Available for Claude Code and Codex. https://docs.crosmos.dev/plugins
 
-Regards,
-Team Crosmos
+MCP Server: One command and your coding assistant gets persistent memory. Works with Claude Code, Cursor, Windsurf, VS Code, Opencode or any MCP-compatible client. It remembers your project context, your preferences, your decisions. Across sessions.
+
+SDK: Integrate Crosmos directly into your own applications. Our SDK makes it simple to add persistent memory to any AI agent or LLM-powered app.
+
+Full setup guides and reference are in the docs: https://docs.crosmos.dev
+
+Crosmos clicks the moment you feed it something real. Not test data. Not "hello world." Start there, search for something inside it, and you'll see what we mean.
+
+Crosmos Team
 `;
 }
 
@@ -264,17 +328,25 @@ function renderInviteHtml(input: {
   acceptUrl: string;
   expiresAt: string;
 }): string {
-  const body = `<p style="${P_STYLE}">Hi there,</p>
-                    <p style="${P_STYLE}"><strong>${input.inviterName}</strong> invited you to join <strong>${input.orgName}</strong> on Crosmos as <strong>${input.role}</strong>.</p>
-                    <p style="${P_STYLE}">Crosmos is the AI memory engine that gives your team's agents persistent, shared memory. Accept the invite to get access to this organization's memory spaces.</p>
-                    ${renderButton(input.acceptUrl, 'Accept invitation')}
-                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:${MUTED_COLOR}">This invitation expires on ${input.expiresAt}. If the button above doesn't work, copy and paste this link into your browser:</p>
-                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;word-break:break-all"><a href="${input.acceptUrl}" style="color:${BRAND_COLOR};text-decoration:underline">${input.acceptUrl}</a></p>
-                    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:${MUTED_COLOR}">If you weren't expecting this invitation, you can safely ignore this email.</p>
-                    <p style="margin:0;font-size:16px;line-height:1.6;color:${TEXT_COLOR}">Regards,<br />Team Crosmos</p>`;
-  return renderLayout({
+  const body = `<p style="margin:0 0 16px 0">Hi there,</p>
+
+                <p style="margin:0 0 16px 0"><strong>${input.inviterName}</strong> invited you to join <strong>${input.orgName}</strong> on Crosmos as <strong>${input.role}</strong>.</p>
+
+                <p style="margin:0 0 20px 0">Crosmos is the AI memory engine that gives your team's agents persistent, shared memory. Accept the invite to get access to this organization's memory spaces.</p>
+
+                ${renderDarkButton(input.acceptUrl, 'Accept invitation')}
+
+                <p class="dm-muted" style="margin:0 0 8px 0;font-size:14px;line-height:1.6;color:#9aa0a6">This invitation expires on ${input.expiresAt}. If the button above doesn't work, copy and paste this link into your browser:</p>
+
+                <p style="margin:0;font-size:14px;line-height:1.6;word-break:break-all"><a class="dm-link" href="${input.acceptUrl}" style="color:#7ab3ff;text-decoration:underline">${input.acceptUrl}</a></p>`;
+  const footer = `<hr class="dm-divider" style="width:100%;border:none;border-top:1px solid #2a2a2a;margin:0 0 16px 0" />
+                <p class="footer-text dm-muted" style="margin:0;font-size:13px;line-height:1.6;color:#9aa0a6;text-align:left">
+                  If you weren't expecting this invitation, you can safely ignore this email.
+                </p>`;
+  return renderDarkLayout({
     preview: `${input.inviterName} invited you to join ${input.orgName} on Crosmos.`,
     body,
+    footer,
   });
 }
 
