@@ -110,6 +110,10 @@ export interface Variables {
   // API key info, if auth was via API key
   apiKeyId?: number;
   apiKeyUuid?: string;
+  // If the authenticating API key is space-scoped, its pinned space id. The
+  // data-plane gates (ingest/search/sources) reject any other space. Undefined
+  // for JWT auth or org-wide keys (no scoping).
+  scopedSpaceId?: number;
   // Set once the strict AI-path plan rate limit has been enforced for this
   // request (search/ingest gates), so route-level enforcement doesn't
   // double-count.

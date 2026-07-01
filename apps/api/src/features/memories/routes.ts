@@ -4,6 +4,7 @@ import { createApiApp } from '../../lib/openapi';
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getCachedSpaceByUuid } from '../../lib/gate-cache';
 import { scopeMemories, type TenantScope } from '../../lib/scope';
@@ -41,6 +42,8 @@ async function scopedSpace(c: Parameters<typeof getDb>[0], spaceUuid: string) {
   if (!space || space.orgId !== c.var.activeOrgId) {
     throw new HTTPException(404, { message: 'Space not found' });
   }
+  // A space-scoped API key may only read its pinned space (no-op otherwise).
+  assertKeyScopeAllowsSpace(c, space.id);
   return space;
 }
 

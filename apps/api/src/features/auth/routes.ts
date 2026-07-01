@@ -43,6 +43,7 @@ import {
   getOrganizationByIdOrThrow,
   resolveOrgIdFromUuid,
 } from '../orgs/service';
+import { getSpaceByUuid } from '../spaces/service';
 import {
   revokeRefreshToken,
   revokeRefreshTokenIfActive,
@@ -228,11 +229,27 @@ authRoutes.openapi(
   async (c) => {
     const body = c.req.valid('json');
     const db = getDb(c);
+
+    // If a space scope was requested, resolve + verify it belongs to the active
+    // org BEFORE minting the key (404 on missing/cross-tenant, no existence
+    // leak). Org-wide keys (no space_id) skip this entirely.
+    let spaceId: number | null = null;
+    if (body.space_id) {
+      const space = await getSpaceByUuid(db, body.space_id);
+      if (!space || space.orgId !== c.var.activeOrgId) {
+        throw new HTTPException(404, {
+          message: `Space ${body.space_id} not found`,
+        });
+      }
+      spaceId = space.id;
+    }
+
     const { apiKey, rawKey } = await createApiKey(db, {
       userId: c.var.userId!,
       orgId: c.var.activeOrgId!,
       name: body.name,
       expiresAt: body.expires_at ? new Date(body.expires_at) : null,
+      spaceId,
     });
     return c.json(
       {
@@ -241,6 +258,7 @@ authRoutes.openapi(
         key_prefix: apiKey.keyPrefix,
         raw_key: rawKey,
         expires_at: apiKey.expiresAt?.toISOString() ?? null,
+        space_id: body.space_id ?? null,
       },
       201,
     );
@@ -270,7 +288,7 @@ authRoutes.openapi(
     const rows = await listApiKeysForUser(db, c.var.userId!, { limit, offset });
     return c.json(
       {
-        keys: rows.map((k) => ({
+        keys: rows.map(({ apiKey: k, spaceUuid }) => ({
           key_id: k.uuid,
           name: k.name,
           key_prefix: k.keyPrefix,
@@ -278,6 +296,7 @@ authRoutes.openapi(
           expires_at: k.expiresAt?.toISOString() ?? null,
           last_used_at: k.lastUsedAt?.toISOString() ?? null,
           created_at: k.createdAt.toISOString(),
+          space_id: spaceUuid,
         })),
       },
       200,
