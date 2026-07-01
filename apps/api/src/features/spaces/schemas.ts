@@ -28,6 +28,27 @@ export const SpaceListResponseSchema = z
   })
   .openapi('SpaceListResponse');
 
+export const SpaceUsageQuerySchema = z
+  .object({
+    start_date: z.string().date().optional(),
+    end_date: z.string().date().optional(),
+  })
+  .refine(
+    (q) => !q.start_date || !q.end_date || q.start_date <= q.end_date,
+    { message: 'start_date must be on or before end_date', path: ['start_date'] },
+  )
+  .openapi('SpaceUsageQuery');
+
+export const SpaceUsageResponseSchema = z
+  .object({
+    space_id: UuidSchema,
+    period_start: z.string().date(),
+    period_end: z.string().date(),
+    tokens_ingested: z.number().int().nonnegative(),
+    search_queries: z.number().int().nonnegative(),
+  })
+  .openapi('SpaceUsageResponse');
+
 export const QuotaExceededBodySchema = z
   .object({
     detail: z.object({

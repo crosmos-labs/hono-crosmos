@@ -3,6 +3,8 @@ import {
   QuotaExceededBodySchema,
   SpaceListResponseSchema,
   SpaceSchema,
+  SpaceUsageQuerySchema,
+  SpaceUsageResponseSchema,
 } from './schemas';
 import type { MemorySpace } from '@crosmos/db';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
@@ -18,8 +20,10 @@ import { PaginationQuerySchema } from '../../lib/zod-common';
 import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getEntitlements } from '../orgs/entitlements';
 import { getOrganizationByIdOrThrow } from '../orgs/service';
+import { getSpaceUsage } from '../usage/service';
 import {
   createSpaceAtomic,
   deleteSpace,
@@ -31,6 +35,17 @@ import {
 export const spaceRoutes = createApiApp();
 
 const ErrorBody = z.object({ detail: z.string() }).openapi('SpaceErrorBody');
+
+/** Current calendar month [first day, last day] as `YYYY-MM-DD` (UTC). */
+function defaultUsagePeriod(): { start: string; end: string } {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
+}
 
 const errorResponses = {
   400: {
@@ -204,6 +219,66 @@ spaceRoutes.openapi(
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
     return c.json(await toResponse(c, space), 200);
+  },
+);
+
+// GET /api/v1/spaces/{space_uuid}/usage — per-space usage rollup
+spaceRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/{space_uuid}/usage',
+    tags: ['spaces'],
+    summary: 'Get per-space usage',
+    description:
+      'Tokens ingested and search queries for a single space over a date range (defaults to the current calendar month). Use this to attribute usage to one end-user when you map one space per end-user.',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requirePrincipal] as const,
+    request: {
+      params: z.object({ space_uuid: z.string().uuid() }),
+      query: SpaceUsageQuerySchema,
+    },
+    responses: {
+      200: {
+        description: 'Space usage for the selected period',
+        content: { 'application/json': { schema: SpaceUsageResponseSchema } },
+      },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { space_uuid } = c.req.valid('param');
+    const query = c.req.valid('query');
+    const db = getDb(c);
+
+    const space = await getSpaceByUuid(db, space_uuid);
+    // 404 on both missing and cross-tenant (no existence leak).
+    if (!space || space.orgId !== c.var.activeOrgId) {
+      throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
+    }
+    // A space-scoped API key can only read its own space's usage.
+    assertKeyScopeAllowsSpace(c, space.id);
+
+    const { start, end } = defaultUsagePeriod();
+    const periodStart = query.start_date ?? start;
+    const periodEnd = query.end_date ?? end;
+
+    const usage = await getSpaceUsage(db, {
+      orgId: space.orgId,
+      spaceId: space.id,
+      start: periodStart,
+      end: periodEnd,
+    });
+
+    return c.json(
+      {
+        space_id: space.uuid,
+        period_start: periodStart,
+        period_end: periodEnd,
+        tokens_ingested: usage.tokensIngested,
+        search_queries: usage.searchQueries,
+      },
+      200,
+    );
   },
 );
 

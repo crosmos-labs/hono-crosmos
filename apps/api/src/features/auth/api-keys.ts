@@ -1,4 +1,4 @@
-import { apiKeys, users, type ApiKey, type User } from '@crosmos/db';
+import { apiKeys, memorySpaces, users, type ApiKey, type User } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
 import { generateApiKey, hashApiKey } from './key-format';
 import { and, desc, eq } from 'drizzle-orm';
@@ -15,6 +15,10 @@ export async function createApiKey(
     orgId: number;
     name: string;
     expiresAt?: Date | null;
+    // Optional space scope. When set, the key is restricted to this space on
+    // the data plane. The caller must have already verified the space belongs
+    // to `orgId`.
+    spaceId?: number | null;
   },
 ): Promise<CreatedApiKey> {
   const { rawKey, keyHash, keyPrefix } = await generateApiKey();
@@ -27,24 +31,33 @@ export async function createApiKey(
       keyHash,
       keyPrefix,
       expiresAt: input.expiresAt ?? null,
+      spaceId: input.spaceId ?? null,
     })
     .returning();
   if (!row) throw new Error('Failed to create API key');
   return { apiKey: row, rawKey };
 }
 
+/** An API key row plus its scoped space's uuid (null for org-wide keys). */
+export interface ApiKeyWithSpace {
+  apiKey: ApiKey;
+  spaceUuid: string | null;
+}
+
 export async function listApiKeysForUser(
   db: Database,
   userId: number,
   opts?: { limit?: number; offset?: number },
-): Promise<ApiKey[]> {
-  return db
-    .select()
+): Promise<ApiKeyWithSpace[]> {
+  const rows = await db
+    .select({ apiKey: apiKeys, spaceUuid: memorySpaces.uuid })
     .from(apiKeys)
+    .leftJoin(memorySpaces, eq(apiKeys.spaceId, memorySpaces.id))
     .where(eq(apiKeys.userId, userId))
     .orderBy(desc(apiKeys.createdAt))
     .limit(opts?.limit ?? 200)
     .offset(opts?.offset ?? 0);
+  return rows.map((r) => ({ apiKey: r.apiKey, spaceUuid: r.spaceUuid ?? null }));
 }
 
 export async function getApiKeyByUuid(

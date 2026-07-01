@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { createLogger, durationMs } from '@crosmos/observability';
 import type { HonoEnv } from '../../bindings';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
@@ -140,6 +141,9 @@ conversationRoutes.openapi(
       space_id: space.id,
       duration_ms: durationMs(preflightStart),
     });
+    // A space-scoped API key may only ingest into its pinned space (no-op for
+    // JWT / org-wide keys).
+    assertKeyScopeAllowsSpace(c, space.id);
 
     const scope: TenantScope = {
       orgId: space.orgId,
