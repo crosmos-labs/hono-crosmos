@@ -31,7 +31,7 @@ If the content contains no extractable fact — neither a user statement nor a s
 5. Separate topics into separate memories (work, preferences, events).
 6. Do not atomize — keep related facts together, but preserve EVERY specific name and detail verbatim within the combined memory.
 7. Skip greetings, filler, procedural chatter.
-8. Deduplication: exact semantic overlap with existing_memories → skip. Same fact with NEW dates/details → extract. Same topic, different context → extract.
+8. Deduplication — skip ONLY true restatement. Skip a candidate ONLY when an existing_memory already asserts the same fact with the same specifics. A candidate that adds any specific the existing memories do not already contain — a number, quantity, measurement, amount, date, name, location, status, or relationship — is NEW; extract it, even when its subject or topic already appears in existing_memories. A known entity is not the same as a known fact about it. Same topic, different context → extract. When unsure whether a detail is already captured, EXTRACT.
 9. Preserve ALL specific names verbatim: brands, stores, venues, products, people, quantities, amounts, destinations, locations. NEVER drop or generalize.
 10. Preferences are TWO-SIDED. When the user expresses a preference, extract BOTH what they LIKE and what they DISLIKE / AVOID / want to move away from — each WITH its specific details AND the stated reason. "I'm avoiding screens before bed because it hurts my sleep" → extract the avoidance (no phone/TV in the evening) AND the reason (hurts sleep), not just "winds down at 9:30pm". When the user wants to branch from X to Y ("tired of true crime, want to try history"), capture BOTH the rejected X and the desired Y. A dislike/constraint is as important as a like — never drop it.
 
@@ -202,8 +202,11 @@ export function buildMemoryUserPrompt(input: MemoryUserPromptInput): string {
     const items = existing.map((m) => `- ${m}`).join('\n');
     existingMemoriesStr =
       `\n\n<EXISTING_MEMORIES>\n${items}\n</EXISTING_MEMORIES>\n` +
-      'Do not re-extract facts already captured above. ' +
-      'Extract only new or meaningfully updated information.';
+      'These are already known. Skip a candidate ONLY when it is fully covered ' +
+      'by one of them. If a candidate adds any new specific — a number, ' +
+      'quantity, score, count, measurement, amount, price, date, name, ' +
+      'location, status, or relationship — extract it, even when it concerns ' +
+      'an entity already listed above. When unsure, extract.';
   }
 
   if (safeContext) {

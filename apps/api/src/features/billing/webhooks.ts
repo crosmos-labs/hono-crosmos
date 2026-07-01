@@ -1,5 +1,5 @@
 import { billingEvents, organizations, type Database } from '@crosmos/db';
-import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, lte, ne, or } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 import { invalidateEntitlements } from '../../lib/gate-cache';
 import {
@@ -171,6 +171,21 @@ function stringField(record: Record<string, unknown>, snake: string, camel?: str
   return typeof value === 'string' && value ? value : null;
 }
 
+// The Polar subscription this event is about. For `subscription.*` events that's
+// the object's own `id`; for `order.*` events the subscription is referenced via
+// `subscription_id`. Used to ensure a state-changing handler only touches the
+// org when the event targets the org's CURRENT subscription — a stale event for
+// a superseded subscription (e.g. an old sub revoking after the user already
+// re-subscribed) must not clobber the live one.
+function eventSubscriptionId(payload: PolarWebhookPayload): string | null {
+  const d = data(payload);
+  if (!d) return null;
+  if (eventType(payload).startsWith('subscription.')) {
+    return stringField(d, 'id');
+  }
+  return stringField(d, 'subscription_id', 'subscriptionId');
+}
+
 async function dispatchActive(
   db: Database,
   env: Env,
@@ -193,9 +208,18 @@ async function dispatchActive(
   const subscriptionId = stringField(d, 'id');
   const customerId = stringField(d, 'customer_id', 'customerId');
   const currentPeriodEnd = parseDate(d.current_period_end ?? d.currentPeriodEnd);
+  // A `subscription.updated` fired by a cancel-at-period-end carries the sub
+  // still in an "active" Polar status but with `cancel_at_period_end: true`.
+  // Treating it as plain `active` would silently undo a user's cancellation in
+  // our DB (the /subscription endpoint would read `active` again). Honour the
+  // flag so the stored status stays `canceled`; entitlements key off `plan`,
+  // which we leave untouched, so paid access still continues until the period
+  // end / revoke.
+  const cancelAtPeriodEnd =
+    d.cancel_at_period_end === true || d.cancelAtPeriodEnd === true;
   const patch: Partial<typeof organizations.$inferInsert> = {
     plan,
-    subscriptionStatus: 'active',
+    subscriptionStatus: cancelAtPeriodEnd ? 'canceled' : 'active',
     planPending: null,
     updatedAt: new Date(),
   };
@@ -244,7 +268,7 @@ async function dispatchActive(
     guards.push(
       or(
         isNull(organizations.currentPeriodEnd),
-        sql`${organizations.currentPeriodEnd} <= ${currentPeriodEnd}`,
+        lte(organizations.currentPeriodEnd, currentPeriodEnd),
       )!,
     );
   }
@@ -285,11 +309,26 @@ async function dispatchEvent(
     return;
   }
 
+  // State-changing handlers below must only fire for the org's CURRENT
+  // subscription. When a subscription id is present on the event, scope the
+  // update to rows whose stored `polarSubscriptionId` matches — so a stale event
+  // for a superseded subscription (the classic cancel-then-resubscribe-before-
+  // period-end race) cannot downgrade a freshly-paid subscription. When the
+  // event carries no subscription id we fall back to org-scoped matching (legacy
+  // behaviour) rather than ignoring the event.
+  const subId = eventSubscriptionId(payload);
+  const targetsCurrentSubscription = subId
+    ? and(
+        eq(organizations.id, orgId),
+        eq(organizations.polarSubscriptionId, subId),
+      )!
+    : eq(organizations.id, orgId);
+
   if (type === 'subscription.past_due') {
     await db
       .update(organizations)
       .set({ subscriptionStatus: 'past_due', updatedAt: new Date() })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     await bindCustomer(db, payload, orgId);
     return;
   }
@@ -304,7 +343,7 @@ async function dispatchEvent(
         currentPeriodEnd: currentPeriodEnd ?? undefined,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     await bindCustomer(db, payload, orgId);
     return;
   }
@@ -320,7 +359,7 @@ async function dispatchEvent(
         planPending: null,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     return;
   }
 
@@ -332,9 +371,10 @@ async function dispatchEvent(
         subscriptionStatus: 'revoked',
         polarSubscriptionId: null,
         currentPeriodEnd: null,
+        planPending: null,
         updatedAt: new Date(),
       })
-      .where(eq(organizations.id, orgId));
+      .where(targetsCurrentSubscription);
     return;
   }
 
@@ -391,24 +431,34 @@ export async function handlePolarWebhook(
     })
     .onConflictDoNothing({ target: billingEvents.polarEventId });
 
-  const [eventRow] = await db
-    .select()
-    .from(billingEvents)
-    .where(eq(billingEvents.polarEventId, webhookId))
-    .limit(1);
-  if (!eventRow || eventRow.processedAt) return { received: true };
+  // Atomically claim the event before dispatching: `processedAt IS NULL` in the
+  // WHERE means exactly one concurrent delivery of the same webhook-id wins the
+  // claim and runs `dispatchEvent`; the rest match zero rows and return early.
+  // This closes the read-then-act TOCTOU where two deliveries both observed
+  // `processedAt = null` and both dispatched.
+  const claimed = await db
+    .update(billingEvents)
+    .set({ processedAt: new Date(), error: null })
+    .where(
+      and(
+        eq(billingEvents.polarEventId, webhookId),
+        isNull(billingEvents.processedAt),
+      ),
+    )
+    .returning({ id: billingEvents.id });
+  const eventRow = claimed[0];
+  if (!eventRow) return { received: true };
 
   try {
     await dispatchEvent(db, env, payload, orgId);
-    await db
-      .update(billingEvents)
-      .set({ processedAt: new Date(), error: null })
-      .where(eq(billingEvents.id, eventRow.id));
     if (orgId != null) await invalidateEntitlements(env, orgId);
   } catch (err) {
+    // Release the claim so Polar's retry (driven by the 500 below) can
+    // re-attempt; otherwise a transient dispatch failure would leave the event
+    // permanently marked processed but un-applied.
     await db
       .update(billingEvents)
-      .set({ error: String(err).slice(0, 1000) })
+      .set({ processedAt: null, error: String(err).slice(0, 1000) })
       .where(eq(billingEvents.id, eventRow.id));
     throw new WebhookHttpError(500, 'dispatch_failed');
   }

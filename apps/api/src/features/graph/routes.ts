@@ -5,6 +5,7 @@ import { and, asc, count, desc, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getCachedSpaceByUuid } from '../../lib/gate-cache';
 import { scopeEdges, scopeEntities, type TenantScope } from '../../lib/scope';
@@ -30,6 +31,8 @@ async function scopedSpace(c: ApiContext, spaceUuid: string) {
   if (!space || space.orgId !== c.var.activeOrgId) {
     throw new HTTPException(404, { message: 'Space not found' });
   }
+  // A space-scoped API key may only read its pinned space (no-op otherwise).
+  assertKeyScopeAllowsSpace(c, space.id);
   return space;
 }
 
@@ -75,6 +78,27 @@ function edgeCountExpr(scope: TenantScope) {
         AND ${edges.forgottenAt} IS NULL
         AND ${visible})
   )::int`;
+}
+
+/**
+ * EXISTS predicate: the entity is touched by at least one active edge the caller
+ * can see. Entities carry no owner/visibility columns, so without this they all
+ * render regardless of who can see their edges — producing an orphan node-cloud
+ * with edge_count 0 (e.g. when viewing another org's space whose content is
+ * private to other users). Gating nodes on a visible edge keeps the node set
+ * consistent with the visibility-filtered edge set (same filter as `scopeEdges`).
+ * Note: entities with no active edges at all are also excluded — the graph view
+ * shows the visible relationship subgraph, not isolated nodes.
+ */
+function hasVisibleEdge(scope: TenantScope) {
+  const visible = scopeEdges(scope);
+  return sql`EXISTS (
+    SELECT 1 FROM ${edges}
+    WHERE (${edges.sourceEntityId} = ${entities.id}
+        OR ${edges.targetEntityId} = ${entities.id})
+      AND ${edges.forgottenAt} IS NULL
+      AND ${visible}
+  )`;
 }
 
 function nodeOut(entity: Entity, countForEntity: number) {
@@ -129,7 +153,10 @@ graphRoutes.openapi(
     const degree = edgeCountExpr(scope);
     // Totals via COUNT — never materialize the whole space to read `.length`.
     const [[nodeTotalRow], [edgeTotalRow], pageNodes] = await Promise.all([
-      db.select({ c: count() }).from(entities).where(scopeEntities(scope)),
+      db
+        .select({ c: count() })
+        .from(entities)
+        .where(and(scopeEntities(scope), hasVisibleEdge(scope))),
       db
         .select({ c: count() })
         .from(edges)
@@ -139,7 +166,7 @@ graphRoutes.openapi(
       db
         .select({ entity: entities, edgeCount: degree })
         .from(entities)
-        .where(scopeEntities(scope))
+        .where(and(scopeEntities(scope), hasVisibleEdge(scope)))
         .orderBy(desc(degree), asc(entities.id))
         .limit(query.limit)
         .offset(query.offset),
@@ -214,12 +241,15 @@ graphRoutes.openapi(
     const space = await scopedSpace(c, query.space_id);
     const scope = await tenantScope(c, space);
     const [entityRows, edgeRows, typeRows] = await Promise.all([
-      db.select({ c: count() }).from(entities).where(scopeEntities(scope)),
+      db
+        .select({ c: count() })
+        .from(entities)
+        .where(and(scopeEntities(scope), hasVisibleEdge(scope))),
       activeEdges(db, scope),
       db
         .select({ entityType: entities.entityType, c: count() })
         .from(entities)
-        .where(scopeEntities(scope))
+        .where(and(scopeEntities(scope), hasVisibleEdge(scope)))
         .groupBy(entities.entityType),
     ]);
 

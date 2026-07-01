@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { createLogger, durationMs } from '@crosmos/observability';
 import type { HonoEnv } from '../../bindings';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
@@ -24,6 +25,7 @@ import {
   RateLimitedBodySchema,
 } from '../sources/schemas';
 import { createSources } from '../sources/service';
+import { estimateTokens } from '../../lib/tokens';
 import {
   IngestConversationRequestSchema,
   IngestConversationResponseSchema,
@@ -116,6 +118,11 @@ conversationRoutes.openapi(
     const queue = getQueueService(c.env, db);
     const jobStore = getJobStore(db, limits.staleJobMinutes);
 
+    // Formatted once: feeds the input-token estimate (quota basis) AND the
+    // stored source content below.
+    const conversationContent = formatMessages(body.messages);
+    const incomingTokens = estimateTokens(conversationContent);
+
     const preflightStart = performance.now();
     const space = await preflight({
       db,
@@ -126,6 +133,7 @@ conversationRoutes.openapi(
       orgId,
       userId,
       spaceUuid: body.space_id,
+      incomingTokens,
       skipPlanRateLimit: c.var.planRateLimitEnforced,
     });
     logger.info('ingestion.enqueue_stage_completed', {
@@ -133,6 +141,9 @@ conversationRoutes.openapi(
       space_id: space.id,
       duration_ms: durationMs(preflightStart),
     });
+    // A space-scoped API key may only ingest into its pinned space (no-op for
+    // JWT / org-wide keys).
+    assertKeyScopeAllowsSpace(c, space.id);
 
     const scope: TenantScope = {
       orgId: space.orgId,
@@ -147,10 +158,11 @@ conversationRoutes.openapi(
 
     const inserts = [{
       scope,
-      content: formatMessages(body.messages),
+      content: conversationContent,
       contentType: 'conversation' as const,
       visibility: body.visibility,
       meta,
+      tokenCount: incomingTokens,
     }];
     const created = await logger.time('ingestion.enqueue_stage_completed', {
       stage: 'source_insert',

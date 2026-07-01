@@ -147,8 +147,19 @@ export async function createCheckoutSession(
   input: { orgId: number; plan: PurchasablePlan },
 ): Promise<string> {
   const org = await getOrganizationByIdOrThrow(db, input.orgId);
-  if (org.plan === input.plan && org.subscriptionStatus === 'active') {
-    throw new BillingConfigError(`org is already on plan '${input.plan}'`);
+  // A checkout always creates a NEW Polar subscription. If the org already has a
+  // live subscription (active, in dunning, or canceled-but-still-in-period), a
+  // second checkout would leave two subscriptions billing in parallel while the
+  // org only tracks the last `polarSubscriptionId` — a silent double-charge, and
+  // the old sub's eventual revoke would clobber the new one. Plan changes
+  // (upgrade/downgrade/re-activate) must go through the customer portal instead.
+  const hasLiveSubscription =
+    !!org.polarSubscriptionId &&
+    (org.subscriptionStatus === 'active' ||
+      org.subscriptionStatus === 'past_due' ||
+      org.subscriptionStatus === 'canceled');
+  if (hasLiveSubscription) {
+    throw new BillingConfigError('existing_subscription_must_be_managed_in_portal');
   }
   if (!org.billingEmail) {
     throw new BillingConfigError('billing_email is not set on organization');
@@ -278,8 +289,15 @@ export async function verifyCheckoutMetadata(
   if (!Number.isInteger(orgId) || !plan || !nonce || !Number.isInteger(issuedAt) || !sig) {
     return null;
   }
+  // The signature already binds (orgId, plan) authentically, so the only job of
+  // this window is to bound how long a captured metadata blob stays replayable —
+  // and a replay merely re-asserts the true (orgId, plan), so the risk is low.
+  // It must therefore comfortably exceed the lifetime of a Polar checkout link:
+  // a 24h window silently dropped activations when a user paid a day after
+  // generating the link (first purchase → customer not yet bound → no fallback →
+  // money taken, no plan). 30 days covers any realistic pay-later gap.
   const age = Math.floor(Date.now() / 1000) - issuedAt;
-  if (age < 0 || age > 86_400) return null;
+  if (age < 0 || age > 30 * 86_400) return null;
   const expected = await hmacHex(
     env.BILLING_METADATA_SECRET,
     `${orgId}|${plan}|${nonce}|${issuedAt}`,

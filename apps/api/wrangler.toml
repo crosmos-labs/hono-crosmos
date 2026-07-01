@@ -14,7 +14,7 @@ compatibility_flags = ["nodejs_compat"]
 # ───────────────────────────────────────────────────────────────────────────
 
 # Disable the *.workers.dev default route. The Worker is reachable ONLY via the
-# custom domain (hono.crosmos.dev) below, so the public
+# custom domain (api.crosmos.dev) below, so the public
 # crosmos-api*.crosmos-ai.workers.dev hostname — which bypasses the zone's WAF /
 # Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
 # inherited by named environments, so it's repeated under [env.production].
@@ -158,7 +158,7 @@ VECTOR_STORE = "vectorize"
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
 
 [env.production]
-# No *.workers.dev for prod — only the hono.crosmos.dev custom domain route.
+# No *.workers.dev for prod — only the api.crosmos.dev custom domain route.
 workers_dev = false
 
 [env.production.observability]
@@ -178,8 +178,10 @@ head_sampling_rate = 1
 
 [env.production.vars]
 ENVIRONMENT = "production"
-OAUTH_SERVER_BASE_URL = "https://hono.crosmos.dev"
-APP_BASE_URL = "https://hono.crosmos.dev"
+OAUTH_SERVER_BASE_URL = "https://api.crosmos.dev"
+APP_BASE_URL = "https://api.crosmos.dev"
+# Invite-accept links point at the console SPA, not the API host.
+INVITE_ACCEPT_URL = "https://console.crosmos.dev/invites/accept"
 RETRIEVAL_RERANKER_ENABLED = "true"
 EMBEDDINGS_PROVIDER = "openai"
 RERANKER_PROVIDER = "zeroentropy"
@@ -235,14 +237,15 @@ mode = "targeted"
 region = "aws:us-east-1"
 
 [[env.production.routes]]
-pattern = "hono.crosmos.dev"
+pattern = "api.crosmos.dev"
 custom_domain = true
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-# crosmos-neon-useast1 → NeonDB us-east-1 (benchmark/US setup). Prior id
-# 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2 (kept for rollback).
-id = "72fcf1cc21b349e490900148469c12e7"
+# crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
+# 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
+# us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
+id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 [[env.production.kv_namespaces]]
 binding = "API_KEY_CACHE"
@@ -259,4 +262,103 @@ queue = "ingestion-jobs"
 [[env.production.services]]
 binding = "INGESTION_SERVICE"
 service = "crosmos-ingestion-production"
+entrypoint = "IngestionWorker"
+
+# ───────────────────────────────────────────────────────────────────────────
+# STAGING — mirrors production (same providers + secret VALUES), but with fully
+# ISOLATED data: its own Neon branch (Hyperdrive), Qdrant collections
+# (crosmos-*-staging), KV namespace, and queues. Reachable at
+# staginghono.crosmos.dev; no edge gate — every route still requires a valid
+# API key / OAuth token (same auth as prod). Deploy: `wrangler deploy --env staging`.
+# Secrets are per-env: run `wrangler secret put <NAME> --env staging` (same
+# values as prod) — see docs runbook.
+# ───────────────────────────────────────────────────────────────────────────
+[env.staging]
+workers_dev = false
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[env.staging.observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+OAUTH_SERVER_BASE_URL = "https://staginghono.crosmos.dev"
+APP_BASE_URL = "https://staginghono.crosmos.dev"
+RETRIEVAL_RERANKER_ENABLED = "true"
+EMBEDDINGS_PROVIDER = "openai"
+RERANKER_PROVIDER = "zeroentropy"
+VECTOR_STORE = "qdrant"
+EMBEDDING_DIMENSIONS = "1536"
+# SEPARATE staging Qdrant cluster (its own API key — wrangler secret put
+# QDRANT_API_KEY --env staging). Fully isolated from prod vectors.
+QDRANT_URL = "https://52fd164c-3af1-41e3-9cc8-400137cb542e.us-east-1-1.aws.cloud.qdrant.io"
+QDRANT_MEMORIES_COLLECTION = "crosmos-memories-staging"
+QDRANT_ENTITIES_COLLECTION = "crosmos-entities-staging"
+
+# Workers AI binding (not inherited from top-level). DORMANT (VECTOR_STORE=qdrant).
+[env.staging.ai]
+binding = "AI"
+
+# Durable Object rate limiter (staging gets its own DO namespace via the named
+# env). Not inherited from top-level.
+[[env.staging.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiterDO"]
+
+# Vectorize (DORMANT — VECTOR_STORE=qdrant). Bound to the existing dev indexes so
+# the binding resolves without provisioning new ones; never read in staging.
+[[env.staging.vectorize]]
+binding = "MEMORIES_INDEX"
+index_name = "crosmos-memories-dev"
+
+[[env.staging.vectorize]]
+binding = "ENTITIES_INDEX"
+index_name = "crosmos-entities-dev"
+
+[env.staging.triggers]
+crons = ["17 3 * * *", "*/15 * * * *"]
+
+# Same targeted placement as prod: the staging Neon branch and Qdrant collections
+# both live in aws:us-east-1.
+[env.staging.placement]
+mode = "targeted"
+region = "aws:us-east-1"
+
+[[env.staging.routes]]
+pattern = "staginghono.crosmos.dev"
+custom_domain = true
+
+# Hyperdrive → staging NeonDB (crosmos-neon-staging, ep-curly-mouse us-east-1).
+[[env.staging.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "930052d5e0dc40c8911417c7ef3e8c13"
+
+# KV → staging namespace (created via `wrangler kv namespace create API_KEY_CACHE_STAGING`).
+[[env.staging.kv_namespaces]]
+binding = "API_KEY_CACHE"
+id = "0af915afd8064727b0290dbc2db10d0c"
+
+[[env.staging.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs-staging"
+
+# Service binding to the staging ingestion worker (named env suffixes the name).
+[[env.staging.services]]
+binding = "INGESTION_SERVICE"
+service = "crosmos-ingestion-staging"
 entrypoint = "IngestionWorker"
