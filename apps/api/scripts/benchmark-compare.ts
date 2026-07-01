@@ -62,7 +62,7 @@ const targets: Target[] = [
   },
   {
     name: 'hono',
-    baseUrl: trimSlash(process.env.CROSMOS_HONO_BASE_URL ?? 'https://hono.crosmos.dev'),
+    baseUrl: trimSlash(process.env.CROSMOS_HONO_BASE_URL ?? 'https://api.crosmos.dev'),
     token: mustEnv('CROSMOS_HONO_TOKEN'),
   },
 ];

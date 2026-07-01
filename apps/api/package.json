@@ -8,6 +8,7 @@
     "build": "wrangler deploy --dry-run --outdir=dist",
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",
+    "deploy:staging": "wrangler deploy --env staging",
     "bench:compare": "bun scripts/benchmark-compare.ts",
     "typecheck": "tsc --noEmit",
     "tail": "wrangler tail"

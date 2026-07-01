@@ -11,7 +11,7 @@ import { getCachedEntitlements } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { createLogger, createMetrics } from '@crosmos/observability';
 import {
-  enforcePlanRateLimit,
+  enforceMgmtRateLimit,
   getRateLimiter,
   RateLimitError,
 } from '../../integrations/rate-limit';
@@ -65,6 +65,8 @@ interface CachedApiKey {
   userEmail: string;
   userName: string;
   orgId: number;
+  // Space scope: the key's pinned space id, or null for an org-wide key.
+  spaceId: number | null;
   expiresAt: number | null;
 }
 
@@ -112,6 +114,7 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
       userEmail: user.email,
       userName: user.name,
       orgId: apiKey.orgId,
+      spaceId: apiKey.spaceId ?? null,
       expiresAt: apiKey.expiresAt ? apiKey.expiresAt.getTime() : null,
     };
     waitUntilLogged(
@@ -143,6 +146,7 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
   c.set('apiKeyId', cached.apiKeyId);
   c.set('apiKeyUuid', cached.apiKeyUuid);
   c.set('activeOrgId', cached.orgId);
+  if (cached.spaceId != null) c.set('scopedSpaceId', cached.spaceId);
 }
 
 async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
@@ -197,22 +201,25 @@ function extractBearer(c: AuthContext): string {
 }
 
 /**
- * Default-on per-org plan rate limit, run right after authentication for every
- * `requireAuth` route. Previously the plan limiter was opt-in per route, so any
- * new authenticated route shipped *unlimited* by default; baking it into the
- * shared auth gate makes coverage default-on. Routes that still call
- * `enforcePlanRateLimit` themselves set `planRateLimitEnforced` (or observe it)
- * so we never double-count.
+ * Default-on per-org MANAGEMENT rate limit, run right after authentication for
+ * every `requireAuth` route. This is deliberately the *looser* limit
+ * (`mgmt_rate_limit_*`, e.g. 300 RPM on free), kept in its own counter
+ * namespace — the strict AI-path limit (`rate_limit_*`, 10 RPM on free) is
+ * enforced only by the search and ingestion gates, so normal CRUD/dashboard
+ * traffic no longer draws down the tight AI budget. Baking *a* limiter into the
+ * shared auth gate keeps coverage default-on: a new authenticated route can't
+ * accidentally ship completely unlimited.
  *
  * Only enforces when an org context exists (JWT with `active_org_id`, or an API
  * key — which is always org-pinned). Counter WRITES are deferred via
  * `waitUntil` so this stays off the latency-critical path. Fails **open** on
  * any non-RateLimitError (a KV/entitlements hiccup must not 500 real traffic),
- * matching the limiter's stance elsewhere.
+ * matching the limiter's stance elsewhere. Does NOT touch
+ * `planRateLimitEnforced` — the AI-path gates own that flag.
  */
-async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
+async function enforceOrgMgmtRateLimit(c: AuthContext): Promise<void> {
   const orgId = c.var.activeOrgId;
-  if (orgId == null || c.var.planRateLimitEnforced) return;
+  if (orgId == null || c.var.mgmtRateLimitEnforced) return;
 
   const db = getDb(c);
   const limiter = getRateLimiter(c.env, (task) => c.executionCtx.waitUntil(task));
@@ -220,15 +227,15 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
     // Use KV-cached entitlements so the default-on check doesn't add a DB
     // org-fetch to every authenticated request.
     const entitlements = await getCachedEntitlements(c, orgId);
-    await enforcePlanRateLimit(db, limiter, orgId, entitlements);
-    c.set('planRateLimitEnforced', true);
+    await enforceMgmtRateLimit(db, limiter, orgId, entitlements);
+    c.set('mgmtRateLimitEnforced', true);
   } catch (err) {
     if (err instanceof RateLimitError) {
-      c.set('planRateLimitEnforced', true);
+      c.set('mgmtRateLimitEnforced', true);
       createMetrics(c.env.ANALYTICS, {
         service: 'api',
         environment: c.env.ENVIRONMENT,
-      }).count('plan_rate_limited', { tags: [err.scope], index: 'plan_rate_limited' });
+      }).count('mgmt_rate_limited', { tags: [err.scope], index: 'mgmt_rate_limited' });
       const requestId = c.var.requestId;
       const body = new Response(
         JSON.stringify(
@@ -248,11 +255,76 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
     // Anything else: fail open (the limiter already swallows KV errors; this
     // guards entitlements-resolution failures too).
     createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
-      'ratelimit.plan_catchall_failure',
-      { stage: 'plan_rate_limit', scope: 'org' },
+      'ratelimit.mgmt_catchall_failure',
+      { stage: 'mgmt_rate_limit', scope: 'org' },
       err,
     );
   }
+}
+
+/**
+ * Data-plane path prefixes a SPACE-SCOPED API key is allowed to reach. A scoped
+ * key is meant to be handed to a single end-user's client, so it must be
+ * confined to reading/writing memory — never management. Anything outside this
+ * list (creating spaces, minting more keys, listing all spaces, org/billing
+ * admin) is rejected with 403.
+ *
+ * Read-side space checks (memories/entities/graph/sources) additionally verify
+ * the *specific* space matches the key's scope; this list is the coarse
+ * endpoint gate that runs first.
+ */
+const SCOPED_KEY_ALLOWED_PREFIXES = [
+  '/api/v1/sources',
+  '/api/v1/search',
+  '/api/v1/memories',
+  '/api/v1/entities',
+  '/api/v1/graph',
+  '/api/v1/conversations',
+  '/api/v1/jobs', // poll ingestion job status after an ingest
+];
+
+/**
+ * Reject a space-scoped key on any endpoint outside the data plane. Called from
+ * `requireAuth` only when `scopedSpaceId` is set (org-wide keys and JWTs skip
+ * this entirely, so nothing about existing behavior changes).
+ *
+ * A couple of management reads are allowed narrowly: `GET /auth/me` and
+ * `GET /auth/keys/validate` (self-introspection), and `GET` on a single space
+ * (`/api/v1/spaces/{uuid}` and `/usage`) — but NOT the space *list* or any
+ * space mutation.
+ */
+function enforceScopedKeyEndpoint(c: AuthContext): void {
+  const path = c.req.path;
+  const method = c.req.method;
+
+  if (SCOPED_KEY_ALLOWED_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) {
+    return;
+  }
+  if (method === 'GET' && (path === '/api/v1/auth/me' || path === '/api/v1/auth/keys/validate')) {
+    return;
+  }
+  // GET on a specific space (…/spaces/{uuid} or …/spaces/{uuid}/usage) is fine;
+  // the bare collection (…/spaces) and any mutation are not.
+  if (method === 'GET' && path.startsWith('/api/v1/spaces/')) {
+    return;
+  }
+
+  // Authenticated-but-forbidden → 403 (not 401): the key is valid, it just
+  // isn't allowed here. Log it as an authorization denial, not an auth failure.
+  createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+    base: { request_id: c.var.requestId },
+  }).warn('auth.scoped_key_endpoint_denied', {
+    reason: 'scoped_key_endpoint_denied',
+    auth_method: 'api_key',
+    status_code: 403,
+    path,
+    method,
+  });
+  throw new HTTPException(403, {
+    message: 'This API key is scoped to a single space and cannot access this endpoint.',
+  });
 }
 
 /**
@@ -260,8 +332,9 @@ async function enforceOrgPlanRateLimit(c: AuthContext): Promise<void> {
  * Populates user/auth context on `c.var`. Does NOT require an org context —
  * for that, chain `requireOrg` after this.
  *
- * Also applies the default-on per-org plan rate limit (see
- * `enforceOrgPlanRateLimit`) so authenticated routes are throttled by default.
+ * Also applies the default-on per-org management rate limit (see
+ * `enforceOrgMgmtRateLimit`) so authenticated routes are throttled by default.
+ * The stricter AI-path limit is enforced separately by the search/ingest gates.
  */
 export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   const token = extractBearer(c);
@@ -270,7 +343,12 @@ export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
   } else {
     await authenticateJwt(c, token);
   }
-  await enforceOrgPlanRateLimit(c);
+  // Space-scoped keys are confined to the data plane (must run before the route
+  // body so management endpoints are unreachable).
+  if (c.var.scopedSpaceId != null) {
+    enforceScopedKeyEndpoint(c);
+  }
+  await enforceOrgMgmtRateLimit(c);
   await next();
 });
 

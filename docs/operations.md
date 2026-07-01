@@ -96,6 +96,33 @@ Ingestion Worker secrets:
 
 Use Wrangler for secret updates, scoped to the correct app and environment.
 
+## Scheduled maintenance (crons)
+
+The API Worker runs two cron triggers (`apps/api/wrangler.toml`): a daily one
+(`17 3 * * *`) for billing reconciliation + cleanup, and a 15-minute one
+(`*/15 * * * *`) that runs the stale-job reaper and the **ingestion re-drive
+sweep** (`apps/api/src/features/maintenance/redrive.ts`).
+
+The re-drive sweep is the durability backstop of last resort: it re-queues
+sources still stuck `pending`/`processing` (past the 20-min lease window) or left
+`failed`, mints a fresh job per source group, and — so nothing sits in limbo —
+marks terminally failed any source whose owner was deleted (`owner_deleted`) or
+that exhausted its re-drive budget (`redrive_exhausted`). Watch the
+`ingestion.redrive_completed` log (fields: `candidates`, `sources_requeued`,
+`marked_owner_deleted`, `marked_exhausted`, `cap_hit`).
+
+**Cron does NOT fire under `wrangler dev`.** To exercise the sweep locally, start
+the API Worker with scheduled triggers enabled and hit the handler endpoint:
+
+```sh
+bun --filter @crosmos/api dev -- --test-scheduled
+# in another shell — trigger the 15-min cron's handler:
+curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=*/15+*+*+*+*"
+```
+
+Without this, locally-orphaned sources (a dispatch that failed both enqueue and
+kick, etc.) are never recovered — expected for local dev, not for production.
+
 ## Observability
 
 - Cloudflare dashboard shows Workers, Queues, usage, and live events for `hono.crosmos.dev`.
