@@ -3,8 +3,10 @@ import { createLogger, durationMs } from '@crosmos/observability';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
+import { assertKeyScopeAllowsSpace, keyScopeSpaceId } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
@@ -184,6 +186,9 @@ sourceRoutes.openapi(
       space_id: space.id,
       duration_ms: durationMs(preflightStart),
     });
+    // A space-scoped API key may only ingest into its pinned space (no-op for
+    // JWT / org-wide keys).
+    assertKeyScopeAllowsSpace(c, space.id);
 
     const scope: TenantScope = {
       orgId: space.orgId,
@@ -401,6 +406,19 @@ sourceRoutes.openapi(
         });
       }
       resolvedSpaceId = space.id;
+    }
+
+    // A space-scoped API key can only ever list its own space: reject a
+    // mismatching explicit filter, and force the filter when none was given so
+    // the key can't enumerate the whole org.
+    const scopedSpaceId = keyScopeSpaceId(c);
+    if (scopedSpaceId != null) {
+      if (resolvedSpaceId != null && resolvedSpaceId !== scopedSpaceId) {
+        throw new HTTPException(403, {
+          message: 'This API key is scoped to a different memory space.',
+        });
+      }
+      resolvedSpaceId = scopedSpaceId;
     }
 
     const filters = {
@@ -680,7 +698,7 @@ async function deleteVectorsChunked(
 }
 
 async function resolveSpaceIdForCaller(
-  c: Parameters<typeof getDb>[0],
+  c: Context<HonoEnv>,
   spaceUuid: string,
 ): Promise<number> {
   const [space] = await getDb(c)
@@ -691,5 +709,7 @@ async function resolveSpaceIdForCaller(
   if (!space || space.orgId !== c.var.activeOrgId) {
     throw new HTTPException(404, { message: 'Space not found' });
   }
+  // A space-scoped API key may only touch its pinned space (no-op otherwise).
+  assertKeyScopeAllowsSpace(c, space.id);
   return space.id;
 }

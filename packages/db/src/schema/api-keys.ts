@@ -11,6 +11,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organizations } from './organizations';
 import { generateUuidV7 } from './_shared';
+import { memorySpaces } from './memory-spaces';
 import { users } from './users';
 
 export const apiKeys = pgTable(
@@ -24,6 +25,14 @@ export const apiKeys = pgTable(
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // Optional space scope. NULL (default) = org-wide key (legacy behavior,
+    // unchanged). When set, auth pins the request to this space and the
+    // data-plane gates (ingest/search/sources) reject any other space — so a
+    // scoped key is safe to hand to a single end-user's frontend. CASCADE: if
+    // the space is deleted, its scoped keys go with it.
+    spaceId: integer('space_id').references(() => memorySpaces.id, {
+      onDelete: 'cascade',
+    }),
     keyPrefix: varchar('key_prefix', { length: 12 }).notNull(),
     keyHash: varchar('key_hash', { length: 64 }).notNull().unique(),
     name: varchar('name', { length: 255 }).notNull(),
@@ -40,6 +49,7 @@ export const apiKeys = pgTable(
   (t) => [
     index('api_keys_user_id_idx').on(t.userId),
     index('api_keys_org_id_idx').on(t.orgId),
+    index('api_keys_space_id_idx').on(t.spaceId),
     uniqueIndex('api_keys_key_hash_idx').on(t.keyHash),
     index('api_keys_created_at_idx').on(t.createdAt),
   ],
