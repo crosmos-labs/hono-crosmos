@@ -19,6 +19,7 @@ import { getVectorStore } from '../../integrations/vector-store';
 import type { TenantScope } from '../../lib/scope';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
+import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { checkQuota, QuotaExceededError } from '../orgs/entitlements';
 import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cache';
 import { getBackgroundTasks } from '../../lib/runtime';
@@ -219,6 +220,8 @@ searchRoutes.openapi(
         res: jsonError(`Space ${body.space_id} not found`, 404),
       });
     }
+    // A space-scoped API key may only search its pinned space (no-op otherwise).
+    assertKeyScopeAllowsSpace(c, space.id);
 
     // 2. Per-org plan rate limit (the STRICT AI-path limit, 10 RPM on free).
     //

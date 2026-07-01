@@ -50,6 +50,10 @@ export const CreateApiKeySchema = z
   .object({
     name: z.string().min(1).max(255),
     expires_at: IsoDateTimeSchema.optional(),
+    // Optional: pin this key to a single memory space. When set, the key can
+    // only ingest/search/read within that space — safe to hand to one
+    // end-user's client. Omit for a full org-wide key (default, unchanged).
+    space_id: UuidSchema.optional(),
   })
   .openapi('CreateApiKeyRequest');
 
@@ -60,6 +64,8 @@ export const ApiKeyCreatedSchema = z
     key_prefix: z.string(),
     raw_key: z.string(),
     expires_at: IsoDateTimeSchema.nullable(),
+    // The space this key is scoped to, or null for an org-wide key.
+    space_id: UuidSchema.nullable(),
   })
   .openapi('ApiKeyCreatedResponse');
 
@@ -72,6 +78,8 @@ export const ApiKeyListItemSchema = z
     expires_at: IsoDateTimeSchema.nullable(),
     last_used_at: IsoDateTimeSchema.nullable(),
     created_at: IsoDateTimeSchema,
+    // The space this key is scoped to, or null for an org-wide key.
+    space_id: UuidSchema.nullable(),
   })
   .openapi('ApiKeyListItem');
 
