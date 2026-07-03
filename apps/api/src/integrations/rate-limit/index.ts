@@ -1,6 +1,7 @@
 import type { Database } from '@crosmos/db';
 import type { Env } from '../../bindings';
 import { type Entitlements, getEntitlements } from '../../features/orgs/entitlements';
+import { DoRateLimiter } from './do';
 import { type DeferFn, KvRateLimiter } from './kv';
 import { NoopRateLimiter } from './noop';
 import { RateLimitError, type RateLimiter } from './port';
@@ -10,17 +11,23 @@ export type { DeferFn } from './kv';
 export { RateLimitError } from './port';
 
 /**
- * Returns the configured rate limiter. Reuses the API key KV namespace for
- * counters — they live in the same Workers KV store, just under a different
- * key prefix (`rl:*`). If you ever want to separate them, add a second
- * binding and switch the wiring here.
+ * Returns the configured rate limiter. Prefers the strongly-consistent
+ * `RateLimiterDO` (`RATE_LIMITER` binding) — its counters are in-memory in the
+ * DO, so they cost **zero KV puts**. Every authenticated request runs the mgmt
+ * limiter, and on the KV path that was ~2–4 puts/request, which blew past the
+ * free tier's 1000/day put cap; the DO removes that entire class of writes and
+ * also kills the KV limiter's ±1–2 boundary drift.
  *
- * Pass `defer` (the request's `waitUntil`) to push the counter writes off the
- * critical path — KV writes are ~350ms from a Smart-Placed worker, so latency-
- * sensitive routes (search) should always supply it. Routes that omit it keep
- * the synchronous (awaited) write behavior.
+ * Falls back to {@link KvRateLimiter} when the DO binding is absent (older envs
+ * / no binding), then to a no-op (dev/tests). The `defer` scheduler only
+ * matters for the KV fallback — it pushes KV writes off the critical path. The
+ * DO path awaits its single round-trip (the increment is atomic with the
+ * check, so there's no separate write to defer).
  */
 export function getRateLimiter(env: Env, defer?: DeferFn): RateLimiter {
+  if (env.RATE_LIMITER) {
+    return new DoRateLimiter(env.RATE_LIMITER);
+  }
   if (env.API_KEY_CACHE) {
     return new KvRateLimiter(env.API_KEY_CACHE, defer);
   }
