@@ -30,9 +30,11 @@ export interface Env {
   // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
   // local dev / tests, where createMetrics() degrades to a no-op.
   ANALYTICS?: AnalyticsEngineDataset;
-  // Durable-Object rate limiter (class RateLimiterDO) for per-IP limits on
-  // pre-org-context auth/OAuth routes (see integrations/rate-limit/ip.ts).
-  // Optional: unbound in local dev, where the limiter fails open.
+  // Durable-Object rate limiter (class RateLimiterDO). Strongly consistent and,
+  // unlike KV, its counters cost zero put ops — so it backs every limiter that
+  // runs on the hot path: per-IP (ip.ts), per-org plan/mgmt (do.ts), the global
+  // AI throttle (global-ai.ts), and search concurrency (search/concurrency.ts).
+  // Optional: unbound in local dev, where the limiters fail open.
   RATE_LIMITER?: DurableObjectNamespace;
 
   // Vars
