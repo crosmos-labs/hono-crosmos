@@ -12,25 +12,30 @@ import type { Env } from '../../bindings';
  * aggregate, so this gate adds a single account-wide ceiling in front of the AI
  * fan-out.
  *
- * **Design.** A KV fixed-window counter under one shared key (no org/user in the
- * key — it's intentionally global). Mirrors the IP limiter's structure. Sized
- * generously (`GLOBAL_AI_RPM_CEILING`) so it only trips on genuine aggregate
- * overload, not normal peak.
+ * **Design.** A single fixed-window counter under one shared key (no org/user
+ * in the key — it's intentionally global). Sized generously
+ * (`GLOBAL_AI_RPM_CEILING`) so it only trips on genuine aggregate overload, not
+ * normal peak.
  *
- * **Fail-OPEN.** Any KV error (or no KV binding) ALLOWS the request and logs.
- * A KV hiccup must never block all search across the platform. Read-then-write
- * is non-atomic, so the count is approximate (±a few on the boundary) — fine for
- * a coarse safety ceiling.
+ * **Backend.** Prefers the strongly-consistent `RateLimiterDO` (`RATE_LIMITER`
+ * binding): its counter is in-memory in the DO, so it costs **zero KV puts** —
+ * the reason we migrated off the KV path, which wrote a counter on every search
+ * against the free tier's 1000/day put cap. Falls back to a KV fixed-window
+ * counter when the DO binding is absent (older envs / no binding), and to
+ * allow-all when neither is bound (dev/tests).
  *
- * **Latency.** The counter READ gates the decision synchronously (edge-cached,
- * fast), but the WRITE is pushed off the critical path via the optional `defer`
- * (the request's `waitUntil`) — a KV write is ~350ms cross-region from the
- * Smart-Placed worker, and search latency is the priority. The window still
- * advances because every call schedules its write. Same stance as the per-org
- * KvRateLimiter.
+ * **Fail-OPEN.** Any backend error (or no binding) ALLOWS the request and logs.
+ * A limiter hiccup must never block all search across the platform.
+ *
+ * **Latency.** The DO path is a single atomic check-and-increment round-trip
+ * (intra-region, single-digit ms). The KV fallback reads synchronously (edge-
+ * cached) and pushes the write off the critical path via the optional `defer`
+ * (the request's `waitUntil`) — a KV write is ~350ms cross-region.
  */
 
 const GLOBAL_AI_KEY_PREFIX = 'rl:global-ai:';
+/** Single DO instance key for the global counter (window handled in the DO). */
+const GLOBAL_AI_DO_KEY = 'rl:global-ai';
 
 /** Schedules a fire-and-forget task (typically `executionCtx.waitUntil`). */
 export type DeferFn = (task: Promise<unknown>) => void;
@@ -59,6 +64,11 @@ export async function checkGlobalAiThrottle(
   opts: GlobalAiThrottleOptions,
   defer?: DeferFn,
 ): Promise<GlobalAiThrottleResult> {
+  // Prefer the DO — strongly consistent and, unlike KV, costs no put ops.
+  if (env.RATE_LIMITER) {
+    return checkViaDo(env, opts);
+  }
+
   const kv = env.API_KEY_CACHE;
   if (!kv) return { allowed: true, count: 0 };
 
@@ -88,6 +98,41 @@ export async function checkGlobalAiThrottle(
     // Fail open: a KV hiccup must not block all search.
     createLogger({ service: 'api', environment: env.ENVIRONMENT }).warn(
       'ratelimit.global_ai_kv_failure',
+      { stage: 'global_ai_throttle', scope: 'global' },
+      err,
+    );
+    return { allowed: true, count: 0 };
+  }
+}
+
+/**
+ * DO-backed variant: one `RateLimiterDO` instance holds the global counter and
+ * manages the fixed window internally (so no window bucket in the key). The
+ * check-and-increment is a single atomic round-trip; `defer` is unused because
+ * there's no separate write to push off the critical path. Fail-open on any
+ * error, matching the KV path.
+ */
+async function checkViaDo(
+  env: Env,
+  opts: GlobalAiThrottleOptions,
+): Promise<GlobalAiThrottleResult> {
+  try {
+    const id = env.RATE_LIMITER!.idFromName(GLOBAL_AI_DO_KEY);
+    // `enam` pins the DO near the prod workers' region (aws:us-east-1).
+    const stub = env.RATE_LIMITER!.get(id, { locationHint: 'enam' });
+    const res = await stub.fetch('https://ratelimit/limit', {
+      method: 'POST',
+      body: JSON.stringify({ limit: opts.limit, windowSeconds: opts.windowSeconds }),
+    });
+    const { success, count } = (await res.json()) as {
+      success: boolean;
+      count: number;
+    };
+    return { allowed: success, count };
+  } catch (err) {
+    // Fail open: a DO hiccup must not block all search.
+    createLogger({ service: 'api', environment: env.ENVIRONMENT }).warn(
+      'ratelimit.global_ai_do_failure',
       { stage: 'global_ai_throttle', scope: 'global' },
       err,
     );
