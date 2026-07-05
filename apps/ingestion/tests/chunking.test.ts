@@ -4,7 +4,7 @@ import {
   parseConversationTurns,
 } from '../src/ingestion/chunking/conversation';
 import { chunkSource } from '../src/ingestion/chunking';
-import { SESSION_SEGMENT_SIZE } from '../src/constants';
+import { CONVERSATION_MAX_CHARS, SESSION_SEGMENT_SIZE } from '../src/constants';
 
 const convo = (turns: number): string =>
   Array.from({ length: turns }, (_, i) =>
@@ -68,6 +68,46 @@ describe('chunkConversation', () => {
 
   test('rejects a non-positive segment size', () => {
     expect(() => chunkConversation(convo(4), 0)).toThrow();
+  });
+
+  test('leaves a normal window as a single chunk under the cap', () => {
+    const chunks = chunkConversation(convo(4));
+    expect(chunks.length).toBe(1);
+    expect(chunks[0]!.content.length).toBeLessThanOrEqual(CONVERSATION_MAX_CHARS);
+  });
+
+  test('splits an oversized window so no chunk exceeds the char cap', () => {
+    // Four ~3k-char turns => a ~12k window, well over the cap.
+    const big = Array.from({ length: 4 }, () => `user: ${'x'.repeat(3000)}`).join(
+      '\n',
+    );
+    const chunks = chunkConversation(big);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.content.length <= CONVERSATION_MAX_CHARS)).toBe(
+      true,
+    );
+    // sequences stay contiguous across the split pieces
+    expect(chunks.map((c) => c.sequence)).toEqual(chunks.map((_, i) => i));
+  });
+
+  test('hard-splits a single over-length turn', () => {
+    const chunks = chunkConversation(
+      `user: ${'y'.repeat(CONVERSATION_MAX_CHARS * 3)}`,
+    );
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.content.length <= CONVERSATION_MAX_CHARS)).toBe(
+      true,
+    );
+  });
+
+  test('bounds the lookback to the char cap', () => {
+    const big = Array.from({ length: 8 }, () => `user: ${'z'.repeat(3000)}`).join(
+      '\n',
+    );
+    const chunks = chunkConversation(big);
+    expect(
+      chunks.every((c) => (c.lookbackContext?.length ?? 0) <= CONVERSATION_MAX_CHARS),
+    ).toBe(true);
   });
 });
 
