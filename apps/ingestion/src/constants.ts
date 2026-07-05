@@ -89,6 +89,11 @@ export const SESSION_LOOKBACK_WINDOW = 4;
 export const TEXT_CHUNK_TARGET_CHARS = 2_000;
 export const TEXT_CHUNK_MAX_CHARS = 4_000;
 
+// Hard cap for a single conversation chunk, mirroring the text hard cap. A 4-turn
+// window is normally ~2k chars, but long turns can blow past the embedder's input
+// limit and truncate extraction; oversized windows are split to respect this.
+export const CONVERSATION_MAX_CHARS = 4_000;
+
 // Conversation chunking — a source runs entirely in ONE Cloudflare invocation,
 // which is bounded to 1000 subrequests; each chunk spends ~6 of them (search
 // embed + vector query + 2 LLM calls + batch embed + vector upsert; DB queries
