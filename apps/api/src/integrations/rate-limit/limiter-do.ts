@@ -46,7 +46,8 @@ export class RateLimiterDO extends DurableObject {
       this.count = 0;
     }
     this.count += 1;
-    return Response.json({ success: this.count <= limit });
+    // `count` lets the caller build an accurate RateLimitError / throttle metric.
+    return Response.json({ success: this.count <= limit, count: this.count });
   }
 
   /** Admit an in-flight request iff fewer than `limit` live slots remain. */
