@@ -20,7 +20,7 @@ const SEPARATORS = ['\n\n', '\n', '. ', ' '] as const;
  * coarsest separator that helps and recursing on any part still too long. Falls
  * back to a hard character split when no separator applies (e.g. one giant word).
  */
-function splitToAtoms(text: string, maxChars: number): string[] {
+export function splitToAtoms(text: string, maxChars: number): string[] {
   if (text.length <= maxChars) return [text];
 
   for (const sep of SEPARATORS) {
