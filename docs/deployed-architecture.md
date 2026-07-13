@@ -21,7 +21,7 @@ The Workers `production` environment is real Cloudflare production infrastructur
 | Vector store | **Qdrant** (cloud cluster, us-east-1) | `VECTOR_STORE=qdrant` + `QDRANT_URL` / `QDRANT_API_KEY` |
 | Embeddings | **OpenAI** `text-embedding-3-small` @ **1536-dim** | `EMBEDDINGS_PROVIDER=openai` + `EMBEDDING_DIMENSIONS=1536` |
 | Reranker | **ZeroEntropy** `zerank-2` | `RERANKER_PROVIDER=zeroentropy` |
-| Extraction LLM | **OpenRouter** (OpenAI-compatible) | `LLM_PROVIDER=openrouter` |
+| Extraction LLM | **OpenAI direct** `gpt-4.1-mini` (was OpenRouter until 2026-07-13, dropped after its credit pool 402-failed prod ingestions) | `LLM_PROVIDER=openai` (reuses `OPENAI_API_KEY`) |
 | Relational + graph | **Neon Postgres** via Hyperdrive | `[[hyperdrive]]` |
 
 > **NOT used in prod, despite being declared in `wrangler.toml`:** the `[ai]`
@@ -47,7 +47,7 @@ Clients / agents
        -> Cloudflare Queue: ingestion-jobs
             -> crosmos-ingestion Worker
                  -> Hyperdrive -> Neon Postgres
-                 -> OpenRouter/OpenAI extraction LLM
+                 -> OpenAI extraction LLM (gpt-4.1-mini)
                  -> OpenAI embeddings -> Qdrant (vector writes)
 ```
 
