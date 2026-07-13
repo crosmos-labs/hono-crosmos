@@ -14,7 +14,10 @@ import {
   cancelSubscription,
   createCheckoutSession,
   createCustomerPortalSession,
+  getPaymentInvoice,
   getPlanCatalog,
+  listPayments,
+  PaymentNotFoundError,
   PolarRequestError,
   subscriptionResponse,
 } from './service';
@@ -22,6 +25,9 @@ import {
   CancelResponseSchema,
   CreateCheckoutRequestSchema,
   CreateCheckoutResponseSchema,
+  InvoiceResponseSchema,
+  PaymentsQuerySchema,
+  PaymentsResponseSchema,
   PlanCatalogResponseSchema,
   PortalResponseSchema,
   SubscriptionResponseSchema,
@@ -65,12 +71,14 @@ async function enforceBillingRateLimit(
   }
 }
 
-function providerErrorDetail(action: 'checkout' | 'portal' | 'cancel') {
+type BillingAction = 'checkout' | 'portal' | 'cancel' | 'payments' | 'invoice';
+
+function providerErrorDetail(action: BillingAction) {
   return `${action}_provider_error`;
 }
 
 async function mapBillingError<T>(
-  action: 'checkout' | 'portal' | 'cancel',
+  action: BillingAction,
   fn: () => Promise<T>,
 ): Promise<T> {
   try {
@@ -78,6 +86,9 @@ async function mapBillingError<T>(
   } catch (err) {
     if (err instanceof BillingConfigError) {
       throw new HTTPException(400, { message: err.message });
+    }
+    if (err instanceof PaymentNotFoundError) {
+      throw new HTTPException(404, { message: err.message });
     }
     if (err instanceof PolarRequestError) {
       throw new HTTPException(502, { message: providerErrorDetail(action) });
@@ -250,6 +261,136 @@ billingRoutes.openapi(
       },
       200,
     );
+  },
+);
+
+// Reads, so they use the DO-backed per-IP limiter rather than the KV counter the
+// write actions above use: a dashboard polls this, and a KV put per request would
+// walk straight into the free-tier daily put cap.
+billingRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/payments',
+    tags: ['billing'],
+    summary: 'List org payment history',
+    description:
+      'Paginated Polar order history for the active org, newest first. Amounts are ' +
+      'in minor units (cents) of the order currency. An org that has never paid ' +
+      'returns an empty list.',
+    security: [{ bearerAuth: [] }],
+    // Invoices and amounts are financial records: owners and admins, not members.
+    middleware: [
+      requireAuth,
+      requireRole('owner', 'admin'),
+      perIpRateLimit({ bucket: 'billing-payments', tier: 'standard' }),
+    ] as const,
+    request: { query: PaymentsQuerySchema },
+    responses: {
+      200: {
+        description: 'Payment history',
+        content: { 'application/json': { schema: PaymentsResponseSchema } },
+      },
+      401: {
+        description: 'Unauthorized',
+        content: { 'application/json': { schema: ErrorResponseSchema } },
+      },
+      403: {
+        description: 'Insufficient role',
+        content: { 'application/json': { schema: ErrorResponseSchema } },
+      },
+      429: {
+        description: 'Rate limited',
+        content: { 'application/json': { schema: BillingErrorSchema } },
+      },
+      502: {
+        description: 'Provider error',
+        content: { 'application/json': { schema: BillingErrorSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { page, limit } = c.req.valid('query');
+    const result = await mapBillingError('payments', () =>
+      listPayments(getDb(c), c.env, {
+        orgId: c.var.activeOrgId!,
+        page,
+        limit,
+      }),
+    );
+    return c.json(result, 200);
+  },
+);
+
+billingRoutes.openapi(
+  createRoute({
+    method: 'get',
+    path: '/payments/{payment_id}/invoice',
+    tags: ['billing'],
+    summary: 'Get invoice URL for a payment',
+    description:
+      "Returns a URL to the order's invoice PDF. Polar generates invoices lazily: " +
+      'if one does not exist yet this triggers generation and responds 202, and the ' +
+      'client should retry shortly.',
+    security: [{ bearerAuth: [] }],
+    middleware: [
+      requireAuth,
+      requireRole('owner', 'admin'),
+      perIpRateLimit({ bucket: 'billing-invoice', tier: 'standard' }),
+    ] as const,
+    request: {
+      params: z.object({
+        payment_id: z.string().uuid().openapi({ param: { name: 'payment_id', in: 'path' } }),
+      }),
+    },
+    responses: {
+      200: {
+        description: 'Invoice URL',
+        content: { 'application/json': { schema: InvoiceResponseSchema } },
+      },
+      202: {
+        description: 'Invoice is being generated; retry shortly',
+        content: {
+          'application/json': {
+            schema: z
+              .object({ status: z.literal('generating') })
+              .openapi('InvoicePending'),
+          },
+        },
+      },
+      401: {
+        description: 'Unauthorized',
+        content: { 'application/json': { schema: ErrorResponseSchema } },
+      },
+      403: {
+        description: 'Insufficient role',
+        content: { 'application/json': { schema: ErrorResponseSchema } },
+      },
+      404: {
+        description: 'No such payment for this org',
+        content: { 'application/json': { schema: BillingErrorSchema } },
+      },
+      429: {
+        description: 'Rate limited',
+        content: { 'application/json': { schema: BillingErrorSchema } },
+      },
+      502: {
+        description: 'Provider error',
+        content: { 'application/json': { schema: BillingErrorSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { payment_id } = c.req.valid('param');
+    const invoice = await mapBillingError('invoice', () =>
+      getPaymentInvoice(getDb(c), c.env, {
+        orgId: c.var.activeOrgId!,
+        orderId: payment_id,
+      }),
+    );
+    if (invoice.status === 'generating') {
+      return c.json({ status: 'generating' as const }, 202);
+    }
+    return c.json({ invoice_url: invoice.url }, 200);
   },
 );
 
