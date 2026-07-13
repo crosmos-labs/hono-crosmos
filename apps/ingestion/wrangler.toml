@@ -132,7 +132,10 @@ head_sampling_rate = 1
 
 [env.production.vars]
 ENVIRONMENT = "production"
-LLM_PROVIDER = "openrouter"
+# Extraction LLM goes to OpenAI directly (gpt-4.1-mini) — dropped the OpenRouter
+# hop after its credit pool ran dry mid-ingestion (402s failing sources).
+# Reuses the OPENAI_API_KEY secret already required by EMBEDDINGS_PROVIDER.
+LLM_PROVIDER = "openai"
 EMBEDDINGS_PROVIDER = "openai"
 VECTOR_STORE = "qdrant"
 EMBEDDING_DIMENSIONS = "1536"
