@@ -82,12 +82,26 @@ export function getPlanCatalog(): PlanCatalogEntry[] {
   });
 }
 
+/**
+ * `plan_pending` is a promise that an upgrade is in flight. An abandoned checkout
+ * breaks that promise silently: Polar emits no webhook when a user simply closes
+ * the tab, so the only thing that ever falsifies the pending state is its own
+ * deadline. Expire it on read rather than trusting the daily sweep to have run —
+ * the moment the checkout is no longer payable, the field must stop claiming
+ * otherwise.
+ */
+export function pendingPlan(org: Organization, now: Date = new Date()): string | null {
+  if (!org.planPending) return null;
+  if (!org.planPendingExpiresAt) return null;
+  return org.planPendingExpiresAt.getTime() > now.getTime() ? org.planPending : null;
+}
+
 export function subscriptionResponse(org: Organization) {
   return {
     plan: org.plan,
     subscription_status: org.subscriptionStatus,
     current_period_end: org.currentPeriodEnd?.toISOString() ?? null,
-    plan_pending: org.planPending,
+    plan_pending: pendingPlan(org),
   };
 }
 
@@ -197,6 +211,7 @@ export async function createCheckoutSession(
   const checkout = await polarRequest<{
     url?: string;
     checkout_url?: string;
+    expires_at?: string;
   }>(env, '/checkouts/', {
     method: 'POST',
     body: JSON.stringify({
@@ -217,10 +232,29 @@ export async function createCheckoutSession(
 
   await db
     .update(organizations)
-    .set({ planPending: input.plan, updatedAt: new Date() })
+    .set({
+      planPending: input.plan,
+      planPendingExpiresAt: checkoutExpiry(checkout.expires_at),
+      updatedAt: new Date(),
+    })
     .where(eq(organizations.id, org.id));
 
   return url;
+}
+
+/**
+ * How long `plan_pending` may claim an upgrade is coming when Polar doesn't tell
+ * us the checkout's own deadline. Erring short is safe: the field is display-only
+ * (entitlements key off `plan`), so an early expiry at worst drops the "pending…"
+ * banner from a page the user is about to leave anyway, while an over-long one
+ * leaves a stuck upgrade prompt — the bug this deadline exists to close.
+ */
+const CHECKOUT_FALLBACK_TTL_MS = 60 * 60 * 1000;
+
+function checkoutExpiry(expiresAt: string | undefined): Date {
+  const parsed = expiresAt ? new Date(expiresAt) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) return parsed;
+  return new Date(Date.now() + CHECKOUT_FALLBACK_TTL_MS);
 }
 
 export async function createCustomerPortalSession(
