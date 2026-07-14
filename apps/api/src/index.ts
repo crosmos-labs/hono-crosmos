@@ -271,7 +271,13 @@ export default {
     if (!isDaily) return;
 
     try {
-      await runBillingReconciliation(env);
+      const billing = await runBillingReconciliation(env);
+      logger.info('cron.billing_reconciliation', {
+        trigger: 'cron',
+        cron: controller.cron,
+        subscriptions_expired: billing.expired,
+        checkouts_abandoned: billing.abandoned,
+      });
     } catch (err) {
       logger.error('cron.billing_reconciliation_failed', { trigger: 'cron' }, err);
     }

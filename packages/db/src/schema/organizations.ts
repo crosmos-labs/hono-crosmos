@@ -36,6 +36,12 @@ export const organizations = pgTable(
       .default('none'),
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     planPending: varchar('plan_pending', { length: 32 }),
+    // When the checkout that set `plan_pending` stops being payable. An abandoned
+    // checkout (user closes the Polar tab) fires no webhook at all, so without a
+    // deadline `plan_pending` would advertise an upgrade that can never land.
+    planPendingExpiresAt: timestamp('plan_pending_expires_at', {
+      withTimezone: true,
+    }),
     createdByUserId: integer('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
