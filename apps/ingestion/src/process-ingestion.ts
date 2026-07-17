@@ -32,7 +32,6 @@ import type { LLM } from './integrations/llm';
 import { LLMRequestError } from './integrations/llm';
 import {
   ingestSource,
-  JobBudgetExceededError,
   type IngestResult,
 } from './ingestion/pipeline';
 import {
@@ -252,6 +251,20 @@ export async function processIngestion(
       return 'processed';
     }
 
+    // Per-invocation chunk budget (issues #2 / #9). Once we've processed a full
+    // invocation's worth of chunks, stop and re-queue: the remaining sources —
+    // and any unfinished batch of a large source, tracked by its durable
+    // checkpoint — continue in a fresh invocation. Checked BEFORE claiming or
+    // marking this source so an untouched source stays exactly as it was.
+    if (chunksProcessed >= MAX_CHUNKS_PER_INVOCATION) {
+      logger.info('ingestion.invocation_budget_reached', {
+        chunks_processed: chunksProcessed,
+        remaining_source_count: msg.source_ids.length - i,
+      });
+      budgetHit = true;
+      break;
+    }
+
     // Idempotency gate 2 — only skip sources that reached a TERMINAL state.
     // Crucially, `processing` is NOT terminal: it marks a source left mid-flight
     // by a previous run that died (isolate eviction) and was reclaimed here via
@@ -305,59 +318,56 @@ export async function processIngestion(
 
     let result: IngestResult | null = null;
     let lastErr: unknown = null;
-    try {
-      for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
-        try {
-          result = await ingestSource({
-            db,
-            scope,
-            sourceId,
-            llm,
-            embedder,
-            vectorStore,
-            logger: sourceLogger,
-            heartbeat,
-            chunkBudgetRemaining: MAX_CHUNKS_PER_INVOCATION - chunksProcessed,
-            isFirstSourceThisInvocation: chunksProcessed === 0,
-          });
-          break;
-        } catch (err) {
-          // A budget deferral is deterministic — don't retry it; bail to the
-          // handler below so the job is re-queued with this source untouched.
-          if (err instanceof JobBudgetExceededError) throw err;
-          lastErr = err;
-          if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
-            sourceLogger.warn('ingestion.source_retry_scheduled', {
-              attempt,
-              duration_ms: durationMs(sourceStart),
-              ...failureFields(err),
-            });
-            await sleep(SOURCE_RETRY_DELAY_MS * attempt);
-            continue;
-          }
-          break;
-        }
-      }
-    } catch (err) {
-      // Only JobBudgetExceededError reaches here. Stop processing further sources
-      // this invocation; the post-loop handler re-queues the job. The deferred
-      // source was left untouched (thrown before purge), so it and every source
-      // after it are re-processed cleanly in a fresh invocation with full budget.
-      if (err instanceof JobBudgetExceededError) {
-        sourceLogger.info('ingestion.source_deferred_budget', {
-          chunk_count: err.chunkCount,
-          budget_remaining: err.remaining,
-          chunks_processed: chunksProcessed,
+    for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
+      try {
+        result = await ingestSource({
+          db,
+          scope,
+          sourceId,
+          llm,
+          embedder,
+          vectorStore,
+          logger: sourceLogger,
+          heartbeat,
+          // Max NEW chunks this source may process this invocation — the
+          // remaining invocation budget. `ingestSource` resumes from the source's
+          // durable checkpoint, processes at most this many chunks, and reports
+          // any remainder for continuation on a re-queue (issue #9).
+          chunkBudgetRemaining: MAX_CHUNKS_PER_INVOCATION - chunksProcessed,
         });
-        budgetHit = true;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
+          sourceLogger.warn('ingestion.source_retry_scheduled', {
+            attempt,
+            duration_ms: durationMs(sourceStart),
+            ...failureFields(err),
+          });
+          await sleep(SOURCE_RETRY_DELAY_MS * attempt);
+          continue;
+        }
         break;
       }
-      throw err;
     }
 
     if (result) {
+      chunksProcessed += result.processedChunkCount;
+      if (result.remainingChunkCount > 0) {
+        // A large source was only PARTIALLY processed this invocation (its batch
+        // budget ran out). It stays `processing` with its checkpoint advanced;
+        // re-queue so a fresh invocation continues from there (issue #9). It's
+        // neither billed nor counted complete until its final batch lands.
+        budgetHit = true;
+        sourceLogger.info('ingestion.source_batch_incomplete', {
+          duration_ms: durationMs(sourceStart),
+          processed_chunk_count: result.processedChunkCount,
+          remaining_chunk_count: result.remainingChunkCount,
+          chunk_count: result.chunkCount,
+        });
+        break;
+      }
       results.push(result);
-      chunksProcessed += result.chunkCount;
       await markSourcesStatus(db, scope, [sourceId], 'completed');
       sourceLogger.info('ingestion.source_completed', {
         duration_ms: durationMs(sourceStart),

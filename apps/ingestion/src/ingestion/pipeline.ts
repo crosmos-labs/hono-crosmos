@@ -24,6 +24,7 @@ import {
   memories as memoriesTable,
   memoryEntities,
   chunkMemories,
+  sources,
   type Database,
   type Memory,
 } from '@crosmos/db';
@@ -32,6 +33,7 @@ import type { TenantScope } from '@crosmos/types';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { VectorStore } from '@crosmos/vector';
 import {
+  CHUNK_CONCURRENCY,
   CONVERSATION_CHUNK_WARN_THRESHOLD,
   EXISTING_MEMORY_LOOKUP_LIMIT,
   MAX_CHUNKS_PER_SOURCE,
@@ -64,15 +66,29 @@ export interface IngestResult {
   newEntityIds: number[];
   resolvedEntityIds: number[];
   /**
-   * Number of chunks this source was split into (whether or not they yielded
-   * memories). The job-level handler sums these to enforce the per-invocation
-   * chunk budget (issues #1 / #2).
+   * Total number of chunks this source was split into (whether or not they
+   * yielded memories) — across ALL invocations, not just this one.
    */
   chunkCount: number;
+  /**
+   * Chunks actually processed THIS invocation (the current batch). The job-level
+   * handler sums these to enforce the per-invocation chunk budget (issues #1/#2).
+   * Zero when the source was already fully processed on a prior invocation.
+   */
+  processedChunkCount: number;
+  /**
+   * Chunks still to process AFTER this invocation (issue #9). `> 0` means the
+   * source is NOT done — the durable `ingest_next_sequence` checkpoint in
+   * `source.meta` has advanced and the job must be re-queued so a fresh
+   * invocation continues from the checkpoint. `0` means the source is complete.
+   */
+  remainingChunkCount: number;
   /**
    * Estimated input tokens of this source's content (set at ingest time). The
    * job-level handler sums these over COMPLETED sources to meter the monthly
    * `tokens_ingested` quota on what the user submitted, not pipeline throughput.
+   * Only reported on the FINAL batch (remainingChunkCount === 0) so a multi-batch
+   * source is billed its input once, not per batch.
    */
   tokenCount: number;
 }
@@ -92,24 +108,6 @@ export class SourceTooLargeError extends Error {
       `Source ${sourceId} has ${chunkCount} chunks, exceeding the per-source limit of ${maxChunks}; split it across multiple sources`,
     );
     this.name = 'SourceTooLargeError';
-  }
-}
-
-/**
- * Processing this source would exceed the REMAINING per-invocation chunk budget.
- * NOT a failure: the source is left untouched, the job is re-queued, and the
- * remaining sources run in a fresh invocation with a full budget (issue #2).
- */
-export class JobBudgetExceededError extends Error {
-  constructor(
-    public readonly sourceId: number,
-    public readonly chunkCount: number,
-    public readonly remaining: number,
-  ) {
-    super(
-      `Source ${sourceId} (${chunkCount} chunks) exceeds the remaining invocation budget (${remaining}); deferring to a re-queue`,
-    );
-    this.name = 'JobBudgetExceededError';
   }
 }
 
@@ -133,23 +131,22 @@ export interface IngestSourceInput {
    */
   heartbeat?: () => Promise<void>;
   /**
-   * Chunks still available in the current invocation's budget (issue #2). When
-   * this source isn't the first processed this invocation and its chunk count
-   * exceeds this, `ingestSource` throws `JobBudgetExceededError` before doing any
-   * work, so the job-level handler can defer it to a re-queue.
+   * Max NEW chunks this invocation may process for this source (issues #2/#9).
+   * `ingestSource` resumes from the source's `ingest_next_sequence` checkpoint
+   * and processes at most this many chunks, then returns `remainingChunkCount`.
+   * Undefined = no budget limit (process all remaining chunks; used by direct
+   * callers/tests). The job-level handler passes the invocation's remaining
+   * budget so total chunks across all sources stay within one invocation's cap.
    */
   chunkBudgetRemaining?: number;
-  /**
-   * True when no source has been processed yet this invocation. The first source
-   * always proceeds (up to `MAX_CHUNKS_PER_SOURCE`) so the job can't livelock.
-   */
-  isFirstSourceThisInvocation?: boolean;
 }
 
 const EMPTY_RESULT = (
   sourceId: number,
   tokenCount = 0,
   chunkCount = 0,
+  processedChunkCount = 0,
+  remainingChunkCount = 0,
 ): IngestResult => ({
   sourceId,
   memories: [],
@@ -157,8 +154,38 @@ const EMPTY_RESULT = (
   newEntityIds: [],
   resolvedEntityIds: [],
   chunkCount,
+  processedChunkCount,
+  remainingChunkCount,
   tokenCount,
 });
+
+export interface BatchPlan {
+  /** First chunk index to process this invocation (inclusive). */
+  start: number;
+  /** One past the last chunk to process this invocation (exclusive). */
+  end: number;
+  /** Chunks remaining AFTER this invocation (0 ⇒ source complete). */
+  remaining: number;
+}
+
+/**
+ * Pure batch planner for the resumable pipeline (issue #9). Given the total
+ * chunk count, the durable checkpoint (`nextSeq`), and this invocation's chunk
+ * `budget`, returns the half-open [start, end) range to process and how many
+ * chunks remain after. Both inputs are clamped defensively. Isolated + exported
+ * so the off-by-one-critical arithmetic is unit-tested without a full pipeline
+ * harness. `budget <= 0` ⇒ empty batch (start === end), remaining = whatever's
+ * left, so the caller re-queues without doing work.
+ */
+export function planBatch(
+  chunkCount: number,
+  nextSeq: number,
+  budget: number,
+): BatchPlan {
+  const start = Math.min(Math.max(0, Math.trunc(nextSeq)), chunkCount);
+  const end = budget <= 0 ? start : Math.min(chunkCount, start + Math.trunc(budget));
+  return { start, end, remaining: chunkCount - end };
+}
 
 function failureFields(err: unknown): {
   error_category: 'external_service' | 'internal';
@@ -191,11 +218,21 @@ async function purgeSourceArtifacts(
   db: Database,
   vectorStore: VectorStore,
   sourceId: number,
+  minSequence = 0,
 ): Promise<number> {
+  // `minSequence` scopes the purge to chunks at or after a sequence — used by the
+  // batched pipeline to clean ONLY a partially-written batch left by a canceled/
+  // failed prior invocation (chunks >= the durable checkpoint), while preserving
+  // the chunks committed before it. `minSequence = 0` purges the whole source
+  // (a fresh start / full redrive), the original behaviour.
   const chunkRows = await db
     .select({ id: chunks.id })
     .from(chunks)
-    .where(eq(chunks.sourceId, sourceId));
+    .where(
+      minSequence > 0
+        ? and(eq(chunks.sourceId, sourceId), sql`${chunks.sequence} >= ${minSequence}`)
+        : eq(chunks.sourceId, sourceId),
+    );
   if (chunkRows.length === 0) return 0; // clean slate — happy path, nothing to undo
   const chunkIds = chunkRows.map((c) => c.id);
 
@@ -268,8 +305,8 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
 
   // Stage 0.5 — chunk the source by content type. Conversations become
   // fixed-size turn windows (each carrying the prior window as lookback context
-  // for pronoun resolution); text/markdown pass through as a single chunk.
-  // Ports `app/engine/ingestion/pipeline.py:_chunk_source`.
+  // for pronoun resolution); text/markdown are split by a recursive character
+  // splitter. Ports `app/engine/ingestion/pipeline.py:_chunk_source`.
   const sourceChunks = chunkSource(contentType, content, meta);
   if (sourceChunks.length === 0) return EMPTY_RESULT(sourceId, source.tokenCount);
   const chunkCount = sourceChunks.length;
@@ -281,42 +318,65 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     });
   }
 
-  // Per-source hard cap (issue #1). A single source runs entirely in one
-  // Cloudflare invocation (1000-subrequest cap) and can't be split across
-  // invocations — purge re-runs it from the top — so a source over the cap can
-  // never complete. Fail it terminally with a clear "split it" message instead
-  // of silently blowing the cap and getting reclaimed/retried forever.
+  // Abuse ceiling (issue #1). Sources now checkpoint + resume across invocations,
+  // so a big source no longer has to fit in one invocation — but a pathologically
+  // huge one is still failed terminally with a clear "split it" message rather
+  // than churning through hundreds of batches. Well-formed input never trips it.
   if (chunkCount > MAX_CHUNKS_PER_SOURCE) {
     throw new SourceTooLargeError(sourceId, chunkCount, MAX_CHUNKS_PER_SOURCE);
   }
-  // Per-invocation budget (issue #2). If this source won't fit the budget the
-  // job has left AND it isn't the first source this invocation, defer it: throw
-  // before any work so the job-level handler re-queues and a fresh invocation
-  // (full budget) picks it up. The first source always proceeds (guarded by the
-  // per-source cap above) so the job can't livelock.
-  if (
-    input.isFirstSourceThisInvocation === false &&
-    input.chunkBudgetRemaining !== undefined &&
-    chunkCount > input.chunkBudgetRemaining
-  ) {
-    throw new JobBudgetExceededError(sourceId, chunkCount, input.chunkBudgetRemaining);
+
+  // Stage 0.55 — resume from the durable checkpoint (issue #9). A source is
+  // processed in BATCHES across invocations so a single invocation never blows
+  // the 1000-subrequest cap or the wall-clock the runtime cancels past (the
+  // source-520 stall). `ingest_next_sequence` in meta is the number of chunks
+  // fully committed — including their Stage-8 entities/edges — by prior
+  // invocations. Clamp defensively in case meta was hand-edited or the source
+  // was re-chunked to a different length.
+  const rawNextSeq = Number(
+    (meta as Record<string, unknown>).ingest_next_sequence ?? 0,
+  );
+  const nextSeq = Number.isFinite(rawNextSeq) ? rawNextSeq : 0;
+
+  // This invocation's batch: the next `budget` not-yet-processed chunks. An
+  // undefined budget (direct callers / tests) processes all remaining chunks.
+  const budget = input.chunkBudgetRemaining ?? chunkCount - nextSeq;
+  const plan = planBatch(chunkCount, nextSeq, budget);
+  const batch = sourceChunks.slice(plan.start, plan.end);
+  if (batch.length === 0) {
+    // Nothing to do this invocation. Two cases, both leave the checkpoint
+    // untouched: (a) no budget left (earlier sources used it) → remaining > 0,
+    // the handler re-queues; (b) already fully processed on a prior invocation
+    // (checkpoint === chunkCount) → remaining 0, the handler finalizes.
+    return EMPTY_RESULT(
+      sourceId,
+      source.tokenCount,
+      chunkCount,
+      0,
+      plan.remaining,
+    );
   }
 
-  // Stage 0.6 — now that bounds pass, purge any partial artifacts from a prior
-  // failed/interrupted attempt so re-running this source can't duplicate
-  // memories or vectors (the pipeline isn't atomic across stages).
+  // Stage 0.6 — purge only a PARTIALLY-written batch left by a canceled/failed
+  // prior invocation: chunks at or after the checkpoint. Chunks before it are
+  // durably committed and MUST be preserved so the source makes forward progress
+  // instead of re-running from the top every attempt (the source-520 failure
+  // mode). On a fresh start (nextSeq === 0) this purges the whole source.
+  // Idempotent: a clean slate is a single empty indexed SELECT.
   const purgeStart = performance.now();
-  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId);
+  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId, plan.start);
   if (purged > 0) {
     logger?.info('ingestion.stage_completed', {
-      stage: 'purge_prior_artifacts',
+      stage: 'purge_partial_batch',
       duration_ms: durationMs(purgeStart),
       memory_count: purged,
+      from_sequence: plan.start,
     });
   }
 
-  // Dedup keys shared across ALL chunks of this source so a fact that recurs in
-  // overlapping chunks (e.g. via lookback context) isn't persisted twice (#8).
+  // Dedup keys shared across chunks of THIS batch so a fact recurring in
+  // overlapping windows isn't persisted twice (#8). Cross-BATCH duplicates are
+  // caught by the Stage-1 vector dedup hint against already-persisted memories.
   const seenFactKeys = new Set<string>();
 
   // Stages 1–7 for a single chunk: dedup hint → extract → graph → normalize →
@@ -649,71 +709,103 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     return facts.map((f, i) => ({ memoryId: memoryRows[i]!.id, fact: f }));
   };
 
-  // Run chunks sequentially. Concurrency comes from running multiple sources /
-  // jobs at once, which keeps total in-flight LLM calls bounded by active jobs
-  // rather than active jobs × chunks (and one source's subrequests within the
-  // per-invocation cap). Mirrors Python's sequential chunk loop.
+  // Process THIS batch's chunks with bounded concurrency (issue #1) to cut
+  // wall-clock — independent chunks needn't run strictly serially. The
+  // per-invocation subrequest budget is a TOTAL, not a concurrency limit, so this
+  // changes latency, not the cap math. Cross-chunk dedup (`seenFactKeys`) is
+  // best-effort and tolerates the interleaving. A chunk that throws (retryable
+  // infra error) aborts the batch; its partially-written chunks are purged from
+  // the checkpoint on the next attempt, so a retry never duplicates.
   const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
-  for (const chunk of sourceChunks) {
-    // Mid-source lease heartbeat (issue #1): re-stamp the job's `started_at` so a
-    // long-but-healthy source isn't reclaimed and double-processed concurrently.
-    // Throttled + best-effort in the caller; never throws.
+  for (let i = 0; i < batch.length; i += CHUNK_CONCURRENCY) {
+    // Mid-source lease heartbeat (issue #1), once per concurrency window:
+    // re-stamp the job's `started_at` so a long-but-healthy source isn't
+    // reclaimed and double-processed. Throttled + best-effort in the caller.
     await input.heartbeat?.();
-    allIngested.push(...(await ingestChunk(chunk)));
+    const window = batch.slice(i, i + CHUNK_CONCURRENCY);
+    const windowResults = await Promise.all(window.map((chunk) => ingestChunk(chunk)));
+    for (const r of windowResults) allIngested.push(...r);
   }
-  if (allIngested.length === 0)
-    return EMPTY_RESULT(sourceId, source.tokenCount, chunkCount);
 
-  // Stage 8 — entity resolution + memory_entities + edges, ONCE across all
-  // chunks. Entities are shared, so a single resolution pass dedupes them
-  // globally and edges can link memories extracted from different chunks.
-  const allFacts = allIngested.map((im) => im.fact);
-  const uniqueEntities = collectUniqueEntities(allFacts);
-  const entityResolutionStart = performance.now();
-  const resolved = await resolveEntities(db, scope, uniqueEntities, embedder, vectorStore, logger);
-  const nameToId = buildNameToIdMap(resolved);
-  logger?.info('ingestion.stage_completed', {
-    stage: 'entity_resolution',
-    duration_ms: durationMs(entityResolutionStart),
-    entity_count: resolved.length,
-  });
-
-  const ingestedMemories: IngestedMemory[] = allIngested.map((im) => {
-    const ids = new Set<number>();
-    for (const e of im.fact.entities) {
-      const id = nameToId.get(casefold(e.name));
-      if (id !== undefined) ids.add(id);
-    }
-    return { memoryId: im.memoryId, fact: im.fact, entityIds: Array.from(ids) };
-  });
-
-  const junctionRows = ingestedMemories.flatMap((im) =>
-    im.entityIds.map((entityId) => ({ memoryId: im.memoryId, entityId })),
-  );
-  if (junctionRows.length > 0) {
-    const junctionStart = performance.now();
-    await db.insert(memoryEntities).values(junctionRows).onConflictDoNothing();
+  // Stage 8 — entity resolution + memory_entities + edges for THIS batch's facts.
+  // Running it per-batch (not once across the whole source) is safe: entity
+  // resolution is idempotent by (space, lower(name)) so an entity seen in an
+  // earlier batch resolves to the same row, and edges dedup within-run against
+  // the monotonic graph. Skipped when the batch yielded no memories.
+  let ingestedMemories: IngestedMemory[] = [];
+  let ingestedEdges: IngestedEdge[] = [];
+  let resolved: Awaited<ReturnType<typeof resolveEntities>> = [];
+  if (allIngested.length > 0) {
+    const allFacts = allIngested.map((im) => im.fact);
+    const uniqueEntities = collectUniqueEntities(allFacts);
+    const entityResolutionStart = performance.now();
+    resolved = await resolveEntities(db, scope, uniqueEntities, embedder, vectorStore, logger);
+    const nameToId = buildNameToIdMap(resolved);
     logger?.info('ingestion.stage_completed', {
-      stage: 'memory_entity_links',
-      duration_ms: durationMs(junctionStart),
-      entity_count: junctionRows.length,
+      stage: 'entity_resolution',
+      duration_ms: durationMs(entityResolutionStart),
+      entity_count: resolved.length,
+    });
+
+    ingestedMemories = allIngested.map((im) => {
+      const ids = new Set<number>();
+      for (const e of im.fact.entities) {
+        const id = nameToId.get(casefold(e.name));
+        if (id !== undefined) ids.add(id);
+      }
+      return { memoryId: im.memoryId, fact: im.fact, entityIds: Array.from(ids) };
+    });
+
+    const junctionRows = ingestedMemories.flatMap((im) =>
+      im.entityIds.map((entityId) => ({ memoryId: im.memoryId, entityId })),
+    );
+    if (junctionRows.length > 0) {
+      const junctionStart = performance.now();
+      await db.insert(memoryEntities).values(junctionRows).onConflictDoNothing();
+      logger?.info('ingestion.stage_completed', {
+        stage: 'memory_entity_links',
+        duration_ms: durationMs(junctionStart),
+        entity_count: junctionRows.length,
+      });
+    }
+
+    const edgeStart = performance.now();
+    ingestedEdges = await createEdgesFromFacts(
+      db,
+      scope,
+      ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
+      nameToId,
+      recordedAt,
+      ownerUserId,
+      visibility,
+    );
+    logger?.info('ingestion.stage_completed', {
+      stage: 'edge_creation',
+      duration_ms: durationMs(edgeStart),
+      edge_count: ingestedEdges.length,
     });
   }
 
-  const edgeStart = performance.now();
-  const ingestedEdges = await createEdgesFromFacts(
-    db,
-    scope,
-    ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
-    nameToId,
-    recordedAt,
-    ownerUserId,
-    visibility,
-  );
-  logger?.info('ingestion.stage_completed', {
-    stage: 'edge_creation',
-    duration_ms: durationMs(edgeStart),
-    edge_count: ingestedEdges.length,
+  // Advance the durable checkpoint (issue #9). This batch's chunks and their
+  // Stage-8 artifacts are committed, so record how far we've reached: a future
+  // canceled/failed batch purges only from here on, never re-doing this work —
+  // the source always makes forward progress. On the final batch we DROP the key
+  // so a legitimate future re-ingest (source flipped back to `pending`) starts
+  // clean. Merged into meta so sibling keys (redrive_attempts, url, …) survive.
+  const remainingChunkCount = plan.remaining;
+  const checkpointPatch =
+    remainingChunkCount > 0
+      ? sql`jsonb_set(coalesce(${sources.meta}, '{}'::jsonb), '{ingest_next_sequence}', to_jsonb(${plan.end}::int))`
+      : sql`(coalesce(${sources.meta}, '{}'::jsonb) - 'ingest_next_sequence')`;
+  await db
+    .update(sources)
+    .set({ meta: checkpointPatch, updatedAt: new Date() })
+    .where(eq(sources.id, sourceId));
+  logger?.info('ingestion.batch_checkpoint', {
+    from_sequence: plan.start,
+    to_sequence: plan.end,
+    chunk_count: chunkCount,
+    remaining_chunk_count: remainingChunkCount,
   });
 
   return {
@@ -723,7 +815,11 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     newEntityIds: resolved.filter((r) => r.isNew).map((r) => r.entityId),
     resolvedEntityIds: resolved.filter((r) => !r.isNew).map((r) => r.entityId),
     chunkCount,
-    tokenCount: source.tokenCount,
+    processedChunkCount: batch.length,
+    remainingChunkCount,
+    // Bill the source's input tokens only on the FINAL batch so a multi-batch
+    // source is metered once (on completion), not per batch.
+    tokenCount: remainingChunkCount > 0 ? 0 : source.tokenCount,
   };
 }
 
