@@ -221,7 +221,7 @@ console.log('▶ GET /api/v1/orgs/{uuid}/entitlements (free plan)');
   const r = await call(`/api/v1/orgs/${orgA.uuid}/entitlements`, { token: ownerTokensA.accessToken });
   assert(r.status === 200, `status 200 (got ${r.status})`, r.body);
   assert(r.body.plan === 'free', `plan=free (got ${r.body.plan})`);
-  assert(r.body.entitlements?.max_memory_spaces === 3, `free.max_memory_spaces=3 (got ${r.body.entitlements?.max_memory_spaces})`);
+  assert(r.body.entitlements?.max_memory_spaces === -1, `free.max_memory_spaces=-1 unlimited (got ${r.body.entitlements?.max_memory_spaces})`);
   assert(r.body.entitlements?.monthly_tokens_ingested === 500_000, 'free tokens cap');
   assert(r.body.usage_this_month?.tokens_ingested === 0, 'usage zero (DailyUsage not migrated yet)');
   assert(r.body.usage_this_month?.search_queries === 0, 'queries zero');
@@ -232,7 +232,7 @@ console.log('▶ GET /api/v1/orgs/{uuid}/entitlements (developer plan)');
   const r = await call(`/api/v1/orgs/${orgB.uuid}/entitlements`, { token: ownerTokensB.accessToken });
   assert(r.status === 200, `status 200 (got ${r.status})`);
   assert(r.body.plan === 'developer', 'plan=developer');
-  assert(r.body.entitlements?.max_memory_spaces === 7, 'developer cap');
+  assert(r.body.entitlements?.max_memory_spaces === -1, 'developer spaces unlimited');
   assert(r.body.entitlements?.monthly_tokens_ingested === 5_000_000, 'developer tokens cap');
 }
 
