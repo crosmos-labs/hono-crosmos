@@ -32,9 +32,11 @@ import {
   GLOBAL_AI_RETRY_AFTER_SECONDS,
   GLOBAL_AI_WINDOW_SECONDS,
   RETRIEVAL_RESULT_TIMEOUT_SECONDS,
+  RETRIEVAL_RETRY_AFTER_SECONDS,
   RETRIEVAL_USER_COUNTER_TTL_SECONDS,
 } from './constants';
 import { getOperationalLimits } from '../../lib/limits';
+import { NO_RETRY_HEADERS, retryAfterHeaders } from '../../lib/retry-hints';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
@@ -273,10 +275,15 @@ searchRoutes.openapi(
           status_code: 429,
         });
         metrics.count('search_throttled', { tags: ['monthly_quota'] });
+        // A monthly quota does not clear on a timescale any retry can wait
+        // out, so tell the client not to retry at all rather than letting the
+        // Stainless default ("429 ⇒ retry") burn the caller's attempt budget
+        // against a wall.
         throw new HTTPException(429, {
           res: jsonError(
             { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
             429,
+            NO_RETRY_HEADERS,
           ),
         });
       }
@@ -306,10 +313,19 @@ searchRoutes.openapi(
         status_code: 429,
       });
       metrics.count('search_throttled', { tags: ['concurrency'] });
+      // `Retry-After` (never sent before this fix) is what stops the SDK from
+      // retrying INSTANTLY. A concurrency 429 means this user's own in-flight
+      // work has not drained yet, so an immediate retry is guaranteed to find
+      // the same full counter AND adds a fresh request competing for the slot
+      // it is waiting on. In the incident this class alone was 52.98% of all
+      // search invocations. `RETRIEVAL_RETRY_AFTER_SECONDS` has existed as a
+      // constant since the Python port but was never actually wired to a
+      // response until now.
       throw new HTTPException(429, {
         res: jsonError(
           'Too many concurrent searches. Wait for existing searches to complete.',
           429,
+          retryAfterHeaders(RETRIEVAL_RETRY_AFTER_SECONDS),
         ),
       });
     }
