@@ -42,14 +42,12 @@ export class DoRateLimiter implements RateLimiter {
 
   async check(input: RateLimitCheck): Promise<void> {
     const windows: Array<{
-      key: string;
       limit: number;
       scope: RateLimitScope;
       windowSeconds: number;
     }> = [];
     if (input.rpmLimit !== -1) {
       windows.push({
-        key: keyFor('rpm', input.orgId, input.namespace),
         limit: input.rpmLimit,
         scope: 'rpm',
         windowSeconds: RPM_WINDOW_SECONDS,
@@ -57,7 +55,6 @@ export class DoRateLimiter implements RateLimiter {
     }
     if (input.dailyLimit !== -1) {
       windows.push({
-        key: keyFor('day', input.orgId, input.namespace),
         limit: input.dailyLimit,
         scope: 'day',
         windowSeconds: DAY_WINDOW_SECONDS,
@@ -66,24 +63,23 @@ export class DoRateLimiter implements RateLimiter {
     if (windows.length === 0) return;
 
     try {
-      // Both windows are independent DO instances, so fire them in parallel.
-      // Each increments and reports its own count.
-      const results = await Promise.all(
-        windows.map(async (w) => {
-          const res = await this.stub(w.key).fetch('https://ratelimit/limit', {
-            method: 'POST',
-            body: JSON.stringify({ limit: w.limit, windowSeconds: w.windowSeconds }),
-          });
-          const { success, count } = (await res.json()) as {
-            success: boolean;
-            count: number;
-          };
-          return { w, success, count };
-        }),
+      // ONE round-trip for both windows. They used to live in separate DO
+      // instances and cost a fetch each; every gated request paid for both, so
+      // the incident logged five `ratelimit/limit` calls per search. The
+      // counters are still independent (keyed by scope inside the DO), so this
+      // changes cost, not enforcement.
+      const res = await this.stub(keyFor(input.orgId, input.namespace)).fetch(
+        'https://ratelimit/limit',
+        { method: 'POST', body: JSON.stringify({ windows }) },
       );
+      const { results } = (await res.json()) as {
+        success: boolean;
+        results: Array<{ scope: RateLimitScope; success: boolean; count: number }>;
+      };
       // Enforce rpm before day (windows[] order), matching the KV limiter.
-      for (const { w, success, count } of results) {
-        if (!success) throw new RateLimitError(w.scope, w.limit, count);
+      for (const w of windows) {
+        const r = results.find((x) => x.scope === w.scope);
+        if (r && !r.success) throw new RateLimitError(w.scope, w.limit, r.count);
       }
     } catch (err) {
       if (err instanceof RateLimitError) throw err;
@@ -97,10 +93,19 @@ export class DoRateLimiter implements RateLimiter {
 }
 
 /**
- * Counter key for a window. Wire-compatible with `KvRateLimiter`'s prefixes so
- * both implementations name the same buckets: `rl:rpm:<org>` / `rl:day:<org>`,
- * or namespaced `rl:<ns>:rpm:<org>` (e.g. the `'mgmt'` limit).
+ * Durable Object instance name holding ALL of an org's windows for a namespace:
+ * `rl:<org>`, or `rl:<ns>:<org>` for a namespaced limit (e.g. `'mgmt'`).
+ *
+ * This no longer includes the window in the name — one instance now holds both
+ * the `rpm` and `day` counters, which is what collapses the two round-trips into
+ * one. It therefore diverges from `KvRateLimiter`'s per-window key layout; the
+ * KV limiter is an inactive fallback (RATE_LIMITER is bound in every env) and
+ * keeps its own keys, so the two never share a bucket in practice.
+ *
+ * Deploying this moves counters to new instances, so windows reset once. That is
+ * already the documented behavior of this class on DO eviction, and resetting a
+ * fixed window early only ever grants allowance — it cannot 429 anyone.
  */
-function keyFor(base: 'rpm' | 'day', orgId: number, namespace?: string): string {
-  return namespace ? `rl:${namespace}:${base}:${orgId}` : `rl:${base}:${orgId}`;
+function keyFor(orgId: number, namespace?: string): string {
+  return namespace ? `rl:${namespace}:${orgId}` : `rl:${orgId}`;
 }

@@ -94,6 +94,12 @@ driven by `plan` only** — `subscription_status` is informational for the UI.
 the moment they start checkout and the moment the webhook activates it. Use it to
 show a "Upgrade to {plan_pending} pending…" state on the success page.
 
+It also self-clears when the checkout stops being payable. Abandoning a checkout —
+closing the Polar tab, never paying — produces no webhook at all, so `plan_pending`
+carries the checkout's own expiry and reads back as `null` once that passes. A
+"pending…" state therefore can't outlive the checkout behind it; you never need to
+clear it yourself, and you should not treat it as durable state.
+
 State transitions you'll observe:
 
 ```
@@ -283,8 +289,9 @@ async function waitForActivation(expectedPlan: string, signal: AbortSignal) {
 }
 ```
 
-`plan_pending` tells you an upgrade is in flight; it clears to `null` once activated.
-Same idea after cancel: re-fetch until `subscription_status === 'canceled'`.
+`plan_pending` tells you an upgrade is in flight; it clears to `null` once activated,
+and also once the underlying checkout expires unpaid. Same idea after cancel:
+re-fetch until `subscription_status === 'canceled'`.
 
 Webhook processing is idempotent and ordering-safe on the backend, so transient
 delays resolve on their own — the only frontend job is to poll instead of trusting

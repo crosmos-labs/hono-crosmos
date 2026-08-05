@@ -21,12 +21,27 @@ const KV_MIN_TTL_SECONDS = 60;
 /** Schedules a fire-and-forget task (typically `executionCtx.waitUntil`). */
 export type DeferFn = (task: Promise<unknown>) => void;
 
-export interface ConcurrencyLimiter {
-  /** Increment + check. Returns false when already at `limit`. */
-  acquire(userKey: string, limit: number, ttlSeconds: number): Promise<boolean>;
-  /** Decrement (floor 0). Always call in a `finally`. */
-  release(userKey: string): Promise<void>;
+/**
+ * Outcome of an acquire. `token` identifies the lease this caller now owns and
+ * MUST be handed back to `release` — releasing by token means a request can only
+ * ever free its own slot. It is `null` when the limiter granted admission
+ * without tracking a lease (fail-open paths, the no-op limiter), in which case
+ * release is a no-op.
+ */
+export interface ConcurrencyLease {
+  acquired: boolean;
+  token: string | null;
 }
+
+export interface ConcurrencyLimiter {
+  /** Increment + check. `acquired: false` when already at `limit`. */
+  acquire(userKey: string, limit: number, ttlSeconds: number): Promise<ConcurrencyLease>;
+  /** Release the lease returned by `acquire`. Always call in a `finally`. */
+  release(userKey: string, token: string | null): Promise<void>;
+}
+
+/** Admission granted without a tracked lease (fail-open / no-op limiters). */
+const UNTRACKED: ConcurrencyLease = { acquired: true, token: null };
 
 /**
  * KV-backed per-user concurrency counter.
@@ -45,20 +60,27 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
     private readonly defer?: DeferFn,
   ) {}
 
-  async acquire(userKey: string, limit: number, ttlSeconds: number): Promise<boolean> {
+  async acquire(
+    userKey: string,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<ConcurrencyLease> {
     const key = PREFIX + userKey;
     try {
       const raw = await this.kv.get(key);
       const current = raw ? Number(raw) : 0;
-      if (current >= limit) return false;
+      if (current >= limit) return { acquired: false, token: null };
       await this.write(key, current + 1, Math.max(KV_MIN_TTL_SECONDS, ttlSeconds));
-      return true;
+      // A bare counter has no per-lease identity; the DO limiter is the one that
+      // issues tokens. Release still decrements, so this stays correct — just
+      // approximate, which is what this fallback has always been.
+      return UNTRACKED;
     } catch (err) {
       // Fail open — a KV blip must not 429 real traffic.
       createLogger({ service: 'api' }).error('retrieval.concurrency_acquire_failed', {
         stage: 'concurrency_acquire',
       }, err);
-      return true;
+      return UNTRACKED;
     }
   }
 
@@ -117,26 +139,40 @@ export class DoConcurrencyLimiter implements ConcurrencyLimiter {
     return this.ns.get(id, { locationHint: 'enam' });
   }
 
-  async acquire(userKey: string, limit: number, ttlSeconds: number): Promise<boolean> {
+  async acquire(
+    userKey: string,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<ConcurrencyLease> {
     try {
       const res = await this.stub(userKey).fetch('https://concurrency/acquire', {
         method: 'POST',
         body: JSON.stringify({ limit, ttlSeconds }),
       });
-      const { success } = (await res.json()) as { success: boolean };
-      return success;
+      const { success, token } = (await res.json()) as {
+        success: boolean;
+        token?: string;
+      };
+      return { acquired: success, token: token ?? null };
     } catch (err) {
       // Fail open — a DO blip must not 429 real traffic (matches the KV limiter).
       createLogger({ service: 'api' }).error('retrieval.concurrency_acquire_failed', {
         stage: 'concurrency_acquire',
       }, err);
-      return true;
+      return UNTRACKED;
     }
   }
 
-  async release(userKey: string): Promise<void> {
+  async release(userKey: string, token: string | null): Promise<void> {
+    // No token → nothing was leased (fail-open acquire). Releasing anyway would
+    // decrement a slot this request never took, letting a DO blip on acquire
+    // silently raise the effective cap for everyone else on this key.
+    if (token === null) return;
     try {
-      await this.stub(userKey).fetch('https://concurrency/release', { method: 'POST' });
+      await this.stub(userKey).fetch('https://concurrency/release', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+      });
     } catch (err) {
       createLogger({ service: 'api' }).error('retrieval.concurrency_release_failed', {
         stage: 'concurrency_release',
@@ -147,8 +183,8 @@ export class DoConcurrencyLimiter implements ConcurrencyLimiter {
 
 /** Dev/test fallback: always acquires, never blocks. */
 export class NoopConcurrencyLimiter implements ConcurrencyLimiter {
-  async acquire(): Promise<boolean> {
-    return true;
+  async acquire(): Promise<ConcurrencyLease> {
+    return UNTRACKED;
   }
   async release(): Promise<void> {}
 }

@@ -6,6 +6,12 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from './bindings';
 import { errorEnvelope, isAppError } from './lib/errors';
+import { classifyDependencyError } from './lib/dependency-errors';
+import {
+  NO_RETRY_HEADERS,
+  noRetryUntilHeaders,
+  retryAfterHeaders,
+} from './lib/retry-hints';
 import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
@@ -154,15 +160,56 @@ app.onError((err, c) => {
       { 'X-Request-Id': requestId },
     );
   }
-  createLogger({
+  const logger = createLogger({
     service: 'api',
     environment: c.env.ENVIRONMENT,
     base: { request_id: requestId },
-  }).error('api.unhandled_error', {}, err);
+  });
+
+  // Known dependency failures are NOT application defects. Classifying them here
+  // covers every route at once, and turns the incident's dominant error path —
+  // 4,616 provider-budget rejections that all became generic 500s — into a
+  // precise 503 that alerting can distinguish and clients can act on.
+  const dependency = classifyDependencyError(err);
+  if (dependency) {
+    logger.error(
+      'api.dependency_unavailable',
+      {
+        code: dependency.code,
+        dependency: dependency.dependency,
+        error_category: 'external_service',
+        status_code: dependency.status,
+        deterministic: dependency.deterministic,
+        retry_after_seconds: dependency.retryAfterSeconds,
+      },
+      err,
+    );
+    return c.json(
+      errorEnvelope(dependency.detail, { code: dependency.code, requestId }),
+      dependency.status,
+      {
+        'X-Request-Id': requestId,
+        // A deterministic outage cannot be repaired by retrying, so suppress the
+        // client's automatic retry outright and give it the provider's own
+        // recovery time. A transient drop keeps normal retry behavior, just
+        // paced by Retry-After instead of immediate.
+        ...(dependency.deterministic
+          ? noRetryUntilHeaders(dependency.retryAfterSeconds)
+          : retryAfterHeaders(dependency.retryAfterSeconds)),
+      },
+    );
+  }
+
+  logger.error('api.unhandled_error', {}, err);
   return c.json(
     errorEnvelope('Internal server error', { code: 'internal_error', requestId }),
     500,
-    { 'X-Request-Id': requestId },
+    {
+      'X-Request-Id': requestId,
+      // An unexpected defect is not made better by an immediate second attempt,
+      // and under load the retry is what converts a fault into a cascade.
+      ...NO_RETRY_HEADERS,
+    },
   );
 });
 
@@ -271,7 +318,13 @@ export default {
     if (!isDaily) return;
 
     try {
-      await runBillingReconciliation(env);
+      const billing = await runBillingReconciliation(env);
+      logger.info('cron.billing_reconciliation', {
+        trigger: 'cron',
+        cron: controller.cron,
+        subscriptions_expired: billing.expired,
+        checkouts_abandoned: billing.abandoned,
+      });
     } catch (err) {
       logger.error('cron.billing_reconciliation_failed', { trigger: 'cron' }, err);
     }

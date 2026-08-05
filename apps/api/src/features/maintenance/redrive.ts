@@ -1,5 +1,5 @@
 import { createDb, sources, type Database } from '@crosmos/db';
-import { createLogger } from '@crosmos/observability';
+import { createLogger, createMetrics } from '@crosmos/observability';
 import { and, gt, inArray, lt, or, sql } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 import { getJobStore, reapStaleIngestionJobs } from '../../integrations/job-store';
@@ -38,6 +38,14 @@ export async function reapStaleJobs(env: Env): Promise<number> {
 
 /** Stop re-driving a source after this many sweep-initiated attempts. */
 const MAX_REDRIVE_ATTEMPTS = 5;
+/**
+ * Anomaly threshold (issue #9 observability). A source re-driven this many times
+ * without reaching a terminal state is failing REPEATEDLY, not just briefly —
+ * surface it (WARN log + metric) BEFORE it burns its whole budget and is
+ * abandoned, so a stuck-ingestion regression is caught in ~1 sweep-window rather
+ * than silently. This is exactly the signal the source-520 stall lacked.
+ */
+const REDRIVE_ATTEMPT_WARN_THRESHOLD = 3;
 /**
  * Only treat `processing`/`pending` sources as orphaned once they've been stale
  * this long — comfortably past the queue backstop window (max_retries ×
@@ -98,6 +106,13 @@ export async function redriveStuckSources(
   env: Env,
 ): Promise<RedriveResult> {
   const logger = createLogger({ service: 'api', environment: env.ENVIRONMENT });
+  // Best-effort metrics (no-op until the ANALYTICS binding is enabled). The
+  // high-signal anomalies below are ALSO logged so they surface via tail / log
+  // drains / Sentry even while Analytics Engine is off.
+  const metrics = createMetrics(env.ANALYTICS, {
+    service: 'api',
+    environment: env.ENVIRONMENT,
+  });
   const result: RedriveResult = {
     candidates: 0,
     jobsCreated: 0,
@@ -122,6 +137,8 @@ export async function redriveStuckSources(
       orgId: sources.orgId,
       spaceId: sources.spaceId,
       ownerUserId: sources.ownerUserId,
+      attempts,
+      extractionStatus: sources.extractionStatus,
     })
     .from(sources)
     .where(
@@ -168,6 +185,45 @@ export async function redriveStuckSources(
     'Ingestion re-drive budget exhausted',
     'redrive_exhausted',
   );
+  // ANOMALY: a source we gave up on entirely (data loss). Log at ERROR + emit a
+  // metric so it pages / alerts — this is the terminal form of the source-520
+  // failure mode and must never be silent.
+  if (result.markedExhausted > 0) {
+    logger.error('ingestion.sources_abandoned', {
+      reason: 'redrive_exhausted',
+      count: result.markedExhausted,
+      source_ids: exhausted.map((s) => s.id).slice(0, 50),
+    });
+    metrics.count('ingestion_source_abandoned', {
+      tags: ['redrive_exhausted'],
+      values: [result.markedExhausted],
+      index: 'ingestion_source_abandoned',
+    });
+  }
+
+  // ANOMALY: sources being re-driven repeatedly but not yet exhausted. Surface
+  // them NOW (WARN + metric) so a stuck-ingestion regression is caught early,
+  // not only once budget runs out. `candidates` already excludes exhausted rows.
+  const highAttempt = candidates.filter(
+    (c) => c.attempts >= REDRIVE_ATTEMPT_WARN_THRESHOLD,
+  );
+  if (highAttempt.length > 0) {
+    logger.warn('ingestion.sources_repeatedly_stuck', {
+      count: highAttempt.length,
+      threshold: REDRIVE_ATTEMPT_WARN_THRESHOLD,
+      max_attempts: MAX_REDRIVE_ATTEMPTS,
+      sample: highAttempt.slice(0, 20).map((c) => ({
+        source_id: c.id,
+        attempts: c.attempts,
+        status: c.extractionStatus,
+      })),
+    });
+    metrics.count('ingestion_source_repeatedly_stuck', {
+      tags: [],
+      values: [highAttempt.length],
+      index: 'ingestion_source_repeatedly_stuck',
+    });
+  }
 
   if (candidates.length === 0) return result;
 
@@ -193,6 +249,17 @@ export async function redriveStuckSources(
     'Source owner was deleted; cannot re-drive ingestion',
     'owner_deleted',
   );
+  if (result.markedOwnerDeleted > 0) {
+    logger.warn('ingestion.sources_abandoned', {
+      reason: 'owner_deleted',
+      count: result.markedOwnerDeleted,
+    });
+    metrics.count('ingestion_source_abandoned', {
+      tags: ['owner_deleted'],
+      values: [result.markedOwnerDeleted],
+      index: 'ingestion_source_abandoned',
+    });
+  }
 
   const limits = getOperationalLimits(env);
   const jobStore = getJobStore(db, limits.staleJobMinutes);
@@ -270,6 +337,17 @@ export async function redriveStuckSources(
     marked_owner_deleted: result.markedOwnerDeleted,
     marked_exhausted: result.markedExhausted,
     cap_hit: result.capHit,
+  });
+  // Sweep summary metric — a non-zero `candidates` every sweep is itself a
+  // signal (steady-state ingestion should self-heal to zero stuck sources).
+  metrics.count('ingestion_redrive_sweep', {
+    tags: [result.capHit ? 'cap_hit' : 'ok'],
+    values: [
+      result.candidates,
+      result.sourcesRequeued,
+      result.markedExhausted + result.markedOwnerDeleted,
+    ],
+    index: 'ingestion_redrive_sweep',
   });
   return result;
 }

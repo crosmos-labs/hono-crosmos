@@ -14,6 +14,7 @@ import { and, desc, isNull, sql } from 'drizzle-orm';
 import { scopeMemories } from '../../../lib/scope';
 import { GIN_CANDIDATE_LIMIT, MIN_KEYWORD_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
+import { boundTsqueryText } from '../tsquery';
 import { type RankedCandidate, SourceSignal } from '../types';
 
 export async function keywordSearch(
@@ -22,7 +23,10 @@ export async function keywordSearch(
   scope: TenantScope,
   limit: number,
 ): Promise<RankedCandidate[]> {
-  const tsQuery = sql`websearch_to_tsquery('english', ${queryText})`;
+  // Bounded before it reaches Postgres — an oversized expression raises
+  // `tsquery stack too small`. No-op for queries already within the bounds, so
+  // ranking is unchanged for all normal traffic.
+  const tsQuery = sql`websearch_to_tsquery('english', ${boundTsqueryText(queryText)})`;
   const tsVector = sql`to_tsvector('english', ${memories.content})`;
   const rankExpr = sql<number>`ts_rank_cd(${tsVector}, ${tsQuery}, 33)`;
 

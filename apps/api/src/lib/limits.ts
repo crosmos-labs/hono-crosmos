@@ -7,6 +7,8 @@ import {
 import {
   GLOBAL_AI_RPM_CEILING,
   RETRIEVAL_MAX_CONCURRENT_PER_USER,
+  RETRIEVAL_RESULT_TIMEOUT_SECONDS,
+  RETRIEVAL_SLOT_TTL_GRACE_SECONDS,
 } from '../features/search/constants';
 
 /**
@@ -29,6 +31,10 @@ export interface OperationalLimits {
   retrievalMaxConcurrentPerUser: number;
   /** Account-wide AI requests-per-minute ceiling (embedder + reranker). */
   globalAiRpmCeiling: number;
+  /** Seconds the route waits for retrieval before returning 504 + freeing the slot. */
+  retrievalTimeoutSeconds: number;
+  /** TTL on a per-user concurrency slot; always > retrievalTimeoutSeconds. */
+  retrievalSlotTtlSeconds: number;
 }
 
 /**
@@ -65,6 +71,36 @@ export function getOperationalLimits(env: Env): OperationalLimits {
     globalAiRpmCeiling: envInt(
       env.GLOBAL_AI_RPM_CEILING,
       GLOBAL_AI_RPM_CEILING,
+    ),
+    ...resolveRetrievalDeadlines(env),
+  };
+}
+
+/**
+ * Retrieval timeout + slot TTL, resolved together because the TTL is only
+ * meaningful relative to the timeout.
+ *
+ * The slot MUST outlive the request holding it. If an operator overrides only
+ * the timeout (raising it above the default TTL), an independently-resolved TTL
+ * would expire mid-request and silently turn the per-user concurrency cap into a
+ * suggestion — over-admitting exactly when someone is tuning for overload. So
+ * the TTL is derived from the RESOLVED timeout, and an explicit TTL override is
+ * floored at `timeout + grace` rather than trusted blindly.
+ */
+function resolveRetrievalDeadlines(env: Env): {
+  retrievalTimeoutSeconds: number;
+  retrievalSlotTtlSeconds: number;
+} {
+  const retrievalTimeoutSeconds = envInt(
+    env.RETRIEVAL_TIMEOUT_SECONDS,
+    RETRIEVAL_RESULT_TIMEOUT_SECONDS,
+  );
+  const minTtl = retrievalTimeoutSeconds + RETRIEVAL_SLOT_TTL_GRACE_SECONDS;
+  return {
+    retrievalTimeoutSeconds,
+    retrievalSlotTtlSeconds: Math.max(
+      minTtl,
+      envInt(env.RETRIEVAL_SLOT_TTL_SECONDS, minTtl),
     ),
   };
 }

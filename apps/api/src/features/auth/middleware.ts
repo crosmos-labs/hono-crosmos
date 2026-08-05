@@ -217,9 +217,28 @@ function extractBearer(c: AuthContext): string {
  * matching the limiter's stance elsewhere. Does NOT touch
  * `planRateLimitEnforced` — the AI-path gates own that flag.
  */
+/**
+ * Routes that unconditionally enforce the STRICT AI-path limit themselves, and
+ * on which the management limit is therefore pure overhead.
+ *
+ * The mgmt allowance is looser than the AI allowance on every plan
+ * (300 vs 10 RPM and 30k vs 1k/day on free; 1200/150k vs 60/10k on pro; -1 on
+ * enterprise), so on these paths it can never bind before the AI limit does —
+ * it only costs two extra Durable Object round-trips per request. During the
+ * 2026-07-25 incident that was two of the five `ratelimit/limit` calls measured
+ * on every single search, including the ones being rejected.
+ *
+ * Deliberately an EXACT-MATCH list, not a prefix list: `/api/v1/sources` and
+ * `/api/v1/conversations` run the strict limiter only inside their ingest
+ * preflight, so their read endpoints still need the default-on mgmt limit and
+ * must not be exempted wholesale.
+ */
+const AI_PATH_ROUTES: ReadonlySet<string> = new Set(['/api/v1/search']);
+
 async function enforceOrgMgmtRateLimit(c: AuthContext): Promise<void> {
   const orgId = c.var.activeOrgId;
   if (orgId == null || c.var.mgmtRateLimitEnforced) return;
+  if (AI_PATH_ROUTES.has(new URL(c.req.url).pathname)) return;
 
   const db = getDb(c);
   const limiter = getRateLimiter(c.env, (task) => c.executionCtx.waitUntil(task));

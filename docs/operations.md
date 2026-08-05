@@ -80,8 +80,9 @@ Polar setup:
 
 Billing flow:
 
-- `POST /api/v1/billing/checkout` returns a Polar checkout URL and sets `organizations.plan_pending`; it does not grant the paid plan.
+- `POST /api/v1/billing/checkout` returns a Polar checkout URL and sets `organizations.plan_pending` alongside `plan_pending_expires_at` (the checkout's own deadline, or +1h if Polar doesn't give one); it does not grant the paid plan.
 - Users may take minutes or hours to complete checkout. The backend must continue to show the current `plan` plus `plan_pending` until Polar sends an actionable webhook.
+- An abandoned checkout sends no webhook, so `plan_pending` is bounded by its deadline rather than by an event: reads past `plan_pending_expires_at` return `null`, and the daily reconciliation clears the stored columns. A row with `plan_pending` but no deadline predates that column and is treated as expired.
 - `POST /webhooks/polar` is the source of truth for paid entitlement changes. It records every verified delivery in `billing_events`, deduplicates by `webhook-id`, and only marks the event processed after the org mutation succeeds.
 - If webhook dispatch fails, the route stores the error on `billing_events.error` and returns `500` so Polar retries.
 - `POST /api/v1/billing/portal` creates a fresh one-shot portal URL; do not cache it client-side.

@@ -221,6 +221,7 @@ async function dispatchActive(
     plan,
     subscriptionStatus: cancelAtPeriodEnd ? 'canceled' : 'active',
     planPending: null,
+    planPendingExpiresAt: null,
     updatedAt: new Date(),
   };
   if (subscriptionId) patch.polarSubscriptionId = subscriptionId;
@@ -357,6 +358,7 @@ async function dispatchEvent(
         polarSubscriptionId: null,
         currentPeriodEnd: null,
         planPending: null,
+        planPendingExpiresAt: null,
         updatedAt: new Date(),
       })
       .where(targetsCurrentSubscription);
@@ -372,6 +374,7 @@ async function dispatchEvent(
         polarSubscriptionId: null,
         currentPeriodEnd: null,
         planPending: null,
+        planPendingExpiresAt: null,
         updatedAt: new Date(),
       })
       .where(targetsCurrentSubscription);

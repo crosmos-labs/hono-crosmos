@@ -18,6 +18,8 @@ const COMMON_FEATURES: Entitlements = {
   max_graph_depth: 3,
   retention_days: -1,
   max_members: -1,
+  // Space count is unlimited on every plan (no space-based restriction).
+  max_memory_spaces: -1,
   max_sources_per_space: -1,
   api_keys_per_user: -1,
   zeroentropy_rerank_candidates: 15,
@@ -31,7 +33,6 @@ const COMMON_FEATURES: Entitlements = {
 // the tight AI budget, while abuse is still bounded. See `requireAuth`.
 const FREE: Entitlements = {
   ...COMMON_FEATURES,
-  max_memory_spaces: 3,
   monthly_tokens_ingested: 500_000,
   monthly_search_queries: 5_000,
   rate_limit_rpm: 10,
@@ -42,7 +43,6 @@ const FREE: Entitlements = {
 
 const DEVELOPER: Entitlements = {
   ...COMMON_FEATURES,
-  max_memory_spaces: 7,
   monthly_tokens_ingested: 3_000_000,
   monthly_search_queries: 30_000,
   rate_limit_rpm: 60,
@@ -53,7 +53,6 @@ const DEVELOPER: Entitlements = {
 
 const PRO: Entitlements = {
   ...COMMON_FEATURES,
-  max_memory_spaces: 50,
   monthly_tokens_ingested: 40_000_000,
   monthly_search_queries: 200_000,
   rate_limit_rpm: 300,
@@ -64,7 +63,6 @@ const PRO: Entitlements = {
 
 const ENTERPRISE: Entitlements = {
   ...COMMON_FEATURES,
-  max_memory_spaces: -1,
   monthly_tokens_ingested: -1,
   monthly_search_queries: -1,
   rate_limit_rpm: -1,

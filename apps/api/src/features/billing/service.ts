@@ -31,6 +31,13 @@ export class UnknownPolarProductError extends Error {
   }
 }
 
+export class PaymentNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PaymentNotFoundError';
+  }
+}
+
 export type PurchasablePlan = z.infer<typeof PurchasablePlanSchema>;
 
 export interface PlanCatalogEntry {
@@ -75,12 +82,26 @@ export function getPlanCatalog(): PlanCatalogEntry[] {
   });
 }
 
+/**
+ * `plan_pending` is a promise that an upgrade is in flight. An abandoned checkout
+ * breaks that promise silently: Polar emits no webhook when a user simply closes
+ * the tab, so the only thing that ever falsifies the pending state is its own
+ * deadline. Expire it on read rather than trusting the daily sweep to have run —
+ * the moment the checkout is no longer payable, the field must stop claiming
+ * otherwise.
+ */
+export function pendingPlan(org: Organization, now: Date = new Date()): string | null {
+  if (!org.planPending) return null;
+  if (!org.planPendingExpiresAt) return null;
+  return org.planPendingExpiresAt.getTime() > now.getTime() ? org.planPending : null;
+}
+
 export function subscriptionResponse(org: Organization) {
   return {
     plan: org.plan,
     subscription_status: org.subscriptionStatus,
     current_period_end: org.currentPeriodEnd?.toISOString() ?? null,
-    plan_pending: org.planPending,
+    plan_pending: pendingPlan(org),
   };
 }
 
@@ -90,6 +111,13 @@ function polarBaseUrl(env: Env): string {
     : 'https://sandbox-api.polar.sh/v1';
 }
 
+/**
+ * Bounds every Polar call. Without this the fetch can hang indefinitely and wedge
+ * the isolate — the same failure mode that stalled ingestion under load. A user
+ * is better served by a fast 502 than a request that never returns.
+ */
+const POLAR_TIMEOUT_MS = 10_000;
+
 async function polarRequest<T>(
   env: Env,
   path: string,
@@ -98,21 +126,36 @@ async function polarRequest<T>(
   if (!env.POLAR_ACCESS_TOKEN) {
     throw new BillingConfigError('polar_access_token is not configured');
   }
-  const response = await fetch(`${polarBaseUrl(env)}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...init.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${polarBaseUrl(env)}${path}`, {
+      ...init,
+      signal: AbortSignal.timeout(POLAR_TIMEOUT_MS),
+      headers: {
+        Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...init.headers,
+      },
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new PolarRequestError('polar request timed out', 504);
+    }
+    throw err;
+  }
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new PolarRequestError(body || response.statusText, response.status);
   }
+  // Not every success carries a body: 204 has none by definition, and Polar's
+  // "trigger invoice generation" returns a bodyless 202. Blindly calling
+  // `.json()` on those throws a SyntaxError on the empty string, so parse only
+  // when there is actually something to parse.
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export function productIdForPlan(env: Env, plan: string): string {
@@ -168,6 +211,7 @@ export async function createCheckoutSession(
   const checkout = await polarRequest<{
     url?: string;
     checkout_url?: string;
+    expires_at?: string;
   }>(env, '/checkouts/', {
     method: 'POST',
     body: JSON.stringify({
@@ -188,10 +232,29 @@ export async function createCheckoutSession(
 
   await db
     .update(organizations)
-    .set({ planPending: input.plan, updatedAt: new Date() })
+    .set({
+      planPending: input.plan,
+      planPendingExpiresAt: checkoutExpiry(checkout.expires_at),
+      updatedAt: new Date(),
+    })
     .where(eq(organizations.id, org.id));
 
   return url;
+}
+
+/**
+ * How long `plan_pending` may claim an upgrade is coming when Polar doesn't tell
+ * us the checkout's own deadline. Erring short is safe: the field is display-only
+ * (entitlements key off `plan`), so an early expiry at worst drops the "pending…"
+ * banner from a page the user is about to leave anyway, while an over-long one
+ * leaves a stuck upgrade prompt — the bug this deadline exists to close.
+ */
+const CHECKOUT_FALLBACK_TTL_MS = 60 * 60 * 1000;
+
+function checkoutExpiry(expiresAt: string | undefined): Date {
+  const parsed = expiresAt ? new Date(expiresAt) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) return parsed;
+  return new Date(Date.now() + CHECKOUT_FALLBACK_TTL_MS);
 }
 
 export async function createCustomerPortalSession(
@@ -237,6 +300,165 @@ export async function cancelSubscription(
     .update(organizations)
     .set({ subscriptionStatus: 'canceled', updatedAt: new Date() })
     .where(eq(organizations.id, org.id));
+}
+
+/** Polar's `Order` — only the fields we surface. */
+interface PolarOrder {
+  id: string;
+  status: string;
+  paid: boolean;
+  created_at: string;
+  subtotal_amount: number;
+  discount_amount: number;
+  tax_amount: number;
+  total_amount: number;
+  refunded_amount: number;
+  currency: string;
+  billing_reason: string;
+  description?: string | null;
+  invoice_number?: string | null;
+  is_invoice_generated: boolean;
+  customer_id: string;
+  product_id?: string | null;
+  product?: { name?: string | null } | null;
+}
+
+interface PolarList<T> {
+  items: T[];
+  pagination: { total_count: number; max_page: number };
+}
+
+/**
+ * `planForProduct` throws on an unrecognised product. Payment history is
+ * historical: it can legitimately contain orders for products that have since
+ * been renamed, archived, or re-created with a new id. A stale product must not
+ * blow up the whole page, so unknown products degrade to `null`.
+ */
+function planForProductOrNull(env: Env, productId: string | null | undefined) {
+  if (!productId) return null;
+  try {
+    return planForProduct(env, productId);
+  } catch {
+    return null;
+  }
+}
+
+function paymentResponse(env: Env, order: PolarOrder) {
+  return {
+    id: order.id,
+    status: order.status as
+      | 'draft'
+      | 'pending'
+      | 'paid'
+      | 'refunded'
+      | 'partially_refunded'
+      | 'void',
+    paid: order.paid,
+    created_at: order.created_at,
+    subtotal_amount: order.subtotal_amount,
+    discount_amount: order.discount_amount,
+    tax_amount: order.tax_amount,
+    total_amount: order.total_amount,
+    refunded_amount: order.refunded_amount,
+    currency: order.currency,
+    billing_reason: order.billing_reason,
+    description: order.description ?? null,
+    invoice_number: order.invoice_number ?? null,
+    invoice_available: order.is_invoice_generated,
+    product_name: order.product?.name ?? null,
+    plan: planForProductOrNull(env, order.product_id),
+  };
+}
+
+export async function listPayments(
+  db: Database,
+  env: Env,
+  input: { orgId: number; page: number; limit: number },
+) {
+  const org = await getOrganizationByIdOrThrow(db, input.orgId);
+  // An org that has never checked out has no Polar customer. That is an empty
+  // history, not an error — a free-plan dashboard should render a clean list.
+  if (!org.polarCustomerId) {
+    return {
+      payments: [],
+      pagination: {
+        page: input.page,
+        limit: input.limit,
+        total_count: 0,
+        max_page: 0,
+      },
+    };
+  }
+
+  const query = new URLSearchParams({
+    customer_id: org.polarCustomerId,
+    page: String(input.page),
+    limit: String(input.limit),
+    sorting: '-created_at',
+  });
+  const result = await polarRequest<PolarList<PolarOrder>>(
+    env,
+    `/orders/?${query.toString()}`,
+    { method: 'GET' },
+  );
+
+  return {
+    payments: result.items.map((order) => paymentResponse(env, order)),
+    pagination: {
+      page: input.page,
+      limit: input.limit,
+      total_count: result.pagination.total_count,
+      max_page: result.pagination.max_page,
+    },
+  };
+}
+
+/**
+ * Resolves an order's invoice URL, after proving the order belongs to the caller's
+ * org. Polar order ids are opaque UUIDs but they are NOT a capability — without
+ * this ownership check any org owner could read any other org's invoice by id.
+ * A foreign or unknown id gets a flat 404 so the endpoint can't be used to probe
+ * which order ids exist.
+ */
+export async function getPaymentInvoice(
+  db: Database,
+  env: Env,
+  input: { orgId: number; orderId: string },
+): Promise<{ status: 'ready'; url: string } | { status: 'generating' }> {
+  const org = await getOrganizationByIdOrThrow(db, input.orgId);
+  if (!org.polarCustomerId) {
+    throw new PaymentNotFoundError('payment_not_found');
+  }
+
+  let order: PolarOrder;
+  try {
+    order = await polarRequest<PolarOrder>(env, `/orders/${input.orderId}`, {
+      method: 'GET',
+    });
+  } catch (err) {
+    if (err instanceof PolarRequestError && err.status === 404) {
+      throw new PaymentNotFoundError('payment_not_found');
+    }
+    throw err;
+  }
+
+  if (order.customer_id !== org.polarCustomerId) {
+    throw new PaymentNotFoundError('payment_not_found');
+  }
+
+  // Polar generates invoice PDFs lazily. Trigger generation and let the client
+  // retry rather than blocking the request on an async job we can't await.
+  if (!order.is_invoice_generated) {
+    await polarRequest(env, `/orders/${input.orderId}/invoice`, { method: 'POST' });
+    return { status: 'generating' };
+  }
+
+  const invoice = await polarRequest<{ url: string }>(
+    env,
+    `/orders/${input.orderId}/invoice`,
+    { method: 'GET' },
+  );
+  return { status: 'ready', url: invoice.url };
 }
 
 async function hmacHex(secret: string, message: string): Promise<string> {

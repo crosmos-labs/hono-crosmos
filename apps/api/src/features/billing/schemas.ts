@@ -62,3 +62,57 @@ export const CancelResponseSchema = z
 export const WebhookAckSchema = z
   .object({ received: z.literal(true) })
   .openapi('WebhookAck');
+
+export const PaymentStatusSchema = z.enum([
+  'draft',
+  'pending',
+  'paid',
+  'refunded',
+  'partially_refunded',
+  'void',
+]);
+
+export const PaymentsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1).openapi({ example: 1 }),
+  limit: z.coerce.number().int().min(1).max(100).default(20).openapi({ example: 20 }),
+});
+
+export const PaymentSchema = z
+  .object({
+    id: z.string(),
+    status: PaymentStatusSchema,
+    paid: z.boolean(),
+    created_at: IsoDateTimeSchema,
+    // All amounts are minor units (cents) of `currency`, matching Polar.
+    subtotal_amount: z.number().int(),
+    discount_amount: z.number().int(),
+    tax_amount: z.number().int(),
+    total_amount: z.number().int(),
+    refunded_amount: z.number().int(),
+    currency: z.string(),
+    billing_reason: z.string(),
+    description: z.string().nullable(),
+    invoice_number: z.string().nullable(),
+    // False when Polar has not generated the PDF yet; the invoice route will
+    // trigger generation on demand rather than 404.
+    invoice_available: z.boolean(),
+    product_name: z.string().nullable(),
+    plan: PlanSchema.nullable(),
+  })
+  .openapi('Payment');
+
+export const PaymentsResponseSchema = z
+  .object({
+    payments: z.array(PaymentSchema),
+    pagination: z.object({
+      page: z.number().int(),
+      limit: z.number().int(),
+      total_count: z.number().int(),
+      max_page: z.number().int(),
+    }),
+  })
+  .openapi('PaymentsResponse');
+
+export const InvoiceResponseSchema = z
+  .object({ invoice_url: z.string().url() })
+  .openapi('InvoiceResponse');
