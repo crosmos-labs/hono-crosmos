@@ -291,7 +291,7 @@ searchRoutes.openapi(
     // 6. Per-user concurrency cap. (5. queue-depth gate dropped inline — §4.)
     const concurrency = getConcurrencyLimiter(c.env, defer);
     const userKey = String(userId);
-    const acquired = await logger.time(
+    const lease = await logger.time(
       'retrieval.stage_completed',
       {
         stage: 'concurrency_acquire',
@@ -304,7 +304,7 @@ searchRoutes.openapi(
           limits.retrievalSlotTtlSeconds,
         ),
     );
-    if (!acquired) {
+    if (!lease.acquired) {
       logger.warn('retrieval.request_rejected', {
         stage: 'concurrency_acquire',
         space_id: space.id,
@@ -528,7 +528,11 @@ searchRoutes.openapi(
       // off the critical path: the release's KV write (~350ms cross-region)
       // must not block the response. `waitUntil` keeps the worker alive until
       // it settles; `release` itself never throws (it logs + swallows).
-      defer(concurrency.release(userKey));
+      //
+      // Released BY TOKEN, so this frees the lease this request actually took
+      // and nobody else's. If the isolate is terminated before this runs, the
+      // lease's TTL reclaims it instead.
+      defer(concurrency.release(userKey, lease.token));
     }
   },
 );
