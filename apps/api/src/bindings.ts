@@ -94,6 +94,11 @@ export interface Env {
   STALE_JOB_MINUTES?: string;
   RETRIEVAL_MAX_CONCURRENT_PER_USER?: string;
   GLOBAL_AI_RPM_CEILING?: string;
+  // Retrieval deadlines. RETRIEVAL_SLOT_TTL_SECONDS is floored at
+  // RETRIEVAL_TIMEOUT_SECONDS + grace, so it can be raised but never set low
+  // enough to expire a slot out from under a live request.
+  RETRIEVAL_TIMEOUT_SECONDS?: string;
+  RETRIEVAL_SLOT_TTL_SECONDS?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).

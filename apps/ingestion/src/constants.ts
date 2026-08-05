@@ -102,20 +102,48 @@ export const CONVERSATION_MAX_CHARS = 4_000;
 // WARN past this threshold for observability; the hard bounds below enforce it.
 export const CONVERSATION_CHUNK_WARN_THRESHOLD = 50;
 
-// Per-invocation subrequest budget (issues #1 / #2). A whole job (every source ×
-// every chunk) runs in ONE Cloudflare invocation, so the bound is job-wide, not
-// per-source. ~6 fetch subrequests per chunk against a ~1000 cap leaves room for
-// ~160 chunks; we keep a generous safety margin (entity resolution, status
-// writes, heartbeats, estimate error) and cap at 130 chunks per invocation.
-export const SUBREQUESTS_PER_CHUNK = 6;
-export const MAX_CHUNKS_PER_INVOCATION = 130;
-// A SINGLE source must fit in one invocation (it can't be split across them —
-// purge re-runs it from the top). A source over this is failed terminally with a
-// clear "split it" error rather than silently blowing the subrequest cap. Set
-// above the max legal conversation (MAX_CONVERSATION_MESSAGES=500 / segment 4 =
-// 125 chunks) so well-formed input never trips it; only abusive/oversized
-// sources do. Producer-side splitting of huge conversations is the real fix.
-export const MAX_CHUNKS_PER_SOURCE = MAX_CHUNKS_PER_INVOCATION;
+// Per-invocation chunk BATCH size (issues #1 / #2 / #9). A single Cloudflare
+// invocation is bounded to 1000 fetch subrequests AND a wall-clock/duration the
+// runtime will `cancel` past. The old estimate — "~6 subrequests per chunk, so
+// ~130 chunks fit" — was wrong on BOTH axes and was the root cause of the
+// source-520 stall (2026-07-17): a 16-chunk markdown source blew the subrequest
+// cap (a Qdrant delete threw "Too many subrequests …", status 504, retryable)
+// and separately got the invocation `canceled` at ~40-80s. The real per-chunk
+// cost is far higher than 6 — each chunk issues a search embed, a vector query,
+// two extraction LLM calls, a batch embed, a vector upsert, AND several Postgres
+// round-trips over the Hyperdrive TCP socket (which DO count against the
+// invocation's connection/subrequest budget) — plus per-batch entity resolution
+// (candidate-pool vector queries + upserts). Empirically 16 chunks + Stage 8
+// exhausted the 1000-cap.
+//
+// So a source is now processed in BATCHES of at most this many chunks per
+// invocation. `ingestSource` persists a durable `ingest_next_sequence`
+// checkpoint in `source.meta` after each committed batch; if more chunks remain
+// it returns `remainingChunkCount > 0` and the job handler re-queues to continue
+// in a fresh invocation. This makes forward progress guaranteed and bounds a
+// single invocation's subrequest + time cost, whatever the source size.
+//
+// 8 chunks/invocation keeps the worst-case well under the 1000-cap (~8 × ~20
+// subrequests + Stage 8 + a targeted purge ≈ ~250, comfortable headroom) and
+// keeps wall-clock to ~20-40s. Raise it only after measuring real subrequest
+// counts in prod (see the `ingestion_ai_error` + outcome metrics).
+export const SUBREQUESTS_PER_CHUNK = 20;
+export const MAX_CHUNKS_PER_INVOCATION = 8;
+// Bounded concurrency for chunks WITHIN a batch (issue #1). Chunks in a batch run
+// concurrently up to this limit to cut wall-clock; the per-source cross-chunk
+// dedup (`seenFactKeys`) is best-effort and tolerates the race (the Stage-1
+// vector dedup-hint still catches cross-chunk duplicates). The subrequest budget
+// is per-invocation TOTAL, not concurrent, so concurrency doesn't change the cap
+// math — only latency. Keep modest so a batch's concurrent subrequests don't
+// spike against provider rate limits.
+export const CHUNK_CONCURRENCY = 3;
+// Abuse ceiling on total chunks for a SINGLE source. Decoupled from the
+// per-invocation batch now that sources checkpoint + resume across invocations
+// (they no longer have to fit in one invocation). A source over this is failed
+// terminally with a clear "split it" error. Set high — well above the max legal
+// conversation (MAX_CONVERSATION_MESSAGES=500 / segment 4 = 125 chunks) — so
+// only genuinely pathological input trips it.
+export const MAX_CHUNKS_PER_SOURCE = 500;
 // Mid-source lease heartbeat (issue #1). The queue backstop reclaims a job whose
 // `started_at` hasn't advanced for JOB_LEASE_MS (5 min). The per-source status
 // write only beats BETWEEN sources, so a single long source (many chunks) could

@@ -1,5 +1,5 @@
 import { createDb, organizations, type Database } from '@crosmos/db';
-import { and, inArray, lt } from 'drizzle-orm';
+import { and, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 
 function gracePeriodDays(env: Env): number {
@@ -20,6 +20,7 @@ export async function reconcileExpiredSubscriptions(
       polarSubscriptionId: null,
       currentPeriodEnd: null,
       planPending: null,
+      planPendingExpiresAt: null,
       updatedAt: new Date(),
     })
     .where(
@@ -32,7 +33,40 @@ export async function reconcileExpiredSubscriptions(
   return rows.length;
 }
 
-export async function runBillingReconciliation(env: Env): Promise<number> {
+/**
+ * Clears `plan_pending` left behind by checkouts that were never paid. Polar
+ * sends no webhook when a user abandons a checkout, so these rows have no other
+ * writer — without this sweep they keep a dead upgrade pending forever.
+ *
+ * Reads already expire the field (see `pendingPlan`), so this is about the stored
+ * state, not the API response: it stops the column from accumulating lies that a
+ * future reader — a support query, an analytics job — would take at face value.
+ * Rows whose deadline was never recorded (written before the column existed) are
+ * unfalsifiable and therefore also swept.
+ */
+export async function clearAbandonedCheckouts(db: Database): Promise<number> {
+  const rows = await db
+    .update(organizations)
+    .set({ planPending: null, planPendingExpiresAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        isNotNull(organizations.planPending),
+        or(
+          isNull(organizations.planPendingExpiresAt),
+          lt(organizations.planPendingExpiresAt, new Date()),
+        ),
+      ),
+    )
+    .returning({ id: organizations.id });
+  return rows.length;
+}
+
+export async function runBillingReconciliation(
+  env: Env,
+): Promise<{ expired: number; abandoned: number }> {
   const db = createDb(env.HYPERDRIVE.connectionString);
-  return reconcileExpiredSubscriptions(db, env);
+  return {
+    expired: await reconcileExpiredSubscriptions(db, env),
+    abandoned: await clearAbandonedCheckouts(db),
+  };
 }

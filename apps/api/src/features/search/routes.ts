@@ -31,10 +31,15 @@ import {
   CANDIDATE_POOL,
   GLOBAL_AI_RETRY_AFTER_SECONDS,
   GLOBAL_AI_WINDOW_SECONDS,
-  RETRIEVAL_RESULT_TIMEOUT_SECONDS,
-  RETRIEVAL_USER_COUNTER_TTL_SECONDS,
+  RETRIEVAL_RETRY_AFTER_SECONDS,
 } from './constants';
 import { getOperationalLimits } from '../../lib/limits';
+import {
+  NO_RETRY_HEADERS,
+  noRetryUntilHeaders,
+  retryAfterHeaders,
+} from '../../lib/retry-hints';
+import { classifyDependencyError } from '../../lib/dependency-errors';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
@@ -195,132 +200,173 @@ searchRoutes.openapi(
     // blocking the response. The worker stays alive until they settle.
     const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
 
-    // Entitlements + space access are independent, side-effect-free KV reads, so
-    // fetch them CONCURRENTLY. On a cold isolate each KV read is ~150-200ms;
-    // serialized they dominated gate latency. Entitlements is shared with the
-    // rate-limit gate, the quota gate, and the orchestrator (was 3 fetches); the
-    // space check guarantees space.orgId === orgId so the entitlements apply
-    // throughout. The remaining gates (rate-limit → quota → concurrency) stay
-    // ordered because they have side effects (counter increments, slot acquire)
-    // whose sequencing is semantically meaningful.
-    const [entitlements, space] = await Promise.all([
-      logger.time('retrieval.stage_completed', { stage: 'entitlements' },
-        () => getCachedEntitlements(c, orgId)),
-      logger.time('retrieval.stage_completed', { stage: 'space_access' },
-        () => getCachedSpaceByUuid(c, body.space_id)),
-    ]);
-    // Authoritative org is the SPACE's org. 404 on missing or cross-tenant (no
-    // existence leak).
-    if (!space || space.orgId !== orgId) {
+    // ── GATE 1: per-user overload shedding ───────────────────────────────────
+    //
+    // This runs FIRST, immediately after authentication has established the
+    // principal, and deliberately before any database- or KV-backed work.
+    //
+    // It used to run last, after entitlements, space access, the plan limiter
+    // and the monthly quota. During the 2026-07-25 incident that meant every one
+    // of the 10,757 rejected searches first performed two KV reads, up to four
+    // rate-limiter round-trips and a quota query before being told no — 128ms
+    // average wall time and 7.17ms CPU each, spent entirely on work that was
+    // then discarded. Shedding here makes a rejection one Durable Object call.
+    //
+    // Safe to hoist because the gate keys ONLY on `userId`, which `requirePrincipal`
+    // has already established. It is a coarse per-principal backpressure valve,
+    // not an authorization decision: space authorization, the plan limit and the
+    // quota are all still enforced below for everything that gets admitted, and
+    // rejecting here reveals nothing about whether a space exists. It also means
+    // a shed request no longer consumes monthly AI quota it never used.
+    const concurrency = getConcurrencyLimiter(c.env, defer);
+    const userKey = String(userId);
+    const lease = await logger.time(
+      'retrieval.stage_completed',
+      { stage: 'concurrency_acquire' },
+      () =>
+        concurrency.acquire(
+          userKey,
+          limits.retrievalMaxConcurrentPerUser,
+          limits.retrievalSlotTtlSeconds,
+        ),
+    );
+    if (!lease.acquired) {
       logger.warn('retrieval.request_rejected', {
-        stage: 'space_access',
-        status_code: 404,
+        stage: 'concurrency_acquire',
+        status_code: 429,
       });
-      throw new HTTPException(404, {
-        res: jsonError(`Space ${body.space_id} not found`, 404),
+      metrics.count('search_throttled', { tags: ['concurrency'] });
+      // `Retry-After` (never sent before this fix) is what stops the SDK from
+      // retrying INSTANTLY. A concurrency 429 means this user's own in-flight
+      // work has not drained yet, so an immediate retry is guaranteed to find
+      // the same full counter AND adds a fresh request competing for the slot
+      // it is waiting on. In the incident this class alone was 52.98% of all
+      // search invocations. `RETRIEVAL_RETRY_AFTER_SECONDS` has existed as a
+      // constant since the Python port but was never actually wired to a
+      // response until now.
+      throw new HTTPException(429, {
+        res: jsonError(
+          'Too many concurrent searches. Wait for existing searches to complete.',
+          429,
+          retryAfterHeaders(RETRIEVAL_RETRY_AFTER_SECONDS),
+        ),
       });
     }
-    // A space-scoped API key may only search its pinned space (no-op otherwise).
-    assertKeyScopeAllowsSpace(c, space.id);
 
-    // 2. Per-org plan rate limit (the STRICT AI-path limit, 10 RPM on free).
-    //
-    // `requireAuth` only applies the looser management limit, so this is where
-    // the AI budget is actually enforced for search. It reuses the entitlements
-    // already loaded above and defers its counter writes so search latency stays
-    // the priority. The reads (edge-cached, fast) still gate synchronously. The
-    // `planRateLimitEnforced` guard stays for idempotency. Tradeoff: under high
-    // concurrency the per-org cap can admit a few extra requests at the boundary
-    // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
-    // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
-    // global-AI throttle below is what actually bounds aggregate AI cost.
-    if (!c.var.planRateLimitEnforced) {
-      const limiter = getRateLimiter(c.env, defer);
+    // Wall-clock for the RETRIEVAL phase only. Reassigned once the gates are
+    // done so `retrieval.request_completed.duration_ms` keeps exactly the
+    // meaning it had before admission was reordered — otherwise the before/after
+    // latency comparison for this rollout would be against a moved goalpost.
+    // Seeded here so an unexpected failure during admission still logs a
+    // sensible duration.
+    let t0 = performance.now();
+    // `space` is needed by the failure logs in `catch`, but is only resolved
+    // partway through the block; `undefined` until then.
+    let spaceId: number | undefined;
+
+    try {
+      // ── GATE 2 onwards: authorization, entitlement and quota ─────────────────
+      // Entitlements + space access are independent, side-effect-free KV reads, so
+      // fetch them CONCURRENTLY. On a cold isolate each KV read is ~150-200ms;
+      // serialized they dominated gate latency. Entitlements is shared with the
+      // rate-limit gate, the quota gate, and the orchestrator (was 3 fetches); the
+      // space check guarantees space.orgId === orgId so the entitlements apply
+      // throughout. The remaining gates (rate-limit → quota) stay ordered because
+      // they have side effects (counter increments) whose sequencing is
+      // semantically meaningful.
+      const [entitlements, space] = await Promise.all([
+        logger.time('retrieval.stage_completed', { stage: 'entitlements' },
+          () => getCachedEntitlements(c, orgId)),
+        logger.time('retrieval.stage_completed', { stage: 'space_access' },
+          () => getCachedSpaceByUuid(c, body.space_id)),
+      ]);
+      // Authoritative org is the SPACE's org. 404 on missing or cross-tenant (no
+      // existence leak).
+      if (!space || space.orgId !== orgId) {
+        logger.warn('retrieval.request_rejected', {
+          stage: 'space_access',
+          status_code: 404,
+        });
+        throw new HTTPException(404, {
+          res: jsonError(`Space ${body.space_id} not found`, 404),
+        });
+      }
+      // A space-scoped API key may only search its pinned space (no-op otherwise).
+      assertKeyScopeAllowsSpace(c, space.id);
+      spaceId = space.id;
+
+      // 2. Per-org plan rate limit (the STRICT AI-path limit, 10 RPM on free).
+      //
+      // `requireAuth` only applies the looser management limit, so this is where
+      // the AI budget is actually enforced for search. It reuses the entitlements
+      // already loaded above and defers its counter writes so search latency stays
+      // the priority. The reads (edge-cached, fast) still gate synchronously. The
+      // `planRateLimitEnforced` guard stays for idempotency. Tradeoff: under high
+      // concurrency the per-org cap can admit a few extra requests at the boundary
+      // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
+      // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
+      // global-AI throttle below is what actually bounds aggregate AI cost.
+      if (!c.var.planRateLimitEnforced) {
+        const limiter = getRateLimiter(c.env, defer);
+        try {
+          await logger.time('retrieval.stage_completed', {
+            stage: 'plan_rate_limit',
+          }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
+          c.set('planRateLimitEnforced', true);
+        } catch (err) {
+          if (err instanceof RateLimitError) {
+            logger.warn('retrieval.request_rejected', {
+              stage: 'plan_rate_limit',
+              status_code: 429,
+            });
+            metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
+            throw new HTTPException(429, {
+              res: jsonError(
+                { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
+                429,
+                { 'Retry-After': String(err.retryAfterSeconds) },
+              ),
+            });
+          }
+          throw err;
+        }
+      }
+
+      // 4. Monthly search-query quota (optimistic +1, enforce-only).
       try {
         await logger.time('retrieval.stage_completed', {
-          stage: 'plan_rate_limit',
-        }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
-        c.set('planRateLimitEnforced', true);
+          stage: 'monthly_quota',
+          space_id: space.id,
+        }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
       } catch (err) {
-        if (err instanceof RateLimitError) {
+        if (err instanceof QuotaExceededError) {
           logger.warn('retrieval.request_rejected', {
-            stage: 'plan_rate_limit',
+            stage: 'monthly_quota',
             status_code: 429,
           });
-          metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
+          metrics.count('search_throttled', { tags: ['monthly_quota'] });
+          // A monthly quota does not clear on a timescale any retry can wait
+          // out, so tell the client not to retry at all rather than letting the
+          // Stainless default ("429 ⇒ retry") burn the caller's attempt budget
+          // against a wall.
           throw new HTTPException(429, {
             res: jsonError(
-              { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
+              { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
               429,
-              { 'Retry-After': String(err.retryAfterSeconds) },
+              NO_RETRY_HEADERS,
             ),
           });
         }
         throw err;
       }
-    }
 
-    // 4. Monthly search-query quota (optimistic +1, enforce-only).
-    try {
-      await logger.time('retrieval.stage_completed', {
-        stage: 'monthly_quota',
-        space_id: space.id,
-      }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
-    } catch (err) {
-      if (err instanceof QuotaExceededError) {
-        logger.warn('retrieval.request_rejected', {
-          stage: 'monthly_quota',
-          status_code: 429,
-        });
-        metrics.count('search_throttled', { tags: ['monthly_quota'] });
-        throw new HTTPException(429, {
-          res: jsonError(
-            { error: 'quota_exceeded', key: err.key, limit: err.limit, used: err.used },
-            429,
-          ),
-        });
-      }
-      throw err;
-    }
+      // Gates are done — start the retrieval clock (see `t0` above).
+      t0 = performance.now();
 
-    // 6. Per-user concurrency cap. (5. queue-depth gate dropped inline — §4.)
-    const concurrency = getConcurrencyLimiter(c.env, defer);
-    const userKey = String(userId);
-    const acquired = await logger.time(
-      'retrieval.stage_completed',
-      {
-        stage: 'concurrency_acquire',
-        space_id: space.id,
-      },
-      () =>
-        concurrency.acquire(
-          userKey,
-          limits.retrievalMaxConcurrentPerUser,
-          RETRIEVAL_USER_COUNTER_TTL_SECONDS,
-        ),
-    );
-    if (!acquired) {
-      logger.warn('retrieval.request_rejected', {
-        stage: 'concurrency_acquire',
-        space_id: space.id,
-        status_code: 429,
-      });
-      metrics.count('search_throttled', { tags: ['concurrency'] });
-      throw new HTTPException(429, {
-        res: jsonError(
-          'Too many concurrent searches. Wait for existing searches to complete.',
-          429,
-        ),
-      });
-    }
-
-    const t0 = performance.now();
-    try {
-      // 7. GLOBAL (account-wide) AI throttle — right before the embedder +
+      // GATE 5: GLOBAL (account-wide) AI throttle — right before the embedder +
       // reranker fan-out. The Workers AI quota is account-global, so this is the
       // only gate that sees aggregate load and protects tenants from each other
-      // (the plan limit + concurrency cap are per-org/per-user). Fail-open. Run
-      // inside the try so the `finally` still releases the concurrency slot.
+      // (the plan limit + concurrency cap are per-org/per-user). Fail-open.
       const globalAi = await logger.time('retrieval.stage_completed', {
         stage: 'global_ai_throttle',
         space_id: space.id,
@@ -399,7 +445,7 @@ searchRoutes.openapi(
           embedPromise,
           logger: logger.child({ space_id: space.id }),
         }),
-        RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
+        limits.retrievalTimeoutSeconds * 1000,
       );
 
       // Resolve owner display names for the result candidates only (≤topK). One
@@ -464,20 +510,59 @@ searchRoutes.openapi(
     } catch (err) {
       if (err instanceof TimeoutError) {
         logger.warn('retrieval.request_failed', {
-          space_id: space.id,
+          space_id: spaceId,
           duration_ms: durationMs(t0),
           status_code: 504,
           timed_out: true,
           error_category: 'internal',
           dependency: 'retrieval',
         });
+        // Back the client off. A 504 here means retrieval was still running at
+        // the deadline, which under load is exactly when an immediate retry
+        // (the Stainless default for >=500) adds a second concurrent request
+        // competing for the slot the first one just freed.
         throw new HTTPException(504, {
-          res: jsonError('Search timed out. Please try again.', 504),
+          res: jsonError(
+            'Search timed out. Please try again.',
+            504,
+            retryAfterHeaders(RETRIEVAL_RETRY_AFTER_SECONDS),
+          ),
         });
       }
       if (err instanceof HTTPException) throw err;
+
+      // Provider-capacity and connection failures are dependency conditions, not
+      // retrieval defects. Classified here rather than left to the global
+      // handler because this route wraps everything in a 500 first — which is
+      // exactly how 4,616 database-budget rejections were reported as
+      // `api.unhandled_error` during the incident, hiding the real cause from
+      // alerting and inviting the client to retry a dependency that had already
+      // said it would not recover until a fixed time.
+      const dependency = classifyDependencyError(err);
+      if (dependency) {
+        logger.error('retrieval.request_failed', {
+          space_id: spaceId,
+          duration_ms: durationMs(t0),
+          status_code: dependency.status,
+          code: dependency.code,
+          error_category: 'external_service',
+          dependency: dependency.dependency,
+          deterministic: dependency.deterministic,
+        }, err);
+        metrics.count('search', { tags: ['error', dependency.code], index: 'search' });
+        throw new HTTPException(dependency.status, {
+          res: jsonError(
+            { error: dependency.code, detail: dependency.detail, request_id: requestId },
+            dependency.status,
+            dependency.deterministic
+              ? noRetryUntilHeaders(dependency.retryAfterSeconds)
+              : retryAfterHeaders(dependency.retryAfterSeconds),
+          ),
+        });
+      }
+
       logger.error('retrieval.request_failed', {
-        space_id: space.id,
+        space_id: spaceId,
         duration_ms: durationMs(t0),
         status_code: 500,
         ...failureFields(err),
@@ -500,13 +585,22 @@ searchRoutes.openapi(
             request_id: requestId,
           }
         : { error: 'retrieval_failed', request_id: requestId };
-      throw new HTTPException(500, { res: jsonError(detail, 500) });
+      // No automatic retry on an unexpected defect: a second identical request
+      // is no likelier to succeed, and under load the retry is what turns a
+      // fault into a cascade.
+      throw new HTTPException(500, {
+        res: jsonError(detail, 500, NO_RETRY_HEADERS),
+      });
     } finally {
       // The concurrency slot MUST be released on every exit path. Schedule it
       // off the critical path: the release's KV write (~350ms cross-region)
       // must not block the response. `waitUntil` keeps the worker alive until
       // it settles; `release` itself never throws (it logs + swallows).
-      defer(concurrency.release(userKey));
+      //
+      // Released BY TOKEN, so this frees the lease this request actually took
+      // and nobody else's. If the isolate is terminated before this runs, the
+      // lease's TTL reclaims it instead.
+      defer(concurrency.release(userKey, lease.token));
     }
   },
 );

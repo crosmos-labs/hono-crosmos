@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "plan_pending_expires_at" timestamp with time zone;

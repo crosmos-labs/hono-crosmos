@@ -16,6 +16,7 @@ import type { TenantScope } from '@crosmos/types';
 import { and, asc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { scopeEntities, scopeMemories, sourceVisibilityClause } from '../../lib/scope';
 import type { RankedCandidate, RetrievalMemoryRow, RetrievalEntityRow } from './types';
+import { boundTsqueryTokens } from './tsquery';
 
 /**
  * The exact column set ranking reads off a memory row (see `RetrievalMemoryRow`).
@@ -81,7 +82,10 @@ export async function getEntitiesByNameTokens(
   tokens: string[],
 ): Promise<RetrievalEntityRow[]> {
   if (tokens.length === 0) return [];
-  const tsquery = tokens.join(' or ');
+  // Bounded: this ORs every token into ONE expression, so it grows linearly with
+  // the token count and can overflow the tsquery parser exactly like the keyword
+  // signal. No-op below the cap.
+  const tsquery = boundTsqueryTokens(tokens).join(' or ');
   return db
     .select({ id: entities.id, name: entities.name })
     .from(entities)

@@ -45,7 +45,7 @@ const [memberUser] = await sql`
   INSERT INTO users (uuid, email, name) VALUES (gen_random_uuid(), 'spaces-member@crosmos.test', 'Spaces Member')
   RETURNING id, uuid
 `;
-// 'free' plan caps max_memory_spaces at 3 — perfect for quota test
+// Space count is unlimited on every plan now — no per-plan space cap to test.
 const [orgA] = await sql`
   INSERT INTO organizations (uuid, slug, name, plan, is_personal, created_by_user_id)
   VALUES (gen_random_uuid(), 'spaces-test-a', 'Spaces Test A', 'free', true, ${owner.id})
@@ -134,29 +134,27 @@ console.log('▶ POST /api/v1/spaces (third space → still ok)');
   assert(r.status === 201, `status 201 (got ${r.status})`);
 }
 
-console.log('▶ POST /api/v1/spaces (4th, free plan cap=3 → 429 quota_exceeded)');
+console.log('▶ POST /api/v1/spaces (4th, no space cap → still 201)');
 {
   const r = await call('/api/v1/spaces', {
     method: 'POST',
     token: ownerTokensA.accessToken,
     body: JSON.stringify({ name: 'delta' }),
   });
-  assert(r.status === 429, `status 429 (got ${r.status})`, r.body);
-  assert(r.body?.detail?.error === 'quota_exceeded', `error=quota_exceeded`);
-  assert(r.body?.detail?.key === 'max_memory_spaces', `key=max_memory_spaces`);
-  assert(r.body?.detail?.limit === 3, `limit=3 (got ${r.body?.detail?.limit})`);
-  assert(r.body?.detail?.used === 3, `used=3 (got ${r.body?.detail?.used})`);
+  assert(r.status === 201, `status 201 (got ${r.status})`, r.body);
+  assert(r.body.name === 'delta', 'name=delta');
 }
 
-console.log('▶ GET /api/v1/spaces (lists 3)');
+console.log('▶ GET /api/v1/spaces (lists 4)');
 {
   const r = await call('/api/v1/spaces', { token: ownerTokensA.accessToken });
   assert(r.status === 200, 'status 200');
-  assert(r.body.total === 3, `total=3 (got ${r.body.total})`);
-  // Order is created_at ASC: alpha, beta, gamma
+  assert(r.body.total === 4, `total=4 (got ${r.body.total})`);
+  // Order is created_at ASC: alpha, beta, gamma, delta
   assert(r.body.spaces[0]?.name === 'alpha', 'first=alpha');
   assert(r.body.spaces[1]?.name === 'beta', 'second=beta');
   assert(r.body.spaces[2]?.name === 'gamma', 'third=gamma');
+  assert(r.body.spaces[3]?.name === 'delta', 'fourth=delta');
 }
 
 console.log('▶ GET /api/v1/spaces?name=beta (exact match)');
