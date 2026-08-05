@@ -18,9 +18,10 @@ import { DurableObject } from 'cloudflare:workers';
  * a limiter).
  */
 export class RateLimiterDO extends DurableObject {
-  // fixed-window rate-limit state — window = floor(now / windowSeconds).
-  private windowBucket = 0;
-  private count = 0;
+  // fixed-window rate-limit state, keyed by window name so ONE instance can
+  // hold several independent windows (`rpm` and `day` for the same org). Each
+  // entry's window = floor(now / windowSeconds).
+  private counters = new Map<string, { bucket: number; count: number }>();
   // concurrency state — `lease token -> expiry timestamp (ms)` for in-flight
   // slots. A request that dies without calling /release has its slot expire
   // after ttlSeconds, so leaked slots self-heal (replaces the KV limiter's TTL
@@ -41,20 +42,57 @@ export class RateLimiterDO extends DurableObject {
     return this.limit(request);
   }
 
+  /**
+   * Fixed-window rate limit. Two request shapes:
+   *
+   *   `{ limit, windowSeconds }`          — one anonymous window
+   *   `{ windows: [{ scope, limit, windowSeconds }, ...] }`  — several at once
+   *
+   * The multi-window form exists so an org's `rpm` and `day` allowances are
+   * evaluated in ONE round-trip against one instance, instead of a fetch each
+   * to two separate instances. Every gated request paid for both, so this halves
+   * the limiter round-trips on the hot path.
+   *
+   * Counters are independent per `scope`, so combining them changes cost, not
+   * enforcement. The caller decides precedence from the per-window results.
+   */
   private async limit(request: Request): Promise<Response> {
-    const { limit, windowSeconds } = await request.json<{
-      limit: number;
-      windowSeconds: number;
+    const body = await request.json<{
+      limit?: number;
+      windowSeconds?: number;
+      windows?: Array<{ scope: string; limit: number; windowSeconds: number }>;
     }>();
     const now = Math.floor(Date.now() / 1000);
-    const bucket = Math.floor(now / windowSeconds);
-    if (bucket !== this.windowBucket) {
-      this.windowBucket = bucket;
-      this.count = 0;
+
+    if (body.windows === undefined) {
+      // `count` lets the caller build an accurate RateLimitError / throttle metric.
+      const r = this.tick('default', body.limit ?? 0, body.windowSeconds ?? 60, now);
+      return Response.json(r);
     }
-    this.count += 1;
-    // `count` lets the caller build an accurate RateLimitError / throttle metric.
-    return Response.json({ success: this.count <= limit, count: this.count });
+
+    const results = body.windows.map((w) => ({
+      scope: w.scope,
+      ...this.tick(w.scope, w.limit, w.windowSeconds, now),
+    }));
+    return Response.json({
+      success: results.every((r) => r.success),
+      results,
+    });
+  }
+
+  /** Increment one named window and report whether it is still under `limit`. */
+  private tick(
+    name: string,
+    limit: number,
+    windowSeconds: number,
+    now: number,
+  ): { success: boolean; count: number } {
+    const bucket = Math.floor(now / windowSeconds);
+    const current = this.counters.get(name);
+    // Over-limit requests still count toward the window (matches Python).
+    const count = current && current.bucket === bucket ? current.count + 1 : 1;
+    this.counters.set(name, { bucket, count });
+    return { success: count <= limit, count };
   }
 
   /**
