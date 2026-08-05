@@ -223,40 +223,48 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   );
 
   // Stage 3 — four signals in parallel.
+  //
+  // `allSettled`, not `all`: a rejection in ONE auxiliary signal used to reject
+  // the whole fan-out and surface as a 500. That is how five `tsquery stack too
+  // small` errors from the keyword signal — an input-shape problem in one of
+  // four ranking inputs — failed entire searches during the 2026-07-25 incident.
+  //
+  // Policy (see `unwrapSignals`): semantic is essential, the rest are auxiliary.
+  const settledSignals = await Promise.allSettled([
+    timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
+      const { vector } = await embedPromise;
+      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
+    }),
+    timeSignal(logger, SourceSignal.KEYWORD, () =>
+      keywordSearch(query.text, db, scope, query.candidatePool),
+    ),
+    timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
+      if (!graphEnabled) return [];
+      const { vector } = await embedPromise;
+      return graphSearchWithStore(
+        db,
+        vectorStore,
+        query.text,
+        vector,
+        scope,
+        query.candidatePool,
+        temporalRange ? temporalRange[1] : null,
+        effectiveMaxDepth,
+      );
+    }),
+    timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
+      if (temporalRange === null) return [];
+      return temporalSearch(
+        db,
+        scope,
+        temporalRange[0],
+        temporalRange[1],
+        Math.min(query.candidatePool, TEMPORAL_CANDIDATE_LIMIT),
+      );
+    }),
+  ]);
   const [semanticResults, keywordResults, graphResults, temporalResults] =
-    await Promise.all([
-      timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
-        const { vector } = await embedPromise;
-        return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
-      }),
-      timeSignal(logger, SourceSignal.KEYWORD, () =>
-        keywordSearch(query.text, db, scope, query.candidatePool),
-      ),
-      timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
-        if (!graphEnabled) return [];
-        const { vector } = await embedPromise;
-        return graphSearchWithStore(
-          db,
-          vectorStore,
-          query.text,
-          vector,
-          scope,
-          query.candidatePool,
-          temporalRange ? temporalRange[1] : null,
-          effectiveMaxDepth,
-        );
-      }),
-      timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
-        if (temporalRange === null) return [];
-        return temporalSearch(
-          db,
-          scope,
-          temporalRange[0],
-          temporalRange[1],
-          Math.min(query.candidatePool, TEMPORAL_CANDIDATE_LIMIT),
-        );
-      }),
-    ]);
+    unwrapSignals(settledSignals, logger);
 
   // Stage 4 — assemble ranked lists (order preserved) + RRF.
   const fusionStart = performance.now();
@@ -505,6 +513,61 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // path via `waitUntil` so it doesn't add latency to the response. The
   // access-frequency feedback loop is preserved (it still runs, just async).
   return { query, candidates: top };
+}
+
+/** Fan-out order of the Stage-3 signals; indexes into the settled array. */
+const SIGNAL_ORDER = [
+  SourceSignal.SEMANTIC,
+  SourceSignal.KEYWORD,
+  SourceSignal.GRAPH,
+  SourceSignal.TEMPORAL,
+] as const;
+
+/**
+ * Turn the settled signal fan-out into four candidate lists, applying the
+ * degradation policy.
+ *
+ * **Semantic is essential; keyword, graph and temporal are auxiliary.** An
+ * auxiliary signal that fails contributes an empty ranked list: fusion still has
+ * the semantic ordering to work from, so the caller gets a slightly less rich
+ * but entirely valid hybrid result instead of a 500. Semantic failing means the
+ * embedder or vector store is down — there is no meaningful retrieval left, and
+ * returning a keyword-only (or empty) result would quietly hand an agent bad
+ * recall it would then answer confidently from. That case still throws, so a
+ * genuine dependency outage stays loud and gets classified by the route.
+ *
+ * Degradation is always recorded. Failing open must not mean failing silently:
+ * the per-signal error was already logged by `timeSignal`, and this adds one
+ * request-level record naming exactly which signals were lost.
+ */
+function unwrapSignals(
+  settled: Array<PromiseSettledResult<RankedCandidate[]>>,
+  logger: Logger | undefined,
+): [RankedCandidate[], RankedCandidate[], RankedCandidate[], RankedCandidate[]] {
+  const semantic = settled[0]!;
+  if (semantic.status === 'rejected') throw semantic.reason;
+
+  const degraded: SourceSignal[] = [];
+  const lists = settled.map((s, i) => {
+    if (s.status === 'fulfilled') return s.value;
+    degraded.push(SIGNAL_ORDER[i]!);
+    return [] as RankedCandidate[];
+  });
+
+  if (degraded.length > 0) {
+    logger?.warn('retrieval.signals_degraded', {
+      stage: 'signals',
+      degraded_signals: degraded,
+      degraded_count: degraded.length,
+    });
+  }
+
+  return lists as [
+    RankedCandidate[],
+    RankedCandidate[],
+    RankedCandidate[],
+    RankedCandidate[],
+  ];
 }
 
 async function timeSignal(
