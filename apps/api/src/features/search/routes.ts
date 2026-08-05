@@ -34,7 +34,12 @@ import {
   RETRIEVAL_RETRY_AFTER_SECONDS,
 } from './constants';
 import { getOperationalLimits } from '../../lib/limits';
-import { NO_RETRY_HEADERS, retryAfterHeaders } from '../../lib/retry-hints';
+import {
+  NO_RETRY_HEADERS,
+  noRetryUntilHeaders,
+  retryAfterHeaders,
+} from '../../lib/retry-hints';
+import { classifyDependencyError } from '../../lib/dependency-errors';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
@@ -525,6 +530,37 @@ searchRoutes.openapi(
         });
       }
       if (err instanceof HTTPException) throw err;
+
+      // Provider-capacity and connection failures are dependency conditions, not
+      // retrieval defects. Classified here rather than left to the global
+      // handler because this route wraps everything in a 500 first — which is
+      // exactly how 4,616 database-budget rejections were reported as
+      // `api.unhandled_error` during the incident, hiding the real cause from
+      // alerting and inviting the client to retry a dependency that had already
+      // said it would not recover until a fixed time.
+      const dependency = classifyDependencyError(err);
+      if (dependency) {
+        logger.error('retrieval.request_failed', {
+          space_id: spaceId,
+          duration_ms: durationMs(t0),
+          status_code: dependency.status,
+          code: dependency.code,
+          error_category: 'external_service',
+          dependency: dependency.dependency,
+          deterministic: dependency.deterministic,
+        }, err);
+        metrics.count('search', { tags: ['error', dependency.code], index: 'search' });
+        throw new HTTPException(dependency.status, {
+          res: jsonError(
+            { error: dependency.code, detail: dependency.detail, request_id: requestId },
+            dependency.status,
+            dependency.deterministic
+              ? noRetryUntilHeaders(dependency.retryAfterSeconds)
+              : retryAfterHeaders(dependency.retryAfterSeconds),
+          ),
+        });
+      }
+
       logger.error('retrieval.request_failed', {
         space_id: spaceId,
         duration_ms: durationMs(t0),
@@ -549,7 +585,12 @@ searchRoutes.openapi(
             request_id: requestId,
           }
         : { error: 'retrieval_failed', request_id: requestId };
-      throw new HTTPException(500, { res: jsonError(detail, 500) });
+      // No automatic retry on an unexpected defect: a second identical request
+      // is no likelier to succeed, and under load the retry is what turns a
+      // fault into a cascade.
+      throw new HTTPException(500, {
+        res: jsonError(detail, 500, NO_RETRY_HEADERS),
+      });
     } finally {
       // The concurrency slot MUST be released on every exit path. Schedule it
       // off the critical path: the release's KV write (~350ms cross-region)
