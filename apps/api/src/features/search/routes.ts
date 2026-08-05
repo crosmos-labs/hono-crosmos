@@ -31,9 +31,7 @@ import {
   CANDIDATE_POOL,
   GLOBAL_AI_RETRY_AFTER_SECONDS,
   GLOBAL_AI_WINDOW_SECONDS,
-  RETRIEVAL_RESULT_TIMEOUT_SECONDS,
   RETRIEVAL_RETRY_AFTER_SECONDS,
-  RETRIEVAL_USER_COUNTER_TTL_SECONDS,
 } from './constants';
 import { getOperationalLimits } from '../../lib/limits';
 import { NO_RETRY_HEADERS, retryAfterHeaders } from '../../lib/retry-hints';
@@ -303,7 +301,7 @@ searchRoutes.openapi(
         concurrency.acquire(
           userKey,
           limits.retrievalMaxConcurrentPerUser,
-          RETRIEVAL_USER_COUNTER_TTL_SECONDS,
+          limits.retrievalSlotTtlSeconds,
         ),
     );
     if (!acquired) {
@@ -415,7 +413,7 @@ searchRoutes.openapi(
           embedPromise,
           logger: logger.child({ space_id: space.id }),
         }),
-        RETRIEVAL_RESULT_TIMEOUT_SECONDS * 1000,
+        limits.retrievalTimeoutSeconds * 1000,
       );
 
       // Resolve owner display names for the result candidates only (≤topK). One
@@ -487,8 +485,16 @@ searchRoutes.openapi(
           error_category: 'internal',
           dependency: 'retrieval',
         });
+        // Back the client off. A 504 here means retrieval was still running at
+        // the deadline, which under load is exactly when an immediate retry
+        // (the Stainless default for >=500) adds a second concurrent request
+        // competing for the slot the first one just freed.
         throw new HTTPException(504, {
-          res: jsonError('Search timed out. Please try again.', 504),
+          res: jsonError(
+            'Search timed out. Please try again.',
+            504,
+            retryAfterHeaders(RETRIEVAL_RETRY_AFTER_SECONDS),
+          ),
         });
       }
       if (err instanceof HTTPException) throw err;

@@ -110,11 +110,63 @@ export const SOURCE_WEIGHTS = {
 } as const;
 
 // from worker/constants.py (the RETRIEVAL_* block)
+//
+// NOTE: unlike the ranking constants above, this block is OPERATIONAL — it
+// tunes admission/backpressure, not results. These are the compile-time
+// defaults; each is overridable per-env via `getOperationalLimits` (lib/limits.ts)
+// so an incident can be shed without a redeploy.
 export const RETRIEVAL_MAX_QUEUE_DEPTH = 500;
-export const RETRIEVAL_RESULT_TIMEOUT_SECONDS = 30;
+
+/**
+ * Server-side ceiling on retrieval work, in seconds.
+ *
+ * **Was 30s, which was the primary amplifier of the 2026-07-25 incident.**
+ *
+ * The Crosmos client sends `x-stainless-timeout: 3`, so it abandons a recall at
+ * three seconds. The server, however, kept working for up to thirty — and held
+ * the caller's concurrency slot for the entire time (the slot is released in the
+ * route's `finally`). With `RETRIEVAL_MAX_CONCURRENT_PER_USER = 10`, a user's
+ * sustainable throughput was therefore bounded at 10 slots / 30s ≈ 0.33 req/s.
+ * Every request above that rate got a concurrency 429 no matter how healthy the
+ * backend was, which is why that single class was 52.98% of all search
+ * invocations during the incident.
+ *
+ * Six seconds covers the observed successful p99 (4.388s) with margin. Work that
+ * runs longer than this is work nobody is waiting for: the client gave up at
+ * three seconds, so completing it at, say, 10.4s (the observed max) produces a
+ * response that is discarded while still holding a slot another request needs.
+ * Cutting the ceiling raises the per-user throughput bound ~5x and shortens the
+ * window in which an abandoned request can starve its own retries.
+ *
+ * Workers cannot cancel in-flight subrequests, so this bounds when the ROUTE
+ * stops waiting and frees the slot — the underlying fetches may run on briefly.
+ */
+export const RETRIEVAL_RESULT_TIMEOUT_SECONDS = 6;
+
 export const RETRIEVAL_MAX_CONCURRENT_PER_USER = 10;
 export const RETRIEVAL_RETRY_AFTER_SECONDS = 3;
-export const RETRIEVAL_USER_COUNTER_TTL_SECONDS = 30;
+
+/**
+ * Grace added to the retrieval timeout to derive a concurrency slot's TTL. The
+ * slot must outlive the request that owns it (or the cap silently becomes soft
+ * and over-admits), but not by so much that a slot leaked by an isolate
+ * termination pins capacity. Four seconds covers admission overhead plus the
+ * deferred release landing on `waitUntil`.
+ */
+export const RETRIEVAL_SLOT_TTL_GRACE_SECONDS = 4;
+
+/**
+ * TTL on a per-user concurrency slot — the self-healing net for a request that
+ * dies without releasing (e.g. a Cloudflare isolate termination, which kills the
+ * `finally`/`waitUntil` release).
+ *
+ * Was a flat 30s, matching the old retrieval timeout. Now derived from the
+ * timeout so the two can never drift apart again: a leaked slot self-heals in
+ * ~10s instead of ~30s, so a burst of terminated requests can no longer hold a
+ * user at their cap for half a minute.
+ */
+export const RETRIEVAL_USER_COUNTER_TTL_SECONDS =
+  RETRIEVAL_RESULT_TIMEOUT_SECONDS + RETRIEVAL_SLOT_TTL_GRACE_SECONDS;
 
 // Per-signal candidate limit (types.py:RetrievalQuery.candidate_pool). Not
 // exposed in the API.

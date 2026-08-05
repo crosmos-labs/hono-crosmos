@@ -151,6 +151,14 @@ VECTOR_STORE = "vectorize"
 #   STALE_JOB_MINUTES = "10"                     # orphaned-job window (gates + reaper)
 #   RETRIEVAL_MAX_CONCURRENT_PER_USER = "10"     # per-user concurrent /search
 #   GLOBAL_AI_RPM_CEILING = "3000"               # account-wide AI RPM ceiling
+#   RETRIEVAL_TIMEOUT_SECONDS = "6"              # route deadline; also frees the concurrency slot
+#   RETRIEVAL_SLOT_TTL_SECONDS = "10"            # slot TTL; floored at timeout + 4s grace
+#
+# ROLLBACK NOTE: RETRIEVAL_TIMEOUT_SECONDS was 30 before the 2026-07-25 incident
+# remediation. It is the biggest single lever on the per-user concurrency wall
+# (throughput ceiling = RETRIEVAL_MAX_CONCURRENT_PER_USER / timeout). Set it back
+# to "30" here to restore the old behavior WITHOUT a code revert — the slot TTL
+# follows automatically.
 
 # Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
 #   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small; dim = EMBEDDING_DIMENSIONS, prod 1536)
