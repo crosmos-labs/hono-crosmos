@@ -106,6 +106,24 @@ unverified against a replayed failure shape, which is what P0-D covers.
 | 2026-08-05 | Incident remediation (9 fixes) | — | `34adf955` |
 | 2026-07-17 | Large-source batching | `494a755e` | — |
 | 2026-08-11 | P0-B, P0-C, P1-G, P1-F | `c8d8e493` | `5d000dfe` |
+| 2026-08-11 | P1-C, P1-D, P1-E (retrieval) | — | `940224a3` |
+
+> ### ⚠ Do not deploy the Ingestion Worker until migration `0002` is applied to production
+>
+> The commit that persists `speaker_role` (`2775cfd`) is **committed but not
+> deployed**. Production's Ingestion Worker is still `c8d8e493`, which predates
+> it and never mentions the column — which is why production ingestion is
+> currently fine.
+>
+> Deploying the Ingestion Worker before the production `ALTER TABLE` would make
+> **every memory insert fail** on an unknown column, failing every ingestion job.
+> This is the concrete instance of the mixed-deployment rule already stated
+> below: *apply additive columns before deploying code whose Drizzle schema
+> selects them.*
+>
+> Correct order: apply `0002` to production → then deploy the Ingestion Worker.
+> The API Worker is unaffected either way; it never writes the column and its
+> retrieval projection deliberately excludes it.
 
 The 2026-08-11 release is additive with no schema change: a purge predicate
 correction, a queue producer binding plus an optional message field, an optional
