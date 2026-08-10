@@ -14,6 +14,15 @@ export interface IngestionRpc {
 export interface Env {
   // Bindings
   HYPERDRIVE: Hyperdrive;
+  /**
+   * Kill switch for the tombstoned-space finalizer (P1-A). Physical deletion
+   * runs ONLY when this is exactly `"true"`.
+   *
+   * Default-off on purpose: the tombstone and read-filtering half can ship and
+   * be observed in production before anything destructive runs, and flipping
+   * this back to unset stops all physical deletion without a code deploy.
+   */
+  SPACE_FINALIZER_ENABLED?: string;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
   // Service binding to the ingestion worker — direct RPC fast path that

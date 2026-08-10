@@ -1,12 +1,13 @@
 import {
   entities,
+  ingestionJobs,
   memories,
   memorySpaces,
   organizations,
   type MemorySpace,
 } from '@crosmos/db';
 import type { Database } from '@crosmos/db';
-import { and, asc, count, eq, gt } from 'drizzle-orm';
+import { and, asc, count, eq, gt, inArray, lt, sql, type SQL } from 'drizzle-orm';
 
 export const DEFAULT_SPACE_NAME = 'default';
 export const DEFAULT_SPACE_DESCRIPTION = 'Default memory space';
@@ -119,15 +120,36 @@ export async function createDefaultSpace(
   });
 }
 
+/**
+ * Predicate every NORMAL read must carry: a tombstoned space behaves as absent
+ * the instant `DELETE` sets `deleted_at`, long before the finalizer physically
+ * removes it. Deferred deletion is only safe if this is applied consistently —
+ * a single read path that forgets it will happily serve a "deleted" space.
+ *
+ * The deliberate exceptions are the deletion and finalization paths themselves,
+ * which need to see tombstones; they use the `includeDeleted` option.
+ */
+export function activeSpace(): SQL {
+  return sql`${memorySpaces.deletedAt} IS NULL`;
+}
+
+/** Combine `activeSpace()` with a caller predicate unless tombstones are wanted. */
+function withActive(condition: SQL | undefined, includeDeleted = false): SQL | undefined {
+  return includeDeleted ? condition : and(condition, activeSpace());
+}
+
 export async function getSpaceById(
   db: Database,
-  input: { orgId: number; spaceId: number },
+  input: { orgId: number; spaceId: number; includeDeleted?: boolean },
 ): Promise<MemorySpace | null> {
   const rows = await db
     .select()
     .from(memorySpaces)
     .where(
-      and(eq(memorySpaces.orgId, input.orgId), eq(memorySpaces.id, input.spaceId)),
+      withActive(
+        and(eq(memorySpaces.orgId, input.orgId), eq(memorySpaces.id, input.spaceId)),
+        input.includeDeleted,
+      ),
     )
     .limit(1);
   return rows[0] ?? null;
@@ -141,11 +163,12 @@ export async function getSpaceById(
 export async function getSpaceByUuid(
   db: Database,
   spaceUuid: string,
+  options: { includeDeleted?: boolean } = {},
 ): Promise<MemorySpace | null> {
   const rows = await db
     .select()
     .from(memorySpaces)
-    .where(eq(memorySpaces.uuid, spaceUuid))
+    .where(withActive(eq(memorySpaces.uuid, spaceUuid), options.includeDeleted))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -157,7 +180,11 @@ export async function getSpaceByName(
   const rows = await db
     .select()
     .from(memorySpaces)
-    .where(and(eq(memorySpaces.orgId, input.orgId), eq(memorySpaces.name, input.name)))
+    .where(
+      withActive(
+        and(eq(memorySpaces.orgId, input.orgId), eq(memorySpaces.name, input.name)),
+      ),
+    )
     .limit(1);
   return rows[0] ?? null;
 }
@@ -173,10 +200,11 @@ export async function listSpaces(
   const limit = input.limit ?? 100;
   const offset = input.offset ?? 0;
 
-  const whereClause =
+  const whereClause = withActive(
     input.name != null
       ? and(eq(memorySpaces.orgId, input.orgId), eq(memorySpaces.name, input.name))
-      : eq(memorySpaces.orgId, input.orgId);
+      : eq(memorySpaces.orgId, input.orgId),
+  );
 
   return db
     .select()
@@ -194,7 +222,10 @@ export async function countSpaces(
   const rows = await db
     .select({ c: count() })
     .from(memorySpaces)
-    .where(eq(memorySpaces.orgId, orgId));
+    // Quota basis: a tombstoned space must not consume the org's space
+    // allowance, or deleting a space would fail to free capacity until the
+    // finalizer happened to run.
+    .where(withActive(eq(memorySpaces.orgId, orgId)));
   return rows[0]?.c ?? 0;
 }
 
@@ -285,6 +316,92 @@ export interface DeleteSpaceResult {
  * collected via keyset pagination so a large space doesn't load an unbounded
  * array into memory.
  */
+/**
+ * Logically delete a space: set the tombstone, atomically and idempotently.
+ *
+ * Returns `false` when the space does not exist or is ALREADY tombstoned, so a
+ * repeated delete is a no-op rather than moving `deleted_at` forward — which
+ * would otherwise keep resetting the finalizer's grace period and leave a space
+ * that is repeatedly deleted never actually cleaned up.
+ *
+ * The caller still returns 204 either way: from the client's point of view the
+ * space is gone, and that was already true.
+ */
+export async function tombstoneSpace(
+  db: Database,
+  input: { orgId: number; spaceId: number },
+): Promise<boolean> {
+  const rows = await db
+    .update(memorySpaces)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(memorySpaces.orgId, input.orgId),
+        eq(memorySpaces.id, input.spaceId),
+        // CAS: only an ACTIVE space may be tombstoned.
+        activeSpace(),
+      ),
+    )
+    .returning({ id: memorySpaces.id });
+  return rows.length > 0;
+}
+
+/**
+ * Tombstoned spaces eligible for physical cleanup: deleted at least
+ * `graceMs` ago. The grace must exceed one ingestion lease interval so a worker
+ * that claimed the job before the tombstone has had time to notice and stop.
+ *
+ * Bounded and ordered oldest-first so a backlog drains deterministically
+ * instead of the sweep picking a random subset each run.
+ */
+export async function listSpacesPendingDeletion(
+  db: Database,
+  input: { graceMs: number; limit: number; now?: Date },
+): Promise<Array<{ id: number; orgId: number; uuid: string; deletedAt: Date }>> {
+  const cutoff = new Date((input.now ?? new Date()).getTime() - input.graceMs);
+  const rows = await db
+    .select({
+      id: memorySpaces.id,
+      orgId: memorySpaces.orgId,
+      uuid: memorySpaces.uuid,
+      deletedAt: memorySpaces.deletedAt,
+    })
+    .from(memorySpaces)
+    .where(
+      and(
+        sql`${memorySpaces.deletedAt} IS NOT NULL`,
+        lt(memorySpaces.deletedAt, cutoff),
+      ),
+    )
+    .orderBy(asc(memorySpaces.deletedAt))
+    .limit(input.limit);
+  return rows.filter(
+    (r): r is { id: number; orgId: number; uuid: string; deletedAt: Date } =>
+      r.deletedAt !== null,
+  );
+}
+
+/**
+ * Non-terminal ingestion jobs still referencing a space. The finalizer refuses
+ * to physically delete while this is non-zero: the cascade would pull rows out
+ * from under a live writer.
+ */
+export async function countActiveJobsForSpace(
+  db: Database,
+  spaceId: number,
+): Promise<number> {
+  const rows = await db
+    .select({ c: count() })
+    .from(ingestionJobs)
+    .where(
+      and(
+        eq(ingestionJobs.spaceId, spaceId),
+        inArray(ingestionJobs.status, ['pending', 'processing']),
+      ),
+    );
+  return rows[0]?.c ?? 0;
+}
+
 export async function deleteSpace(
   db: Database,
   input: { orgId: number; spaceId: number },

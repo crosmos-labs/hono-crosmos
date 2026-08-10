@@ -17,6 +17,7 @@ import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
 import { runMaintenanceCleanup } from './features/maintenance/cleanup';
+import { runSpaceFinalization } from './features/maintenance/finalize-spaces';
 import { reapStaleJobs, runIngestionRedrive } from './features/maintenance/redrive';
 // Durable Object class for the per-IP rate limiter — must be exported from the
 // worker entry so the runtime can instantiate it.
@@ -337,6 +338,21 @@ export default {
         subscriptions_expired: billing.value!.expired,
         checkouts_abandoned: billing.value!.abandoned,
         attempts: billing.attempts,
+      });
+    }
+
+    // Physical cleanup of tombstoned spaces. Daily, and a no-op unless
+    // SPACE_FINALIZER_ENABLED is set — see `runSpaceFinalization`.
+    const finalize = await sweep('space_finalization', () => runSpaceFinalization(env));
+    if (finalize.status === 'succeeded' && !finalize.value!.disabled) {
+      logger.info('cron.space_finalization', {
+        trigger: 'cron',
+        cron: controller.cron,
+        candidates: finalize.value!.candidates,
+        deleted_count: finalize.value!.finalized,
+        skipped_no_owner: finalize.value!.skippedActiveJobs,
+        failed_job_count: finalize.value!.failedVectorPurge,
+        attempts: finalize.attempts,
       });
     }
 
