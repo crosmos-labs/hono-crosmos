@@ -37,6 +37,7 @@ import {
 import {
   claimJob,
   isJobCancelled,
+  isSpaceActive,
   resetJobForRetry,
   updateJobStatus,
 } from './job-store';
@@ -142,6 +143,19 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Thrown to unwind a source that is being cancelled mid-chunk. Not a failure:
+ * it must not be retried, must not mark the source `failed`, and must not
+ * count toward the outcome's error category. The outer loop's next stop check
+ * turns it into the ordinary cancellation path.
+ */
+class IngestionCancelledError extends Error {
+  constructor() {
+    super('Ingestion cancelled mid-source');
+    this.name = 'IngestionCancelledError';
+  }
+}
+
+/**
  * Emit the terminal `ingestion_outcome` metric. Best-effort: `createMetrics`
  * is a no-op when ANALYTICS is unbound and never throws, so this never affects
  * control flow.
@@ -212,13 +226,37 @@ export async function processIngestion(
   // Mid-source lease heartbeat clock (issue #1). Seeded at claim time.
   let lastHeartbeatMs = Date.now();
 
+  /**
+   * Should this run stop? Two independent reasons, checked together at every
+   * boundary:
+   *
+   *  - the job was cancelled (explicitly, or by a space delete); and
+   *  - the space was tombstoned (deferred deletion), which cancellation should
+   *    also have covered but is a separate row and can race.
+   *
+   * Fails OPEN on a database error: a transient blip must not silently abandon
+   * ingestion. Both signals are durable, so the next boundary re-checks.
+   */
+  const shouldStop = async (): Promise<'cancelled' | 'space_deleted' | null> => {
+    try {
+      if (await isJobCancelled(db, msg.job_id)) return 'cancelled';
+      if (!(await isSpaceActive(db, msg.space_id))) return 'space_deleted';
+      return null;
+    } catch (err) {
+      logger.warn('ingestion.stop_check_failed', {}, err);
+      return null;
+    }
+  };
+
   for (let i = 0; i < msg.source_ids.length; i++) {
     const sourceId = msg.source_ids[i]!;
 
-    // Cancellation check between sources
-    if (await isJobCancelled(db, msg.job_id)) {
+    // Stop check between sources — cancellation or a tombstoned space.
+    const stopReason = await shouldStop();
+    if (stopReason !== null) {
       const remaining = msg.source_ids.slice(i);
       logger.info('ingestion.job_cancelled_mid_run', {
+        reason: stopReason,
         completed_source_count: i,
         cancelled_count: remaining.length,
         source_count: msg.source_ids.length,
@@ -326,10 +364,25 @@ export async function processIngestion(
       if (now - lastHeartbeatMs < CHUNK_HEARTBEAT_INTERVAL_MS) return;
       lastHeartbeatMs = now;
       try {
-        await updateJobStatus(db, msg.job_id, 'processing', {
+        // The heartbeat is now also the mid-source CANCELLATION DETECTOR.
+        // `updateJobStatus` is compare-and-set on terminality, so a job the API
+        // cancelled refuses the write — and that refusal is the signal. This
+        // gives a long multi-chunk source a cancellation checkpoint without
+        // adding a query: previously the only checks were between sources, so a
+        // single large source could run to completion inside a space the user
+        // had already deleted.
+        const applied = await updateJobStatus(db, msg.job_id, 'processing', {
           stage: `source ${i + 1}/${msg.source_ids.length} (in progress)`,
         });
+        if (!applied) {
+          sourceLogger.info('ingestion.source_cancelled_mid_chunk', {
+            source_id: sourceId,
+            reason: 'cancelled',
+          });
+          throw new IngestionCancelledError();
+        }
       } catch (err) {
+        if (err instanceof IngestionCancelledError) throw err;
         sourceLogger.warn('ingestion.heartbeat_failed', {}, err);
       }
     };
@@ -356,6 +409,9 @@ export async function processIngestion(
         break;
       } catch (err) {
         lastErr = err;
+        // A cancellation is not a failure — stop immediately rather than
+        // burning the retry budget on work that is being torn down.
+        if (err instanceof IngestionCancelledError) break;
         if (isRetryable(err) && attempt < SOURCE_RETRY_ATTEMPTS) {
           sourceLogger.warn('ingestion.source_retry_scheduled', {
             attempt,
@@ -393,6 +449,17 @@ export async function processIngestion(
         edge_count: result.edges.length,
         entity_count: result.newEntityIds.length + result.resolvedEntityIds.length,
       });
+    } else if (lastErr instanceof IngestionCancelledError) {
+      // Leave the source exactly as it is (`processing`). The stop check at the
+      // top of the next iteration runs the normal cancellation path, which
+      // drives the remaining sources to a terminal state and bills what
+      // completed. Marking it failed here would misreport a cancellation as an
+      // ingestion error.
+      sourceLogger.info('ingestion.source_cancelled', {
+        source_id: sourceId,
+        duration_ms: durationMs(sourceStart),
+      });
+      continue;
     } else {
       const message =
         lastErr instanceof Error ? lastErr.message : String(lastErr);

@@ -33,9 +33,21 @@ export const dailyUsage = pgTable(
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    spaceId: integer('space_id')
-      .notNull()
-      .references(() => memorySpaces.id, { onDelete: 'cascade' }),
+    /**
+     * Historical dimension only — deliberately NOT a foreign key.
+     *
+     * With the FK's ON DELETE CASCADE, deleting a space silently erased its
+     * billing history, so an org's recorded usage could go DOWN. Worse, the
+     * cascade raced best-effort usage writes: a search or ingestion settling
+     * just after a delete could fail its usage write, or write a row that was
+     * immediately removed.
+     *
+     * The column stays NOT NULL and keeps its uniqueness key; the org and user
+     * foreign keys are unchanged. Retention is the 400-day cleanup sweep, not
+     * referential integrity. Consequence to remember: a space id here may no
+     * longer resolve to a `memory_spaces` row, so joins must be outer.
+     */
+    spaceId: integer('space_id').notNull(),
     date: date('date').notNull(),
     tokensIngested: integer('tokens_ingested').notNull().default(0),
     searchQueries: integer('search_queries').notNull().default(0),
