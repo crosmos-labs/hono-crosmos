@@ -16,9 +16,12 @@ export interface Env {
   INGESTION_QUEUE?: Queue<IngestionJobMessage>;
   // Workers AI — embeddings (bge-m3).
   AI: Ai;
-  // Vectorize indexes (used when VECTOR_STORE=vectorize).
-  MEMORIES_INDEX: VectorizeIndex;
-  ENTITIES_INDEX: VectorizeIndex;
+  // Optional: only bound where VECTOR_STORE=vectorize. Staging and production
+  // run Qdrant, and wrangler validates Vectorize bindings at deploy time even
+  // when nothing reads them, so those envs declare none. `getVectorStore`
+  // throws a clear error if the backend is switched back without them.
+  MEMORIES_INDEX?: VectorizeIndex;
+  ENTITIES_INDEX?: VectorizeIndex;
   // Analytics Engine — metrics sink (ingestion outcome/latency/tokens).
   // Optional: unbound in local dev / tests, where createMetrics() is a no-op.
   ANALYTICS?: AnalyticsEngineDataset;

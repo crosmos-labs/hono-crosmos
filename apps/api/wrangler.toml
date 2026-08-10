@@ -328,15 +328,13 @@ class_name = "RateLimiterDO"
 tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
-# Vectorize (DORMANT — VECTOR_STORE=qdrant). Bound to the existing dev indexes so
-# the binding resolves without provisioning new ones; never read in staging.
-[[env.staging.vectorize]]
-binding = "MEMORIES_INDEX"
-index_name = "crosmos-memories-dev"
-
-[[env.staging.vectorize]]
-binding = "ENTITIES_INDEX"
-index_name = "crosmos-entities-dev"
+# Vectorize is DORMANT in staging (VECTOR_STORE=qdrant), so no binding is
+# declared here. It previously bound the `crosmos-memories-dev` /
+# `crosmos-entities-dev` indexes, which no longer exist in the account —
+# wrangler validates Vectorize bindings at deploy time whether or not the code
+# reads them, so every `--env staging` deploy failed with code 10159. Both
+# `getVectorStore` factories already throw a clear error if VECTOR_STORE is ever
+# set back to `vectorize` without these bindings.
 
 [env.staging.triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
