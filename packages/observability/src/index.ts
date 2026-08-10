@@ -129,6 +129,7 @@ const FIELD_ALLOWLIST = new Set([
   'source_count',
   'source_id',
   'source_ids',
+  'sweep',
   'sources_requeued',
   'space_id',
   'stage',
