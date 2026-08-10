@@ -24,18 +24,26 @@ This checklist is intentionally scoped to this repository. SDK changes,
 Cloudflare account configuration, provider dashboards, and other external work
 are recorded as dependencies, not as repository-owned completion checkboxes.
 
-> **Implementation status:** the unchecked actions in this checklist are
-> proposals and have not started. Items marked `[x]` are pre-existing incident
-> remediations found in the repository; they are not evidence that the new
-> checklist work has been implemented.
+> **Implementation status (updated 2026-08-11).** Execution has started. Each
+> completed item carries an "Implemented" block recording what shipped, how it
+> was verified, and what its acceptance gate still does *not* cover. Done:
+> P0-B, P0-C, P0-D, P1-C, P1-D, P1-E, P1-F, P1-G, P1-H. Remaining: P0-A, P1-A,
+> P1-B (external prerequisite), and all of P2. Items marked `[x]` in the
+> incident-reconciliation table below are pre-existing remediations, not new
+> work — see each item's own block for what changed today.
 
 > **Production warning:** `api.crosmos.dev` and its Hono/Workers data path are
 > serving production users now. The Neon database contains live production
-> data; this is not a pre-cutover or disposable migration environment. None of
-> the new schema changes proposed by this checklist have been applied. Every
+> data; this is not a pre-cutover or disposable migration environment. Every
 > migration below must therefore use a staging-first, backup, compatibility,
 > lock-budget, verification, and rollback procedure appropriate for a live
 > production database.
+>
+> **Schema state as of 2026-08-11:** the only schema change proposed here that
+> has been applied anywhere is `memories.speaker_role` (migration `0002`), on the
+> **staging Neon branch only**; production is unchanged. The `P1-A` changes
+> (`deleted_at`, the partial unique index, dropping the `daily_usage` FK) have
+> not been written or applied.
 
 ## Decisions and non-regression rules
 
