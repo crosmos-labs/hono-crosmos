@@ -82,6 +82,25 @@ export interface RetrieveInput {
    * identical vector + usage.
    */
   embedPromise?: ReturnType<Embedder['embed']>;
+  /**
+   * Request deadline. Forwarded to every cancellable downstream call (embedder,
+   * vector store, reranker) and checked between stages, so a search the client
+   * has already been told timed out stops consuming provider and connection
+   * capacity instead of running invisibly to completion.
+   *
+   * Optional: omitted, retrieval behaves exactly as before.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * True once the request deadline has passed. Checked BETWEEN stages, because
+ * aborting an in-flight fetch is necessary but not sufficient: without this the
+ * next stage would simply start a brand-new one on a request nobody is waiting
+ * for any more.
+ */
+function expired(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -198,7 +217,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // Stage 2 — embedding as a shared promise (semantic + graph await it). Prefer
   // the route's pre-started embed (overlaps the DB loads); else embed lazily.
   const embedStart = performance.now();
-  const embedSource = input.embedPromise ?? embedder.embed(query.text, { mode: 'search' });
+  const embedSource =
+    input.embedPromise ?? embedder.embed(query.text, { mode: 'search', signal: input.signal });
   const embedPromise = embedSource.then(
     (result) => {
       logger?.info('embedding.request_completed', {
@@ -233,7 +253,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const settledSignals = await Promise.allSettled([
     timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
       const { vector } = await embedPromise;
-      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
+      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool, input.signal);
     }),
     timeSignal(logger, SourceSignal.KEYWORD, () =>
       keywordSearch(query.text, db, scope, query.candidatePool),
@@ -251,6 +271,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         temporalRange ? temporalRange[1] : null,
         effectiveMaxDepth,
         {
+          signal: input.signal,
           // Observational only — this is the last unbounded read in the graph
           // signal and we need its real distribution before deciding whether a
           // cap is safe (a cap would change graph recall).
@@ -350,6 +371,22 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   }
 
   // Stage 6 — base scores (CE rerank OR rank-remap fallback).
+  //
+  // Deadline check before the reranker: it is the most expensive remaining
+  // external call, and by this point the signal fan-out has already run. If the
+  // client has been told the request timed out, starting a fresh ZeroEntropy
+  // call would burn provider capacity for a result nobody will read. Falling
+  // through leaves `ceEnabled = false`, which takes the existing rank-remap
+  // fallback path — the same well-tested degradation used when the reranker
+  // errors, not a new one.
+  if (ceEnabled && expired(input.signal)) {
+    logger?.warn('retrieval.stage_skipped', {
+      stage: 'rerank',
+      reason: 'deadline_expired',
+    });
+    ceEnabled = false;
+  }
+
   let baseScores = new Map<number, number>();
   if (ceEnabled) {
     const rerankStart = performance.now();
@@ -359,7 +396,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       if (c) selection.push(c);
     }
     try {
-      baseScores = await rerankCandidates(reranker!, query.text, selection);
+      baseScores = await rerankCandidates(reranker!, query.text, selection, input.signal);
       if (baseScores.size === 0) ceEnabled = false;
       logger?.info('retrieval.stage_completed', {
         stage: 'rerank',

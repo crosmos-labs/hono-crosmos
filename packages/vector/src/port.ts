@@ -43,6 +43,12 @@ export interface QueryOptions {
   topK: number;
   /** Drop matches with cosine similarity below this. */
   minScore?: number;
+  /**
+   * Caller deadline. Remote adapters combine it with their own request timeout;
+   * the in-database pg adapter ignores it (its work is a single query the
+   * driver owns).
+   */
+  signal?: AbortSignal;
 }
 
 export interface UpsertItem {

@@ -74,10 +74,32 @@ function jsonError(
   });
 }
 
-/** Reject after `ms`; the underlying work is not cancellable on Workers. */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+/**
+ * Reject after `ms`, and ABORT the work rather than merely stop awaiting it.
+ *
+ * Racing a timer against a promise ends the wait but not the work. Every
+ * downstream call — the query embedding, the Qdrant searches, the reranker —
+ * kept running to completion on a request the client had already been told
+ * timed out, holding provider and connection capacity the whole time. During an
+ * overload that invisible work is self-sustaining: the capacity it consumes is
+ * exactly the capacity the next request needs.
+ *
+ * `controller` is handed to `retrieve` so cancellable calls are aborted and
+ * later stages are skipped. It is also aborted on the SUCCESS path, in a
+ * `finally`, so any fire-and-forget work started during the request (a
+ * fail-soft auxiliary signal still in flight when the essential ones finished)
+ * does not outlive the response.
+ */
+function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  controller: AbortController,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new TimeoutError()), ms);
+    const timer = setTimeout(() => {
+      controller.abort(new TimeoutError());
+      reject(new TimeoutError());
+    }, ms);
     p.then(
       (v) => {
         clearTimeout(timer);
@@ -222,6 +244,9 @@ searchRoutes.openapi(
     // quota are all still enforced below for everything that gets admitted, and
     // rejecting here reveals nothing about whether a space exists. It also means
     // a shed request no longer consumes monthly AI quota it never used.
+    // One deadline for the whole request. Declared out here so the `finally`
+    // below can abort it on EVERY exit path, not just the timeout one.
+    const deadline = new AbortController();
     const concurrency = getConcurrencyLimiter(c.env, defer);
     const userKey = String(userId);
     const lease = await logger.time(
@@ -411,7 +436,10 @@ searchRoutes.openapi(
       // below instead of running after them inside retrieve(). The signals then
       // find the vector already resolved. Quality-neutral (same vector).
       const embedder = getEmbedder(c.env);
-      const embedPromise = embedder.embed(body.query, { mode: 'search' });
+      const embedPromise = embedder.embed(body.query, {
+        mode: 'search',
+        signal: deadline.signal,
+      });
       // retrieve() awaits this; guard the pre-await window so a rejection here
       // isn't reported as an unhandled rejection.
       embedPromise.catch(() => {});
@@ -454,9 +482,11 @@ searchRoutes.openapi(
           deps,
           entitlements,
           embedPromise,
+          signal: deadline.signal,
           logger: logger.child({ space_id: space.id }),
         }),
         limits.retrievalTimeoutSeconds * 1000,
+        deadline,
       );
 
       // Resolve owner display names for the result candidates only (≤topK). One
@@ -612,6 +642,14 @@ searchRoutes.openapi(
       // and nobody else's. If the isolate is terminated before this runs, the
       // lease's TTL reclaims it instead.
       defer(concurrency.release(userKey, lease.token));
+
+      // Abort on EVERY exit path, including success and error. A fail-soft
+      // auxiliary signal can still be in flight when the essential ones have
+      // already produced a result, and an error path can leave calls running
+      // that nothing will ever read. Aborting here stops that work from
+      // outliving the response it was for. Aborting an already-settled
+      // controller is a no-op, and `release` above never throws.
+      deadline.abort(new TimeoutError());
     }
   },
 );

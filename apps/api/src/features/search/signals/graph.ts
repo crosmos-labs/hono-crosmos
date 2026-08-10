@@ -146,10 +146,12 @@ async function seedByMemory(
   vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
+  signal?: AbortSignal,
 ): Promise<Map<number, number>> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
     topK: GRAPH_SEED_LIMIT,
     minScore: GRAPH_SEED_THRESHOLD,
+    signal,
   });
   if (matches.length === 0) return new Map();
   const links = await getEntitiesForMemories(db, scope, matches.map((m) => m.id));
@@ -199,6 +201,8 @@ export interface GraphSearchOptions {
    * traversal, and it is optional so direct callers and tests can ignore it.
    */
   onSeedFanout?(stats: { seedEntityCount: number; memoryCount: number }): void;
+  /** Request deadline, forwarded to the vector store's remote calls. */
+  signal?: AbortSignal;
 }
 
 export async function graphSearchWithStore(
@@ -226,8 +230,9 @@ export async function graphSearchWithStore(
     vectorStore.queryNearest('entities', queryEmbedding, scope, {
       topK: GRAPH_SEED_LIMIT,
       minScore: GRAPH_SEED_THRESHOLD,
+      signal: options?.signal,
     }),
-    seedByMemory(db, vectorStore, queryEmbedding, scope),
+    seedByMemory(db, vectorStore, queryEmbedding, scope, options?.signal),
   ]);
 
   // Visibility gate for the entity seeds: when per-user visibility is active,

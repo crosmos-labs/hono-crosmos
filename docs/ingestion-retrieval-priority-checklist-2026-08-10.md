@@ -442,7 +442,7 @@ outcome, and DLQ metrics are production no-ops.
 - `[external]` Build provider/Cloudflare dashboards and alerts from the emitted
   metrics.
 
-### [ ] P1-C. Cancel retrieval work after the request deadline
+### [x] P1-C. Cancel retrieval work after the request deadline
 
 **Why**
 
@@ -467,6 +467,49 @@ capacity after the client has already received a timeout.
 - A timed-out request initiates no new downstream stage and aborts cancellable
   fetches.
 - Concurrency release still occurs in `finally` and never frees another lease.
+
+**Implemented 2026-08-11**
+
+- `withTimeout` now ABORTS the work instead of merely ceasing to await it. Its
+  old doc comment said outright that "the underlying work is not cancellable on
+  Workers"; that was the gap. The route owns one `AbortController` per request,
+  created before the early query embedding so that call is covered too.
+- The signal reaches every cancellable call: `Embedder.embed`,
+  `VectorStore.queryNearest` (semantic and both graph seeds), and
+  `Reranker.rerank`, each via a new optional `signal` on the port options.
+  Omitting it leaves behaviour exactly as before.
+- Adapters COMBINE the caller deadline with their own safety timeout via
+  `withDeadline` in `@crosmos/runtime`, rather than replacing one with the
+  other. They are different guarantees: the adapter timeout bounds a hung
+  provider, the caller deadline stops abandoned work.
+- Adapters propagate a caller `AbortError` unchanged instead of mapping it to a
+  retryable 504. An abandoned request is not a provider fault, and reporting it
+  as one would both misattribute the failure and invite a retry of work nobody
+  is waiting for.
+- Between-stage check before the reranker — the most expensive remaining
+  external call. On an expired deadline it sets `ceEnabled = false`, which takes
+  the **existing** rank-remap fallback rather than a new code path.
+- The controller is aborted in the `finally`, on every exit path including
+  success, so a fail-soft auxiliary signal still in flight cannot outlive its
+  response. Verified that no `waitUntil` bookkeeping receives the signal:
+  `touchMemories` and `recordSearchQueries` are plain database writes.
+- Concurrency release is unchanged and still token-owned in the same `finally`.
+
+**Fixed along the way:** the ZeroEntropy reranker fetch had **no timeout at
+all**, so a wedged reranker could pin an isolate indefinitely — the same failure
+shape as the untimed ingestion LLM fetch. It now has a 10 s safety bound.
+
+**Verification**
+
+- `packages/runtime/tests/deadline.test.ts` (8) — which signal wins in each
+  direction, an already-aborted caller, and that combining never mutates the
+  caller's signal.
+- `packages/ai/tests/cancellation.test.ts` (9) — the signal actually reaches
+  `fetch`; a caller abort surfaces as `AbortError` and explicitly **not** as
+  `EmbeddingRequestError`/`RerankerRequestError`; provider errors stay
+  retryable; omitting the signal is unchanged; an empty rerank makes no call.
+- Both packages gained a `bun test` setup, so the workspace suite is now
+  runtime + ai + api + ingestion (121 tests).
 
 ### [ ] P1-D. Split candidate provenance from full source content
 
