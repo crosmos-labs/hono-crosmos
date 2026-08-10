@@ -250,6 +250,17 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         query.candidatePool,
         temporalRange ? temporalRange[1] : null,
         effectiveMaxDepth,
+        {
+          // Observational only — this is the last unbounded read in the graph
+          // signal and we need its real distribution before deciding whether a
+          // cap is safe (a cap would change graph recall).
+          onSeedFanout: ({ seedEntityCount, memoryCount }) =>
+            logger?.info('retrieval.graph_seed_fanout', {
+              signal: SourceSignal.GRAPH,
+              entity_count: seedEntityCount,
+              memory_count: memoryCount,
+            }),
+        },
       );
     }),
     timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
