@@ -1,17 +1,32 @@
 # Prioritized remediation plan — Cloudflare incident, 25 July 2026
 
-Status: proposed work only. This document does not apply any code,
-configuration, deployment, billing, or production-data changes.
+Status: **partially implemented.** Tracked as a checklist below; last updated
+2026-08-05.
 
-> **Superseded in part.** Part of this plan was implemented on 2026-08-05. See
+> **Superseded in part.** Eight items were implemented and **deployed to
+> production on 2026-08-05** (`crosmos-api-production` version `34adf955`). See
 > [`cloudflare-incident-remediation-status-2026-08-05.md`](./cloudflare-incident-remediation-status-2026-08-05.md)
-> for what shipped, what remains, and two corrections to the analysis below —
+> for the shipped detail, and two corrections to the analysis below —
 > most importantly that **P0-3 (Worker CPU allowance) rests on a false premise
 > and should be dropped**, and that the 3s/30s timeout mismatch filed here as
 > P1-5 was the primary amplifier rather than a documentation item.
 
 Related analysis:
 [`cloudflare-observability-incident-2026-07-25.md`](./cloudflare-observability-incident-2026-07-25.md)
+
+### Reading the checklist
+
+- `[x]` — implemented **and** deployed to production.
+- `[~]` — partially done; the remainder is called out on the item.
+- `[ ]` — not started.
+- `[-]` — dropped, with the reason on the item.
+
+**Shipped is not the same as verified.** The repository has no automated
+coverage of the API admission path, and the post-deploy check has so far only
+confirmed the limiter consolidation against live traffic. Per-item *acceptance
+criteria* therefore remain unticked until a load test exercises them — see
+**P2-5** below, which is the
+single highest-value remaining item.
 
 ## Objective
 
@@ -39,34 +54,62 @@ The remediation order is driven by:
 
 ## Summary
 
-| ID | Priority | Fix | Primary area | Size | Main outcome |
-|---|---|---|---|---|---|
-| P0-1 | P0 | Stop harmful recall retries | Crosmos SDK/client | S | Removes up to 45% duplicated incident traffic |
-| P0-2 | P0 | Add recall singleflight and stale-request cancellation | Crosmos client | M | One logical recall cannot create concurrent duplicates |
-| P0-3 | P0 | Verify and set an appropriate Worker CPU allowance | Cloudflare/platform | S–M | Stops low-millisecond CPU terminations |
-| P0-4 | P0 | Add Neon capacity alerts and an exhaustion circuit breaker | API/platform | M | Provider exhaustion becomes fast, controlled 503 |
-| P0-5 | P0 | Shed overloaded searches earlier | API admission path | M | Rejected work avoids database and limiter cost |
-| P0-6 | P0 | Classify dependency failures consistently | API | M | Removes generic/retryable-looking 500s |
-| P1-1 | P1 | Replace counters with idempotent concurrency leases | API/Durable Objects | L | CPU-killed requests cannot leak or duplicate slots |
-| P1-2 | P1 | Consolidate redundant admission subrequests | API/Durable Objects | L | Reduces the current 3.77+ internal calls/search |
-| P1-3 | P1 | Bound full-text query complexity and fail signals soft | Retrieval/API | M | Pathological queries cannot fail all retrieval |
-| P1-4 | P1 | Coordinate space deletion with ingestion | API/ingestion | L | Removes deletion-related foreign-key failures |
-| P1-5 | P1 | Formalize the recall timeout/fail-open contract | Client/API | M | Predictable behavior at the three-second deadline |
-| P1-6 | P1 | Add bounded retries to scheduled DB jobs | API/cron | S–M | Transient Hyperdrive failures do not accumulate |
-| P1-7 | P1 | Harden transient AI/vector dependency handling | API/ingestion | M | Safe retry/degradation without retry storms |
-| P1-8 | P1 | Fix write-side usage races | API/database | M | Successful searches stop producing FK warnings |
-| P2-1 | P2 | Add end-to-end event correlation | All services | L | Proves recall, ingestion, triage, and outbox state |
-| P2-2 | P2 | Separate request, internal-call, and log-volume dashboards | Observability | M | Dashboard counts represent user impact correctly |
-| P2-3 | P2 | Move routine timings to metrics and tune log sampling | Observability | M | Lower log volume with complete error evidence |
-| P2-4 | P2 | Add SLO-based alerts and incident runbooks | Platform | M | Earlier detection and consistent response |
-| P2-5 | P2 | Add overload, deletion-race, and dependency-failure tests | QA/platform | L | Remediations remain effective after future changes |
+| | ID | Priority | Fix | Size | Commit | Notes |
+|---|---|---|---|---|---|---|
+| `[x]` | P0-1 | P0 | Stop harmful recall retries | S | `74906d2` | Done **server-side** via `x-should-retry`; no SDK release needed |
+| `[ ]` | P0-2 | P0 | Recall singleflight and stale-request cancellation | M | — | Client-side. Server half (`leaseKey`) shipped and inert |
+| `[-]` | P0-3 | P0 | Verify and set a Worker CPU allowance | S–M | — | **Dropped** — premise refuted; account is paid, limit is 30s |
+| `[~]` | P0-4 | P0 | Neon capacity alerts + exhaustion circuit breaker | M | `78eec89` | Classification shipped; **breaker and alerts outstanding** |
+| `[x]` | P0-5 | P0 | Shed overloaded searches earlier | M | `65d0717` | Rejection cost 6 DO calls → 1 |
+| `[x]` | P0-6 | P0 | Classify dependency failures consistently | M | `78eec89` | |
+| `[x]` | P1-1 | P1 | Idempotent concurrency leases | L | `55b6d4d` | Tokenized; idempotent-by-logical-id ready but needs a client id |
+| `[x]` | P1-2 | P1 | Consolidate redundant admission subrequests | L | `261742d` | 7 → 4 per search. **Confirmed on live traffic** |
+| `[x]` | P1-3 | P1 | Bound query complexity and fail signals soft | M | `5b9649e` `7e5683b` | Two independent defenses |
+| `[ ]` | P1-4 | P1 | Coordinate space deletion with ingestion | L | — | **Blocked on a design decision** (see item) |
+| `[x]` | P1-5 | P1 | Formalize the recall timeout/fail-open contract | M | `f2beb5c` | 30s → 6s. The primary amplifier |
+| `[ ]` | P1-6 | P1 | Bounded retries for scheduled DB jobs | S–M | — | |
+| `[~]` | P1-7 | P1 | Harden transient AI/vector dependency handling | M | `5b9649e` | Search side degrades soft; ingestion side untouched |
+| `[ ]` | P1-8 | P1 | Fix write-side usage races | M | — | **Blocked on a policy decision** (see item) |
+| `[ ]` | P2-1 | P2 | End-to-end event correlation | L | — | |
+| `[ ]` | P2-2 | P2 | Separate request/internal-call/log-volume dashboards | M | — | |
+| `[ ]` | P2-3 | P2 | Move routine timings to metrics, tune log sampling | M | — | **Blocked:** `ANALYTICS` binding still commented out |
+| `[ ]` | P2-4 | P2 | SLO-based alerts and incident runbooks | M | — | Depends on P2-3 |
+| `[ ]` | P2-5 | P2 | Overload, deletion-race, dependency-failure tests | L | — | **Highest-value remaining item** |
 
 Sizes are relative estimates: S is a focused change, M crosses a few components,
 and L needs design/migration or coordinated rollout.
 
+**Progress: 7 of 19 done, 2 partial, 1 dropped, 9 not started.** All shipped
+items went to production together on 2026-08-05 as version `34adf955`.
+
+### Blocked on a decision from the owner
+
+These two cannot start until the question is answered:
+
+- [ ] **P1-4** — is space deletion a barrier, write-fencing, or soft-delete plus
+      async purge? (Recommendation: soft-delete.)
+- [ ] **P1-8** — does `daily_usage` survive its parent space being deleted? If
+      billing needs the history, meter at org level; if not, cascade.
+
+### Not in the original plan, found during implementation
+
+- [ ] **Enable the Analytics Engine binding.** `[[analytics_engine_datasets]]`
+      is commented out in `apps/api/wrangler.toml` for both `production` and the
+      top-level env, so **every `metrics.count()` call is a no-op in
+      production** — including the throttle/degradation metrics these fixes
+      emit. Logs work; metrics do not. This gates P2-3 and P2-4.
+- [ ] **Run the post-deploy verification.** `scripts/verify-incident-fixes.ts`
+      (`fff3cf0`) needs a prod API key and space id. Until it runs, the search
+      path changes are deployed but unverified.
+- [ ] **Plan the migration off Stainless.** The company is winding down. The
+      `x-should-retry` lever used by P0-1 is a property of the generated client,
+      so whatever replaces it must preserve that behavior or P0-1 regresses.
+
 ## P0 — immediate outage prevention
 
-### P0-1. Stop harmful automatic retries in recall
+### [x] DONE — P0-1. Stop harmful automatic retries in recall
+
+> **Status.** Shipped `74906d2`, deployed 2026-08-05. Implemented **server-side** rather than in the SDK: the Stainless client obeys an `x-should-retry` response header before any status-code rule, so the already-shipped client was fixed without a release. The client-side singleflight half is **P0-2** and remains open.
 
 **Problem**
 
@@ -110,7 +153,9 @@ Deploy behind a client feature flag if possible. Start with recall only, observe
 retry ratio and recall success, then apply the policy to other idempotent API
 calls where appropriate.
 
-### P0-2. Add singleflight, debouncing, and stale-request cancellation
+### [ ] NOT STARTED — P0-2. Add singleflight, debouncing, and stale-request cancellation
+
+> **Status.** Client-side work, in `../crosmos-ts-sdk` / `../crosmos-python-sdk`. The **server half is shipped**: `RateLimiterDO.acquire` accepts an optional `leaseKey` that makes acquisition idempotent per logical request, so retries of one recall consume one slot. It is inert until a client sends a stable recall id.
 
 **Problem**
 
@@ -136,7 +181,9 @@ consumes a concurrency slot and may initiate another embedding/retrieval fanout.
 - Client metrics expose attempted, coalesced, cancelled, timed-out, and
   completed recalls.
 
-### P0-3. Verify and correct the Worker CPU allowance
+### [-] DROPPED — P0-3. Verify and correct the Worker CPU allowance
+
+> **Status.** **The premise is refuted — do not action this.** The account export shows 34/34 searches succeeding at 37 ms median / 84 ms max CPU, so the effective limit is not the inferred 10 ms. Hyperdrive, Queues, Smart Placement and SQLite-backed Durable Objects are all Workers *Paid* features and all are in use, so the limit is the paid 30 s default and `limits.cpu_ms` would be a no-op. CPU-*terminated* invocations also burned **less** CPU (12.5 ms avg) than successful ones — they were stalled on I/O during the database outage, making them a symptom rather than a cause.
 
 **Problem**
 
@@ -179,7 +226,9 @@ Cloudflare reference:
 Increasing the allowance can hide inefficient code and increase cost. It must
 be paired with profiling and a regression threshold.
 
-### P0-4. Protect against Neon capacity/budget exhaustion
+### [~] PARTIAL — P0-4. Protect against Neon capacity/budget exhaustion
+
+> **Status.** The **classification** half shipped as part of `78eec89` (see **P0-6**): provider-budget exhaustion now returns a classified 503 with a `Retry-After` parsed from the provider's own stated renewal time, and `x-should-retry: false`. **Still outstanding:** the circuit breaker itself (needs shared cross-isolate state, so a Durable Object) and the capacity alerts. Lower urgency than the plan implies, because classification already removed the retry amplification; the breaker now only saves wasted work.
 
 **Problem**
 
@@ -221,7 +270,9 @@ time.
 - Circuit state and rejected request counts are visible in metrics.
 - Recovery probes close the circuit without a deploy.
 
-### P0-5. Shed overload earlier and more cheaply
+### [x] DONE — P0-5. Shed overload earlier and more cheaply
+
+> **Status.** Shipped `65d0717`, deployed 2026-08-05. The concurrency gate moved ahead of entitlements, space access, the plan limiter and the quota. A rejected search went from 6 Durable Object calls to **1**, and no longer consumes monthly AI quota it never used.
 
 **Problem**
 
@@ -253,7 +304,9 @@ Relevant path:
 - Authorization and cross-tenant non-disclosure tests continue to pass.
 - Quota and rate-limit accounting remains correct.
 
-### P0-6. Return machine-readable dependency failures
+### [x] DONE — P0-6. Return machine-readable dependency failures
+
+> **Status.** Shipped `78eec89`, deployed 2026-08-05. Implemented in `apps/api/src/lib/dependency-errors.ts`, applied in both the global `onError` handler and the search route (which wraps errors in a 500 before the global handler sees them). Deliberately conservative: anything not matching a known provider condition stays a 500.
 
 **Problem**
 
@@ -286,7 +339,9 @@ messages or stacks.
 
 ## P1 — structural reliability and correctness
 
-### P1-1. Use idempotent, tokenized concurrency leases
+### [x] DONE — P1-1. Use idempotent, tokenized concurrency leases
+
+> **Status.** Shipped `55b6d4d`, deployed 2026-08-05. Slots are now a `Map<leaseToken, expiry>`; release deletes exactly the caller's token. The previous `slots.shift()` dropped the *oldest* lease, so a fast request freed a slow request's still-live slot. Acquire-by-`leaseKey` is implemented for the idempotency requirement but needs a client-supplied recall id (see P0-2).
 
 **Problem**
 
@@ -316,7 +371,9 @@ Relevant implementation:
 - Active count never becomes negative or exceeds the configured cap.
 - Migration does not strand counters from the previous scheme.
 
-### P1-2. Consolidate admission Durable Object calls
+### [x] DONE — P1-2. Consolidate admission Durable Object calls
+
+> **Status.** Shipped `261742d`, deployed 2026-08-05. **Confirmed against live production traffic:** two real `POST /api/v1/conversations` requests each made exactly 2 limiter calls where the old code made 4. Note the plan's "3.77 calls/search" undercounts — the measured figure was **7.03**; it is now 4 per search and 1 per rejection.
 
 **Problem**
 
@@ -343,7 +400,9 @@ search, before database/vector/AI subrequests.
 - A rejected search stays under the P0-5 subrequest target.
 - Rate, quota, and noisy-neighbor tests show no enforcement regression.
 
-### P1-3. Bound full-text query complexity and fail signals soft
+### [x] DONE — P1-3. Bound full-text query complexity and fail signals soft
+
+> **Status.** Shipped as two independent defenses, both deployed 2026-08-05. `5b9649e` makes the signal fan-out `allSettled` so an auxiliary signal degrades instead of failing the search; `7e5683b` bounds both `websearch_to_tsquery` call sites so the query is rarely pathological in the first place. Semantic is treated as essential and still throws — a keyword-only result would hand an agent bad recall to answer confidently from.
 
 **Problem**
 
@@ -373,7 +432,9 @@ Relevant code:
   succeed.
 - Signal degradation is visible in metrics.
 
-### P1-4. Coordinate space deletion with in-flight ingestion
+### [ ] BLOCKED — needs a decision — P1-4. Coordinate space deletion with in-flight ingestion
+
+> **Status.** **Cannot start until the model is chosen.** Recommendation: **deferred cleanup** (soft-delete, let workers observe cancellation, purge asynchronously) — it is the only one of the three that neither adds latency to `DELETE /spaces` nor requires ingestion to hold a lease across invocations.
 
 **Problem**
 
@@ -411,7 +472,9 @@ Regardless of model:
 - No memory, entity, chunk, or vector data survives past completed deletion.
 - Delete latency and cleanup state remain observable.
 
-### P1-5. Formalize the recall timeout and fail-open contract
+### [x] DONE — P1-5. Formalize the recall timeout and fail-open contract
+
+> **Status.** Shipped `f2beb5c`, deployed 2026-08-05. **This was the primary amplifier, not a documentation item.** Server deadline 30 s → 6 s, with the concurrency slot TTL now *derived* as timeout + 4 s grace so the two cannot drift apart again. Per-user throughput ceiling went from 10 slots / 30 s ≈ 0.33 req/s to ≈ 1.67 req/s. Env-tunable via `RETRIEVAL_TIMEOUT_SECONDS`, so it reverts without a redeploy. The client-side deadline decision is unchanged at 3 s.
 
 **Problem**
 
@@ -446,7 +509,9 @@ timeout.
 - Metrics distinguish client deadline, server 504, dependency failure, and
   successful late completion.
 
-### P1-6. Retry transient scheduled-job database failures safely
+### [ ] NOT STARTED — P1-6. Retry transient scheduled-job database failures safely
+
+> **Status.** Unchanged from the plan. These jobs are isolated from each other and self-heal on the next 15-minute tick, which is why this sits below the blocked items in priority.
 
 **Problem**
 
@@ -473,7 +538,9 @@ Relevant code:
 - No job is reaped/redriven twice in a harmful way.
 - Dashboard shows first-attempt failures separately from final cron outcomes.
 
-### P1-7. Harden AI/vector dependency degradation
+### [~] PARTIAL — P1-7. Harden AI/vector dependency degradation
+
+> **Status.** The **search** side is covered by `5b9649e`: a nonessential signal now fails soft rather than failing the request. **Still outstanding:** the ingestion side (durable checkpoint retry budgets), per-provider circuit breakers and concurrency limits, and the provider retry/outcome metrics.
 
 **Problem**
 
@@ -503,7 +570,9 @@ failure.
 - Ingestion resumes from its checkpoint without duplicate durable records.
 - Provider retry and final-failure rates are visible.
 
-### P1-8. Fix best-effort usage/write-side foreign-key races
+### [ ] BLOCKED — needs a decision — P1-8. Fix best-effort usage/write-side foreign-key races
+
+> **Status.** **Cannot start until the policy is set:** does usage survive its parent space being deleted? If billing needs the history, meter at org level and drop the space foreign key; if not, use deletion-safe FK behavior and treat the race as a measured no-op.
 
 **Problem**
 
@@ -532,7 +601,7 @@ Relevant path:
 
 ## P2 — observability and operational hardening
 
-### P2-1. Add end-to-end correlation through triage and outbox
+### [ ] NOT STARTED — P2-1. Add end-to-end correlation through triage and outbox
 
 **Problem**
 
@@ -574,7 +643,7 @@ Relevant acceptance log:
   boundaries.
 - Missing stages can be alerted as stalled lifecycle transitions.
 
-### P2-2. Separate user requests from internal and logging events
+### [ ] NOT STARTED — P2-2. Separate user requests from internal and logging events
 
 **Problem**
 
@@ -598,7 +667,9 @@ success rate directly.
 - Retry count and unique logical-request count are shown side by side.
 - Durable backstop claim skips are not displayed as ingestion failures.
 
-### P2-3. Move routine stage data to metrics and tune logging
+### [ ] BLOCKED — P2-3. Move routine stage data to metrics and tune logging
+
+> **Status.** **The `ANALYTICS` binding is commented out** in `apps/api/wrangler.toml` for both the top-level and `production` envs, so every `metrics.count()` call — including the throttle and signal-degradation metrics the 2026-08-05 fixes emit — is a **no-op in production** today. Uncommenting it (and enabling Analytics Engine on the account) is the prerequisite for this item and for P2-4.
 
 **Problem**
 
@@ -626,7 +697,9 @@ stage and platform events, inflating volume and potentially adding CPU cost.
 - Log volume per successful search is reduced by an agreed target.
 - Search CPU does not regress because of observability serialization.
 
-### P2-4. Establish SLO alerts and runbooks
+### [ ] NOT STARTED — P2-4. Establish SLO alerts and runbooks
+
+> **Status.** Depends on P2-3: there is no metrics sink to alert on until the Analytics Engine binding is enabled.
 
 Create independent alerts for:
 
@@ -658,7 +731,9 @@ Each alert needs a runbook containing:
 - On-call can identify the failing dependency and safe first action without
   reading application source.
 
-### P2-5. Add regression, load, and failure-injection coverage
+### [ ] NOT STARTED — P2-5. Add regression, load, and failure-injection coverage
+
+> **Status.** **Highest-value remaining item.** Everything shipped on 2026-08-05 rests on mechanism reasoning plus one confirmed live measurement (P1-2). None of it has been exercised under the traffic shape that caused the incident, and the repository has no automated coverage of the API admission path — its three test files are all in `apps/ingestion`. `scripts/verify-incident-fixes.ts` is a first step, not a substitute.
 
 Required scenarios:
 
@@ -685,48 +760,68 @@ Required scenarios:
 
 ### Wave 0 — establish guardrails
 
-1. Confirm the effective Worker CPU limit.
-2. Add/verify Neon capacity alerts.
-3. Capture current baselines for retry ratio, CPU outcomes, search latency,
-   concurrency rejection latency, and Durable Object calls.
+> **What actually happened.** The wave plan was not followed as written. Waves 1
+> and 2 were largely collapsed into a single release on 2026-08-05 because the
+> repository had no staging replay or feature-flag scaffolding to stage them
+> behind, and because the CPU item (P0-3) that Wave 2 was built around turned
+> out not to need doing. That release did combine the limiter migration and the
+> retry-policy change, which the rollback rules below advise against — the
+> mitigating factors were that each change is a separate revertible commit and
+> the riskiest one is env-tunable without a redeploy.
+
+- [-] Confirm the effective Worker CPU limit. *(Answered from the existing
+      export rather than the dashboard: the account is on a paid plan, so the
+      limit is 30 s. See P0-3.)*
+- [ ] Add/verify Neon capacity alerts.
+- [~] Capture current baselines for retry ratio, CPU outcomes, search latency,
+      concurrency rejection latency, and Durable Object calls. *(Baselines for
+      CPU, latency and DO calls were taken from the incident export and the
+      pre-deploy tail; retry ratio and rejection latency were not.)*
 
 This wave is operational/read-only except for alerts and documentation.
 
 ### Wave 1 — remove amplification
 
-1. P0-1: retry policy.
-2. P0-2: singleflight/cancellation.
-3. P0-6: stable error taxonomy required by the client policy.
-4. P0-4: database circuit breaker.
+- [x] P0-1: retry policy. *(Server-side, `74906d2`.)*
+- [ ] P0-2: singleflight/cancellation. *(Client-side; server half shipped.)*
+- [x] P0-6: stable error taxonomy required by the client policy. *(`78eec89`.)*
+- [~] P0-4: database circuit breaker. *(Classification only; breaker outstanding.)*
 
 Deploy client retry and server error classification compatibly: older clients
 must continue to receive valid status codes, while newer clients consume the
-machine code.
+machine code. *(Satisfied — the new headers are additive and every response
+keeps a valid status code, so unmodified clients are unaffected.)*
 
 ### Wave 2 — stabilize admission and CPU
 
-1. P0-3: deploy the verified CPU setting with profiling.
-2. P0-5: early overload shedding.
-3. P1-1: idempotent leases.
-4. P1-2: limiter consolidation.
+- [-] P0-3: deploy the verified CPU setting with profiling. *(Dropped.)*
+- [x] P0-5: early overload shedding. *(`65d0717`.)*
+- [x] P1-1: idempotent leases. *(`55b6d4d`.)*
+- [x] P1-2: limiter consolidation. *(`261742d`.)*
 
 Roll out lease/admission changes behind a server feature flag or percentage
-split, compare counts with the old limiter, then migrate fully.
+split, compare counts with the old limiter, then migrate fully. *(**Not
+followed** — shipped at 100% in one release. No flag scaffolding existed, and
+the DO limiter's state is in-memory and resets on deploy, so a percentage split
+across two limiter topologies would have double-counted. The `RETRIEVAL_*` env
+knobs are the substitute rollback path.)*
 
 ### Wave 3 — correctness
 
-1. P1-3: query complexity.
-2. P1-4: deletion/ingestion coordination.
-3. P1-6/P1-7: dependency retry policy.
-4. P1-8: usage-write race.
-5. P1-5: final timeout contract after new latency data is available.
+- [x] P1-3: query complexity. *(`5b9649e`, `7e5683b`.)*
+- [ ] P1-4: deletion/ingestion coordination. *(Blocked on a design decision.)*
+- [ ] P1-6 / [~] P1-7: dependency retry policy. *(Search side only.)*
+- [ ] P1-8: usage-write race. *(Blocked on a policy decision.)*
+- [x] P1-5: final timeout contract. *(`f2beb5c` — done first, not last, because
+      it was the primary amplifier rather than a follow-up refinement.)*
 
 ### Wave 4 — provability and continuous validation
 
-1. P2-1: lifecycle correlation.
-2. P2-2/P2-3: dashboards, metrics, and logging.
-3. P2-4: SLO alerts/runbooks.
-4. P2-5: automated load and failure-injection suite.
+- [ ] P2-1: lifecycle correlation.
+- [ ] P2-2 / P2-3: dashboards, metrics, and logging. *(Blocked: `ANALYTICS`
+      binding is commented out, so metrics are no-ops in production.)*
+- [ ] P2-4: SLO alerts/runbooks.
+- [ ] P2-5: automated load and failure-injection suite.
 
 ## Release and rollback rules
 
@@ -753,19 +848,34 @@ Suggested immediate rollback signals:
 
 ## Completion criteria
 
-The incident can be considered fully remediated when:
+The incident can be considered fully remediated when all of the following are
+**measured true in production**. None are ticked yet: the mechanisms for several
+are deployed, but nothing here has been observed under load. Ticking these is
+the job of P2-5.
 
-- automatic retry traffic stays below 5% during overload;
-- duplicate logical recalls do not create duplicate searches;
-- CPU terminations are zero in incident replay and negligible in production;
-- Neon exhaustion fails fast as classified 503 without a retry storm;
-- rejected searches avoid expensive dependency work;
-- concurrency slots are idempotent and self-reclaiming;
-- pathological queries degrade safely;
-- space deletion cannot create ingestion FK failures;
-- client timeout behavior is documented and measured;
-- scheduled transient failures recover within their bounded retry policy;
-- a single event ID proves ingestion, triage, outbox enqueue, and delivery;
-- dashboards distinguish public requests from internal/log events;
-- all scenarios are covered by repeatable staging tests and runbooks.
+- [ ] automatic retry traffic stays below 5% during overload — *mechanism
+      deployed (`x-should-retry` / `Retry-After`), unmeasured*
+- [ ] duplicate logical recalls do not create duplicate searches — *needs P0-2;
+      the server-side `leaseKey` is inert without a client recall id*
+- [ ] CPU terminations are zero in incident replay and negligible in production
+      — *expected to follow from the database and retry fixes, not from a CPU
+      setting; unmeasured*
+- [ ] Neon exhaustion fails fast as classified 503 without a retry storm —
+      *mechanism deployed, not yet exercised against a real exhaustion*
+- [ ] rejected searches avoid expensive dependency work — *deployed; rejection
+      is 1 DO call by construction, unmeasured under load*
+- [ ] concurrency slots are idempotent and self-reclaiming — *tokenized release
+      and TTL reclaim deployed; idempotency needs P0-2*
+- [ ] pathological queries degrade safely — *two defenses deployed, unmeasured*
+- [ ] space deletion cannot create ingestion FK failures — *needs P1-4*
+- [ ] client timeout behavior is documented and measured — *server deadline
+      documented and changed; client-side measurement outstanding*
+- [ ] scheduled transient failures recover within their bounded retry policy —
+      *needs P1-6*
+- [ ] a single event ID proves ingestion, triage, outbox enqueue, and delivery —
+      *needs P2-1*
+- [ ] dashboards distinguish public requests from internal/log events — *needs
+      P2-2, which needs the Analytics Engine binding*
+- [ ] all scenarios are covered by repeatable staging tests and runbooks —
+      *needs P2-5 and P2-4*
 
