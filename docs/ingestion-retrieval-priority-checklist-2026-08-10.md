@@ -125,6 +125,40 @@ unverified against a replayed failure shape, which is what P0-D covers.
 > The API Worker is unaffected either way; it never writes the column and its
 > retrieval projection deliberately excludes it.
 
+### Ranking-neutrality of the 2026-08-11 retrieval release, measured on production
+
+P1-C, P1-D and P1-E all claim to be ranking-neutral, and their differential unit
+tests prove that on fixtures. `scripts/search-snapshot.ts` closed the loop on
+real production data over six queries returning ten candidates each.
+
+| Comparison | Candidate IDs | Source lengths | Scores |
+|---|---|---|---|
+| before → after (**the deploy**) | identical 6/6 | identical 6/6 | drift ~1e-6 on 4/6 |
+| after → after2 (**same code, control**) | identical 6/6 | identical 6/6 | drift ~1e-6 on 5/6 |
+
+The first row alone would have been ambiguous. The control run is what makes it
+conclusive: **identical code produces the same drift signature**, so the drift
+is not attributable to the release.
+
+The cause is inherent and expected, not a defect. `computeRecency` and
+`computePersistence` both take `now = new Date()`, and `touchMemories` increments
+`access_frequency` on every search — which feeds persistence. Scores are
+therefore a function of wall-clock and of prior reads, and cannot be bit-stable
+across two runs minutes apart.
+
+What this does establish, and what the checklist actually requires:
+
+- candidate **membership and ordering** are unchanged;
+- `include_source=true` returns **the same source strings** (lengths matched
+  exactly on every candidate);
+- no query changed result count, and none errored.
+
+**Caveat:** six queries against one production space is a smoke test, not the
+gold-set evaluation described in P0-A. It can prove a gross regression absent; it
+cannot certify recall quality. Latency moved 2479 ms → 1452 ms p50 across the
+deploy, but the control run then measured 1980 ms on unchanged code, so that
+number is network and cold-start noise and **no latency claim is made**.
+
 The 2026-08-11 release is additive with no schema change: a purge predicate
 correction, a queue producer binding plus an optional message field, an optional
 request field, and a cron-internal retry. Staging (`staginghono.crosmos.dev`)
