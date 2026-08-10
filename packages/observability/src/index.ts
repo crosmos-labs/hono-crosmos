@@ -114,6 +114,7 @@ const FIELD_ALLOWLIST = new Set([
   'query_length',
   'queue_delay_ms',
   'reason',
+  'recall_id',
   'remaining_chunk_count',
   'remaining_source_count',
   'request_id',

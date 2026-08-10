@@ -487,7 +487,7 @@ idempotent, but a brief connection error defers all work until the next cron.
 - Deterministic errors receive one attempt.
 - Logs and metrics include sweep name, attempt count, and final outcome.
 
-### [ ] P1-G. Finish repository-side stable recall identity
+### [x] P1-G. Finish repository-side stable recall identity
 
 **Why**
 
@@ -513,6 +513,36 @@ therefore still consume multiple concurrency slots.
 
 - `[external]` SDKs generate a stable ID per logical recall, reuse it for
   retries, coalesce identical in-flight searches, and cancel stale calls.
+
+**Implemented 2026-08-11**
+
+- `recall_id` added to `SearchRequestSchema` as an optional UUID with OpenAPI
+  documentation. Omitting it leaves every existing default and behavior
+  unchanged, so generated clients stay compatible.
+- `ConcurrencyLimiter.acquire` takes an optional fourth `leaseKey` argument.
+  Only `DoConcurrencyLimiter` forwards it — the KV and no-op limiters accept and
+  ignore it, and the DO wire payload omits the field entirely when no id is
+  supplied, so an older Durable Object deployment sees exactly the request it
+  saw before.
+- The search route passes `body.recall_id` into the gate-1 acquire and adds it
+  to the structured logger base fields. It is deliberately **not** a metric tag:
+  it is caller-supplied and unbounded in cardinality.
+- `apps/api/tests/concurrency-lease.test.ts` — 11 cases: schema optionality and
+  UUID validation, unchanged defaults, same-id slot reuse, distinct-id
+  independence, per-user namespacing, token-owned release, null-token release,
+  and KV/no-op compatibility. This is also the API worker's first test suite;
+  `bun test`, `typecheck:test`, and a `turbo test` task were added alongside it.
+
+**Residual risk to resolve before the SDKs adopt this**
+
+Reuse is keyed only on liveness, so a client that sends one `recall_id` for many
+genuinely concurrent distinct searches shares a single slot and effectively
+bypasses the per-user concurrency cap. The blast radius is bounded — the leases
+are namespaced per user, and the separate global AI throttle still caps real
+provider fan-out — but the per-user gate is weaker for a caller that misuses the
+field. Deliberately not "fixed" here by inventing a reuse ceiling, because that
+would change already-reviewed Durable Object semantics and could shed a
+legitimate rapid retry. Decide the policy when the SDK work lands.
 
 ### [ ] P1-H. Persist extracted speaker attribution
 
