@@ -181,6 +181,10 @@ searchRoutes.openapi(
         request_id: requestId,
         org_id: orgId,
         user_id: userId,
+        // Structured logs only. Never a metric tag: this is caller-supplied and
+        // unbounded in cardinality, so tagging on it would blow up the metrics
+        // sink. Correlates retries of one logical recall across request ids.
+        ...(body.recall_id ? { recall_id: body.recall_id } : {}),
       },
     });
     logger.info('retrieval.request_started', {
@@ -228,6 +232,13 @@ searchRoutes.openapi(
           userKey,
           limits.retrievalMaxConcurrentPerUser,
           limits.retrievalSlotTtlSeconds,
+          // Optional caller-supplied identity for one LOGICAL recall. Retries of
+          // the same search reuse a single slot rather than each consuming one —
+          // during the 2026-07-25 incident, retried copies of the same recall
+          // competing for the very slot they were waiting on were 52.98% of all
+          // search invocations. Omitted by clients that don't send it, which
+          // leaves behavior exactly as before.
+          body.recall_id,
         ),
     );
     if (!lease.acquired) {
