@@ -479,53 +479,9 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       token_count: llm.totalTokens - llmTokensBeforeMemory,
     });
 
-    // Dedup-hint guardrail. Extraction also performs novelty dedup against the
-    // Stage-1 `existingMemories` hint, and that judgment is borderline and
-    // nondeterministic: a chunk carrying a genuinely new fact about an entity we
-    // already know (e.g. a new count/score/date) is sometimes wrongly judged
-    // "already captured" and dropped. Because we return below on an empty result
-    // — before graph/entity/edge — that single misjudgment loses the WHOLE source
-    // silently while it still reports `completed`. So when the hint was non-empty
-    // AND nothing came back, retry extraction ONCE with the hint removed. This is
-    // exactly the silent-loss signature and is rare, so the extra call is bounded;
-    // re-extracting an occasional true duplicate (which downstream soft-dedup
-    // tolerates) is far cheaper than dropping new information, and content that
-    // genuinely has no fact still returns empty via the prompt's STRICT EXCLUSIONS.
-    if (rawMemories.length === 0 && (existingMemories?.length ?? 0) > 0) {
-      logger?.warn('ingestion.extraction_empty_with_dedup_hint', {
-        stage: 'memory_extraction',
-        sequence,
-        existing_memory_count: existingMemories!.length,
-      });
-      const retryStart = performance.now();
-      const llmTokensBeforeRetry = llm.totalTokens;
-      try {
-        rawMemories = await extractMemories(llm, {
-          content: chunkContent,
-          referenceTime,
-          context: chunkContext,
-          existingMemories: [],
-        }, input.modelOverride);
-      } catch (err) {
-        logger?.error('llm.request_failed', {
-          stage: 'memory_extraction_retry',
-          sequence,
-          model: input.modelOverride ?? llm.defaultModel,
-          duration_ms: durationMs(retryStart),
-          token_count: llm.totalTokens - llmTokensBeforeRetry,
-          ...failureFields(err),
-        }, err);
-        throw err;
-      }
-      logger?.info('llm.request_completed', {
-        stage: 'memory_extraction_retry',
-        sequence,
-        model: input.modelOverride ?? llm.defaultModel,
-        duration_ms: durationMs(retryStart),
-        memory_count: rawMemories.length,
-        token_count: llm.totalTokens - llmTokensBeforeRetry,
-      });
-    }
+    // Empty is a valid terminal extraction result. In particular, when the
+    // existing-memory hint already covers the content, retrying without that
+    // hint would bypass dedup and persist the same fact again.
     if (rawMemories.length === 0) return [];
 
     // Stage 3 — graph extraction (non-fatal). Matches Python's
