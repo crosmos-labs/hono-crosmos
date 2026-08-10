@@ -40,8 +40,8 @@ are recorded as dependencies, not as repository-owned completion checkboxes.
 > production database.
 >
 > **Schema state as of 2026-08-11:** the only schema change proposed here that
-> has been applied anywhere is `memories.speaker_role` (migration `0002`), on the
-> **staging Neon branch only**; production is unchanged. The `P1-A` changes
+> has been applied is `memories.speaker_role` (migration `0002`), now on **both
+> the staging branch and production**. The `P1-A` changes
 > (`deleted_at`, the partial unique index, dropping the `daily_usage` FK) have
 > not been written or applied.
 
@@ -108,22 +108,39 @@ unverified against a replayed failure shape, which is what P0-D covers.
 | 2026-08-11 | P0-B, P0-C, P1-G, P1-F | `c8d8e493` | `5d000dfe` |
 | 2026-08-11 | P1-C, P1-D, P1-E (retrieval) | — | `940224a3` |
 
-> ### ⚠ Do not deploy the Ingestion Worker until migration `0002` is applied to production
->
-> The commit that persists `speaker_role` (`2775cfd`) is **committed but not
-> deployed**. Production's Ingestion Worker is still `c8d8e493`, which predates
-> it and never mentions the column — which is why production ingestion is
-> currently fine.
->
-> Deploying the Ingestion Worker before the production `ALTER TABLE` would make
-> **every memory insert fail** on an unknown column, failing every ingestion job.
-> This is the concrete instance of the mixed-deployment rule already stated
-> below: *apply additive columns before deploying code whose Drizzle schema
-> selects them.*
->
-> Correct order: apply `0002` to production → then deploy the Ingestion Worker.
-> The API Worker is unaffected either way; it never writes the column and its
-> retrieval projection deliberately excludes it.
+### Migration `0002` applied to production 2026-08-11 — resolved
+
+The ordering hazard previously recorded here is closed. Sequence actually
+followed:
+
+1. Pre-flight on production: 4,410 memory rows / 3,256 kB, column absent, **zero**
+   active ingestion jobs, **zero** long-running transactions.
+2. Column diff of production against the migration-built database: the *only*
+   difference was `memories.speaker_role` — i.e. production matched
+   `packages/db/migrations` exactly apart from the statement about to run.
+3. `ALTER TABLE memories ADD COLUMN speaker_role varchar(16)` inside a
+   transaction with `lock_timeout = 3s`, `statement_timeout = 30s`.
+4. Post-apply: column nullable, no default, all 4,410 existing rows null;
+   column diff now **identical at 223 columns**; `/health` 200.
+5. Only then deployed the Ingestion Worker (`7d89baed`).
+
+**End-to-end confirmation on production.** Two conversations were ingested and
+the persisted values inspected directly in Postgres:
+
+| Fact | `speaker_role` |
+|---|---|
+| "User's sister Priya is allergic to shellfish." | `user` |
+| "The restaurant Blue Harbor has a dedicated shellfish-free kitchen." | `assistant` |
+| "User booked Blue Harbor for Priya's birthday on 2026-03-03" | `user` |
+
+The **first** test ingestion, issued seconds after the Worker deploy, wrote
+three nulls. That was a deploy-propagation race — the job was claimed by an
+isolate still running the previous version — not a defect. Ruled out by
+confirming `speakerRole: f.speakerRole` is present in the deployed bundle, that
+no fact was dropped for `invalid_speaker_role` (which would have meant a bad
+value rather than an absent one), and that the next ingestion two minutes later
+attributed every fact correctly. Worth remembering when verifying any Worker
+change immediately after deploying it.
 
 ### Ranking-neutrality of the 2026-08-11 retrieval release, measured on production
 
@@ -869,10 +886,11 @@ a full `information_schema` column diff against the migration-built database is
 **identical at 223 columns**, confirming `packages/db/migrations` is a faithful
 description of the production schema.
 
-**Production: not yet applied.** Awaiting the production Neon URL. The ordering
-is the safe one regardless: the column is additive and nullable, so it must be
-applied BEFORE the Worker build that writes it, and the currently deployed
-Worker does not mention the column at all.
+**Applied to production 2026-08-11**, then the Ingestion Worker was deployed —
+in that order, because the column is additive and nullable and the Worker build
+that writes it must not run first. Verified end to end on production: ingested
+conversations now carry `user`/`assistant` attribution. Full record in the
+deployment log above.
 
 ## P2 — Benchmark-gated follow-up
 
@@ -972,7 +990,7 @@ must not be applied under the assumption that no users or jobs are active.
 | `memory_spaces.deleted_at` | Add nullable column and deletion lookup index | None; existing null rows are active | Deploy tombstone-aware readers and the worker fence before enabling soft deletion. |
 | Active-space name uniqueness | Replace the current constraint with a partial unique index | None | Create the partial index concurrently before dropping the old constraint; until then, a deleted name cannot be reused. |
 | Retained `daily_usage` | Drop only `daily_usage_space_id_memory_spaces_id_fk` | None | Historical org usage will intentionally stop decreasing when a space is deleted. Document this billing semantic. |
-| Persisted `speaker_role` | Add nullable memory column — `0002_opposite_doctor_spectrum.sql`, **applied to staging 2026-08-11**, production pending | None | Historical rows stay null; do not re-run extraction merely to populate it. |
+| Persisted `speaker_role` | Add nullable memory column — `0002_opposite_doctor_spectrum.sql`, **applied to staging and production 2026-08-11** | None | Historical rows stay null; do not re-run extraction merely to populate it. |
 | Optional `recall_id` | None | None | Requests that omit it must follow the current lease behavior. |
 | Deadline propagation | None | None | Abort handling must not turn a request that completes inside six seconds into a premature failure. |
 | Provenance/full-source split | None | None | `source` must remain byte-identical and `session_id` must still load before diverse selection. |
