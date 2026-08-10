@@ -511,7 +511,7 @@ shape as the untimed ingestion LLM fetch. It now has a 10 s safety bound.
 - Both packages gained a `bun test` setup, so the workspace suite is now
   runtime + ai + api + ingestion (121 tests).
 
-### [ ] P1-D. Split candidate provenance from full source content
+### [x] P1-D. Split candidate provenance from full source content
 
 **Why**
 
@@ -542,6 +542,45 @@ However, source metadata cannot simply move after selection because
 - Candidate/source visibility scoping remains unchanged.
 - Staging p95 must not regress by more than 5%; otherwise keep the old one-query
   path until the second round-trip can be overlapped safely.
+
+**Implemented 2026-08-11**
+
+- `attachSourceText` is now `attachCandidateProvenance`: same join, same
+  ordering, same first-wins rule, but it selects only source id, uuid and meta.
+  It still runs over every fused candidate, because `session_id` drives
+  session-diverse selection and genuinely cannot be deferred.
+- New `attachSourceContent` runs after selection, over the distinct source ids
+  in the final top-K only, and only when `include_source` is true. It is a small
+  by-id read carrying the same defense-in-depth scope predicate, so a source in
+  another space or one the caller cannot read is still excluded.
+- `RetrievalQuery.includeSource` is optional and defaults to true, so callers
+  that omit it are unaffected. The public `source` value remains the complete
+  original source — not chunk content.
+- Both attaches stay non-fatal: a failure leaves `source: null` rather than
+  failing the search, matching the previous behaviour.
+- `sourceChunk` was left named as-is. Renaming is allowed by this item only if
+  mechanical, and it spans the types, mapper, candidates and route — worth doing
+  on its own rather than inside a behavioural change.
+
+**Verification**
+
+`apps/api/tests/source-provenance.pg.test.ts` — 10 cases running the ORIGINAL
+combined query and the split path over the same fixture and comparing
+`sourceId`, `sourceUuid`, `sessionId` and `sourceChunk`:
+
+- byte-identical source strings, including unicode, quotes, newlines, tabs, emoji;
+- the deterministic first-source rule (lowest source id) with links inserted in
+  the opposite order, so insertion order cannot be what decides it;
+- lowest chunk sequence within one source;
+- null session id staying null;
+- a memory with no source link keeping every field null;
+- an invisible source leaking neither text nor identity;
+- 12 candidates across shared and distinct sources;
+- provenance alone leaving `sourceChunk` null — the point of the split.
+
+**Still outstanding:** the staging p95 comparison in the acceptance gate. There
+is no staging environment with representative data right now, so the latency
+half of this gate is unmeasured; correctness equivalence is proven.
 
 ### [x] P1-E. Push exact retrieval bounds and projections into SQL
 

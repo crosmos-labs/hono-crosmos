@@ -477,6 +477,10 @@ searchRoutes.openapi(
             rerank: body.rerank,
             graph: body.graph,
             diversify: body.diversify,
+            // Lets retrieval skip the post-selection source-content read when
+            // the response will not include it. Previously the full raw source
+            // was loaded for every fused candidate regardless.
+            includeSource: body.include_source,
           },
           scope,
           deps,

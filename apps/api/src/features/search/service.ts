@@ -14,7 +14,7 @@ import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
 import { durationMs, type Logger } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { attachSourceText } from './candidates';
+import { attachCandidateProvenance, attachSourceContent } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
@@ -341,27 +341,31 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     candidate_count: candidateLookup.size,
   });
 
-  // Stage 5 — attach source text for the top candidates, CONCURRENTLY with the
-  // Stage-6 reranker below. The two are independent: the reranker scores each
-  // candidate's `content`, while attach only fills the `source`/`sourceId`
-  // fields that are first read at Stage 8. Starting it here (instead of awaiting
-  // before rerank) hides the ~120ms citation round-trip behind the ~280ms
-  // rerank. Non-fatal and never rejects: on failure candidates keep source=null
-  // (worker.md error-parity table). Awaited just before Stage 8.
+  // Stage 5 — attach candidate PROVENANCE (source id/uuid + session id) for the
+  // fused candidates, CONCURRENTLY with the Stage-6 reranker below. The two are
+  // independent: the reranker scores each candidate's `content`, while this only
+  // fills fields first read at Stage 8 — and `sessionId`, which session-diverse
+  // selection needs, so it cannot be deferred past selection. Starting it here
+  // (instead of awaiting before rerank) hides the citation round-trip behind the
+  // rerank. Non-fatal and never rejects: on failure candidates keep
+  // source=null (worker.md error-parity table). Awaited just before Stage 8.
+  //
+  // Full source TEXT is deliberately not loaded here — see `attachSourceContent`,
+  // which runs after selection over only the returned candidates.
   let attachPromise: Promise<void> = Promise.resolve();
   if (candidateLookup.size > 0) {
     const attachSourceStart = performance.now();
-    attachPromise = attachSourceText(db, scope, candidateLookup).then(
+    attachPromise = attachCandidateProvenance(db, scope, candidateLookup).then(
       () => {
         logger?.info('retrieval.stage_completed', {
-          stage: 'source_text_attach',
+          stage: 'source_provenance_attach',
           duration_ms: durationMs(attachSourceStart),
           candidate_count: candidateLookup.size,
         });
       },
-      (err) => {
+      (err: unknown) => {
         logger?.warn('retrieval.source_text_attach_failed', {
-          stage: 'source_text_attach',
+          stage: 'source_provenance_attach',
           duration_ms: durationMs(attachSourceStart),
           error_category: 'internal',
           dependency: 'database',
@@ -555,6 +559,31 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     result_count: top.length,
     top_k: query.topK,
   });
+
+  // Stage 9.5 — full source text for the SELECTED candidates only, and only if
+  // the caller asked for it. Before this split the raw `sources.content` was
+  // pulled for every fused candidate, of which at most `topK` are returned.
+  // Bounded by the distinct sources in the final result, so it is a small
+  // by-id read. Non-fatal, matching the provenance attach: a failure leaves
+  // `source: null` rather than failing the search.
+  if (query.includeSource !== false && top.length > 0) {
+    const sourceContentStart = performance.now();
+    try {
+      await attachSourceContent(db, scope, top);
+      logger?.info('retrieval.stage_completed', {
+        stage: 'source_content_load',
+        duration_ms: durationMs(sourceContentStart),
+        result_count: top.length,
+      });
+    } catch (err) {
+      logger?.warn('retrieval.source_text_attach_failed', {
+        stage: 'source_content_load',
+        duration_ms: durationMs(sourceContentStart),
+        error_category: 'internal',
+        dependency: 'database',
+      }, err);
+    }
+  }
 
   // Stage 10 — touch (access-frequency bookkeeping) is a write side-effect. It
   // is intentionally NOT done here: the route schedules it off the critical

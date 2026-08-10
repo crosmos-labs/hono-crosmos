@@ -202,7 +202,7 @@ export async function getEntityIdsLinkedToVisibleMemories(
  * `source` field. A bare `orgId: number` is still accepted (legacy callers) but
  * only applies org scoping — prefer passing the scope.
  */
-export async function attachSourceText(
+export async function attachCandidateProvenance(
   db: Database,
   scopeOrOrgId: TenantScope | number,
   candidateLookup: Map<number, RankedCandidate>,
@@ -223,9 +223,14 @@ export async function attachSourceText(
   }
 
   const rows = await db
+    // Deliberately NOT `sources.content`. This runs for every fused candidate
+    // (~hundreds), while at most `topK` of them are ever returned — so pulling
+    // the full raw source text here transferred the overwhelming majority of it
+    // for nothing. `session_id` cannot simply move after selection, though:
+    // session-diverse selection reads it, so the lightweight identity columns
+    // must still load up front. Content is fetched after selection instead.
     .select({
       memoryId: chunkMemories.memoryId,
-      content: sources.content,
       sourceId: sources.id,
       sourceUuid: sources.uuid,
       sourceMeta: sources.meta,
@@ -242,7 +247,6 @@ export async function attachSourceText(
     seen.add(row.memoryId);
     const candidate = candidateLookup.get(row.memoryId);
     if (candidate) {
-      candidate.sourceChunk = row.content;
       candidate.sourceId = row.sourceId;
       candidate.sourceUuid = row.sourceUuid;
       // session_id lives in the source's meta (set by the conversations route);
@@ -250,6 +254,61 @@ export async function attachSourceText(
       const meta = row.sourceMeta as Record<string, unknown> | null;
       candidate.sessionId = typeof meta?.session_id === 'string' ? meta.session_id : null;
     }
+  }
+}
+
+/**
+ * Load full source text for the FINAL selected candidates only.
+ *
+ * The counterpart to `attachCandidateProvenance`: that runs over every fused
+ * candidate and loads only identity columns; this runs after selection, over the
+ * handful of distinct sources actually being returned, and only when the caller
+ * asked for `include_source`. The public `source` value stays the complete
+ * original source text — identical bytes to before, just fetched later and for
+ * far fewer rows.
+ *
+ * Scoping is the same defense-in-depth join predicate as the provenance query,
+ * so a source in another space or a private source the caller cannot read is
+ * still excluded. Candidates whose source is filtered out simply keep
+ * `sourceChunk = null`, exactly as they would have before.
+ *
+ * Non-fatal by contract: callers treat a failure as "no source text", matching
+ * the existing behaviour of the combined query.
+ */
+export async function attachSourceContent(
+  db: Database,
+  scopeOrOrgId: TenantScope | number,
+  // Structural, not `RankedCandidate`: this runs on the post-selection
+  // `CandidateMemory[]`, and these are the only two fields it touches.
+  candidates: Array<{ sourceId: number | null; sourceChunk: string | null }>,
+): Promise<void> {
+  const sourceIds = [...new Set(
+    candidates
+      .map((c) => c.sourceId)
+      .filter((id): id is number => id !== null),
+  )];
+  if (sourceIds.length === 0) return;
+
+  const conditions: (SQL | undefined)[] = [inArray(sources.id, sourceIds)];
+  if (typeof scopeOrOrgId === 'number') {
+    conditions.push(eq(sources.orgId, scopeOrOrgId));
+  } else {
+    conditions.push(
+      eq(sources.orgId, scopeOrOrgId.orgId),
+      eq(sources.spaceId, scopeOrOrgId.spaceId),
+      sourceVisibilityClause(scopeOrOrgId),
+    );
+  }
+
+  const rows = await db
+    .select({ id: sources.id, content: sources.content })
+    .from(sources)
+    .where(and(...conditions));
+
+  const contentById = new Map(rows.map((r) => [r.id, r.content]));
+  for (const candidate of candidates) {
+    if (candidate.sourceId === null) continue;
+    candidate.sourceChunk = contentById.get(candidate.sourceId) ?? null;
   }
 }
 
