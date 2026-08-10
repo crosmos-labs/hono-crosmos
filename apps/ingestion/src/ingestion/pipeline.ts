@@ -214,7 +214,7 @@ function failureFields(err: unknown): {
  * their vectors) are intentionally left intact. On a clean first attempt the
  * source has no chunks yet, so this is a single empty indexed SELECT.
  */
-async function purgeSourceArtifacts(
+export async function purgeSourceArtifacts(
   db: Database,
   vectorStore: VectorStore,
   sourceId: number,
@@ -259,7 +259,14 @@ async function purgeSourceArtifacts(
     await db.delete(memoriesTable).where(inArray(memoriesTable.id, memoryIds));
   }
   // Remove the chunk(s) themselves (cascades any remaining chunk_memories).
-  await db.delete(chunks).where(eq(chunks.sourceId, sourceId));
+  // Scoped to the EXACT ids the query above collected — NOT `sourceId` — so a
+  // resumed batch (`minSequence > 0`) erases only the partially-written tail.
+  // Deleting by `sourceId` here would drop the chunks committed BEFORE the
+  // checkpoint while leaving their memories in place, cascading away the
+  // `chunk_memories` citations that tie those memories to their evidence (and
+  // leaving the memories unattributable — a later purge can no longer discover
+  // them, so they'd be orphaned forever).
+  await db.delete(chunks).where(inArray(chunks.id, chunkIds));
   return memoryIds.length;
 }
 
