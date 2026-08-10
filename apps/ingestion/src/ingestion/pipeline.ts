@@ -666,6 +666,12 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
             visibility,
             content: f.content,
             memoryType: f.memoryType,
+            // Extraction has always produced a speaker role, and the cross-chunk
+            // dedup key has always included it, but persistence used to drop it
+            // — so the signal was computed and discarded on every ingest.
+            // `normalizeFacts` has already validated it to one of user /
+            // assistant / system / tool, or null when unattributed.
+            speakerRole: f.speakerRole,
             // Vectors are stored in the configured vector store. For the pg
             // backend that IS this column; for vectorize the column stays null
             // and the vector is upserted to the index after commit.
