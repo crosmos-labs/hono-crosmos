@@ -76,6 +76,30 @@ export const JOB_LEASE_MS = STUCK_JOB_TIMEOUT_MINUTES * 60_000;
 // `max_retries` in wrangler.toml so the poll window outlasts JOB_LEASE_MS.
 export const BACKSTOP_RETRY_DELAY_SECONDS = 60;
 
+// Continuations vs failure attempts (P0-C).
+//
+// `max_retries = 15` on the queue consumer is a FAILURE budget: it exists so a
+// job whose RPC run died silently is re-polled until its lease expires, and so a
+// persistently-broken job eventually reaches the DLQ. Healthy forward progress
+// must NOT spend it. A large source deliberately processes
+// MAX_CHUNKS_PER_INVOCATION chunks per invocation and asks to be resumed — with
+// a shared budget, a valid 200-chunk source exhausts 15 deliveries and dead-
+// letters without a single processing failure.
+//
+// So a run that ADVANCED ITS CHECKPOINT publishes a fresh continuation message
+// (attempt counter back to 1) and acks the current delivery, while transient
+// failures, unhandled errors, and in-flight polling stay on the delivery retry
+// budget. `continuation_count` rides along purely as a bound + observability.
+//
+// The real loop guard is the no-progress check in the consumer: a continuation
+// that processes zero chunks and still asks to continue is refused and falls
+// back to the delivery retry budget, so it becomes visible via the DLQ instead
+// of spinning forever. This ceiling is the belt-and-braces backstop, sized off
+// the legitimate worst case: MAX_SOURCES_PER_JOB (10, api-side) sources of
+// MAX_CHUNKS_PER_SOURCE (500) chunks at MAX_CHUNKS_PER_INVOCATION (8) per
+// invocation = 625, plus slack for per-source batch boundaries.
+export const MAX_JOB_CONTINUATIONS = 800;
+
 // Session ingestion
 export const SESSION_SEGMENT_SIZE = 4;
 export const SESSION_LOOKBACK_WINDOW = 4;

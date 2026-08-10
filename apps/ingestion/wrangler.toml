@@ -46,6 +46,16 @@ binding = "HYPERDRIVE"
 id = "f5a4b0b3c894450f9ad332221a92ff5a"
 localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+[[queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs-dev"
+
 # Queue consumer: one ingestion job per invocation. A job may carry many
 # source_ids, but each job is its own queue message; see .codex/pipelines.md.
 [[queues.consumers]]
@@ -178,6 +188,16 @@ binding = "HYPERDRIVE"
 # us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+[[env.production.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs"
+
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
 max_batch_size = 1
@@ -260,6 +280,16 @@ index_name = "crosmos-entities-dev"
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
 id = "930052d5e0dc40c8911417c7ef3e8c13"
+
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+[[env.staging.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs-staging"
 
 [[env.staging.queues.consumers]]
 queue = "ingestion-jobs-staging"

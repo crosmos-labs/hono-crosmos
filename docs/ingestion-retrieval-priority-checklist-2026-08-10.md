@@ -185,7 +185,7 @@ artifact test fails; do not compensate by rebuilding unrelated source data.
   is still outstanding: this fix prevents future damage but cannot recreate
   citation links already removed.
 
-### [ ] P0-C. Separate progress continuations from failure attempts
+### [x] P0-C. Separate progress continuations from failure attempts
 
 **Why**
 
@@ -217,6 +217,44 @@ reach the DLQ without a processing failure.
 - A transient provider failure still consumes the configured delivery retry
   budget and eventually reaches visible DLQ handling if it never recovers.
 - Failure to publish a continuation leaves the current message retryable.
+
+**Implemented 2026-08-11**
+
+- `INGESTION_QUEUE` producer binding added to the ingestion Worker for dev,
+  staging, and production — same queue it consumes, no new queue or broker.
+  Verified with `wrangler deploy --dry-run --env production`.
+- `IngestionJobMessage.continuation_count` is new, optional, defaulted to zero,
+  so in-flight messages produced before this change stay valid.
+- `processIngestion` now returns `IngestionRunResult { outcome, chunksProcessed }`.
+  `chunksProcessed` is the progress evidence the consumer needs; every chunk it
+  counts corresponds to a completed source or an advanced
+  `ingest_next_sequence` checkpoint.
+- `handleIngestionDelivery` splits the outcomes: `requeue_incomplete` publishes
+  a fresh continuation (same job/correlation IDs, refreshed `enqueued_at_ms`,
+  incremented counter) and then acks; `retry_transient`, `skipped_in_flight`,
+  and unhandled errors stay on the delivery retry budget.
+- Publish happens strictly before ack, and a publish failure re-queues the
+  current delivery, so there is never a window without a durable copy. A
+  duplicate copy is harmless — the atomic job claim collapses it.
+- Continuations are refused (and demoted to the retry budget, so the DLQ makes
+  them visible) when the run advanced nothing, when `MAX_JOB_CONTINUATIONS`
+  (800) is reached, or when the producer binding is absent.
+- The RPC fast path deliberately publishes nothing; its original durable queue
+  message still claims the pending job.
+- `apps/ingestion/tests/continuation.test.ts` — 16 cases including a 25-window
+  run (well past the 15-delivery failure budget), publish failure, no-progress
+  refusal, ceiling enforcement, and missing-binding fallback.
+- Also widened the `@crosmos/observability` field allowlist from 61 to 102
+  entries. `chunks_processed`, `remaining_chunk_count`, `from_sequence`,
+  `transient_source_count` and ~35 others were already being logged at call
+  sites and silently stripped before emission, which would have made these
+  continuation events unreadable in production. All added fields are
+  identifiers, counts, or bounded enums.
+
+**Not yet done**
+
+- Continuation metrics (`P1-B`) still require the Analytics Engine bindings.
+- Staging/production replay of a >15-window source is pending deployment.
 
 ### [ ] P0-D. Verify the deployed incident fixes
 
