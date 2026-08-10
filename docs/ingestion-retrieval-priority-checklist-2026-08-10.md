@@ -464,7 +464,7 @@ memory costs.
 - Keyword candidate IDs, rank positions, normalized scores, and hydrated values
   are identical.
 
-### [ ] P1-F. Retry transient scheduled-job DB failures safely
+### [x] P1-F. Retry transient scheduled-job DB failures safely
 
 **Why**
 
@@ -486,6 +486,32 @@ idempotent, but a brief connection error defers all work until the next cron.
   effects.
 - Deterministic errors receive one attempt.
 - Logs and metrics include sweep name, attempt count, and final outcome.
+
+**Implemented 2026-08-11**
+
+- `apps/api/src/lib/sweep-retry.ts` — one shared `runSweep` helper, three total
+  attempts, full-jitter exponential backoff from a 250 ms base.
+- Retry classification reuses the existing `classifyDependencyError` rather than
+  inventing a second taxonomy. It already draws exactly the needed line:
+  `deterministic: false` (dropped/reset connection) retries;
+  `deterministic: true` (provider capacity exhausted until a stated renewal
+  time) does not. Unclassified errors — constraint violations, invalid input,
+  ordinary bugs — also get one attempt, so a defect is never disguised as
+  flakiness.
+- `runSweep` never throws, so each of the four sweeps keeps its own independent
+  budget and an exhausted one cannot block the next.
+- All four cron sweeps (`jobs_reap`, `ingestion_redrive`,
+  `billing_reconciliation`, `maintenance_cleanup`) go through it. Logs carry
+  `sweep`, `attempts`, and a `reason` separating `retry_budget_exhausted` from
+  `not_retryable`; a `cron_sweep` metric carries name, outcome, attempts, and
+  duration.
+- Jitter matters even for a single-instance cron: all four sweeps can be
+  recovering from the same dependency blip, and lockstep retries would hit it as
+  a thundering herd.
+- `apps/api/tests/sweep-retry.test.ts` — 11 cases covering
+  transient-then-success (asserting the body is not double-applied), budget
+  exhaustion, capacity and unclassified single-attempt paths, sweep isolation,
+  silence on a clean first attempt, metric shape, and the backoff curve.
 
 ### [x] P1-G. Finish repository-side stable recall identity
 
