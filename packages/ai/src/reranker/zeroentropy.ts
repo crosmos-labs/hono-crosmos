@@ -1,6 +1,14 @@
+import { isAbortError, withDeadline } from '@crosmos/runtime';
 import type { RerankOptions, RerankResult, Reranker } from './port';
 
 const ZEROENTROPY_RERANK_URL = 'https://api.zeroentropy.dev/v1/models/rerank';
+
+/**
+ * Hung-provider bound. Generous relative to the 6s retrieval deadline (the
+ * caller's signal normally fires first); this exists so a reranker call made
+ * OUTSIDE a request deadline still cannot pin an isolate forever.
+ */
+const RERANK_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * ZeroEntropy `zerank-2`. Matches the retrieval reranker called out in
@@ -40,14 +48,35 @@ export class ZeroEntropyReranker implements Reranker {
     };
     if (opts?.topK !== undefined) body.top_n = opts.topK;
 
-    const res = await fetch(ZEROENTROPY_RERANK_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(ZEROENTROPY_RERANK_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        // This call previously had NO timeout at all, so a wedged reranker could
+        // hang an isolate indefinitely — the same failure shape that stalled
+        // ingestion via the untimed LLM fetch. `withDeadline` bounds that AND
+        // honours the caller's request deadline.
+        signal: withDeadline(RERANK_REQUEST_TIMEOUT_MS, opts?.signal),
+      });
+    } catch (err) {
+      // A caller-deadline abort is not a provider fault; propagate unchanged so
+      // it is not logged or retried as one.
+      if (isAbortError(err)) throw err;
+      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+      throw new RerankerRequestError(
+        `ZeroEntropy rerank ${
+          isTimeout
+            ? `timed out after ${RERANK_REQUEST_TIMEOUT_MS}ms`
+            : `failed: ${err instanceof Error ? err.message : String(err)}`
+        }`,
+        504,
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new RerankerRequestError(

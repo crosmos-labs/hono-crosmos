@@ -1,3 +1,5 @@
+export * from './deadline';
+
 export interface BackgroundTasks {
   waitUntil(task: Promise<unknown>): void;
 }

@@ -42,12 +42,13 @@ export async function rerankCandidates(
   reranker: Reranker,
   query: string,
   candidates: RankedCandidate[],
+  signal?: AbortSignal,
 ): Promise<Map<number, number>> {
   const result = new Map<number, number>();
   if (candidates.length === 0) return result;
 
   const documents = candidates.map(formatDoc);
-  const results = await reranker.rerank(query, documents);
+  const results = await reranker.rerank(query, documents, { signal });
 
   for (const { index, score } of results) {
     const candidate = candidates[index];

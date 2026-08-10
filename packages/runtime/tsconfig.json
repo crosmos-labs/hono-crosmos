@@ -1,6 +1,13 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // `DOM` is here for the standard Web APIs this package's runtime primitives
+    // are built on — `AbortSignal`, `AbortSignal.any`, `DOMException` (see
+    // `deadline.ts`). It is deliberately NOT `@cloudflare/workers-types`: this
+    // package stays platform-neutral (it declares its own `QueueDelivery`,
+    // `Clock`, `BackgroundTasks` rather than importing Cloudflare's), and these
+    // are web standards available in every runtime it targets.
+    "lib": ["ES2022", "DOM"],
     "noEmit": true
   },
   "include": ["src/**/*.ts"]
