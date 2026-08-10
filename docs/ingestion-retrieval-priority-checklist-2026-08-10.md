@@ -84,6 +84,28 @@ older status snapshot says the same fixes were not yet deployed. The later
 document takes precedence for historical status, but the live behavior still
 needs the verification step below.
 
+**Resolved 2026-08-11.** `wrangler deployments list --env production` confirms
+the API Worker was serving version `34adf955`, deployed 2026-08-05T14:04Z, right
+up until this checklist's first deployment. The nine incident-fix commits are
+all dated 2026-08-05 and precede it, so the later document was correct and the
+older status snapshot was stale. The incident fixes *were* deployed; they remain
+unverified against a replayed failure shape, which is what P0-D covers.
+
+## Deployment log
+
+| Date | Change | Ingestion Worker | API Worker |
+|---|---|---|---|
+| 2026-08-05 | Incident remediation (9 fixes) | — | `34adf955` |
+| 2026-07-17 | Large-source batching | `494a755e` | — |
+| 2026-08-11 | P0-B, P0-C, P1-G, P1-F | `c8d8e493` | `5d000dfe` |
+
+The 2026-08-11 release is additive with no schema change: a purge predicate
+correction, a queue producer binding plus an optional message field, an optional
+request field, and a cron-internal retry. Staging (`staginghono.crosmos.dev`)
+was deployed first; production `/health` returned 200 afterwards and
+`SearchRequest.recall_id` is present in the served OpenAPI document while
+`required` remains `['query', 'space_id']`.
+
 ## Incident progress reconciliation
 
 | Status | Incident item | Repository truth as of 2026-08-10 | Remaining work |
