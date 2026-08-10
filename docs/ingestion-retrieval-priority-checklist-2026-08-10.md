@@ -27,8 +27,9 @@ are recorded as dependencies, not as repository-owned completion checkboxes.
 > **Implementation status (updated 2026-08-11).** Execution has started. Each
 > completed item carries an "Implemented" block recording what shipped, how it
 > was verified, and what its acceptance gate still does *not* cover. Done:
-> P0-B, P0-C, P0-D, P1-C, P1-D, P1-E, P1-F, P1-G, P1-H. Remaining: P0-A, P1-A,
-> P1-B (external prerequisite), and all of P2. Items marked `[x]` in the
+> P0-B, P0-C, P0-D, P1-C, P1-D, P1-E, P1-F, P1-G, P1-H. Partial: P1-A (shipped
+> and verified, but its finalizer is switched off). Remaining: P0-A, P1-B
+> (external prerequisite), and all of P2. Items marked `[x]` in the
 > incident-reconciliation table below are pre-existing remediations, not new
 > work — see each item's own block for what changed today.
 
@@ -39,11 +40,14 @@ are recorded as dependencies, not as repository-owned completion checkboxes.
 > lock-budget, verification, and rollback procedure appropriate for a live
 > production database.
 >
-> **Schema state as of 2026-08-11:** the only schema change proposed here that
-> has been applied is `memories.speaker_role` (migration `0002`), now on **both
-> the staging branch and production**. The `P1-A` changes
-> (`deleted_at`, the partial unique index, dropping the `daily_usage` FK) have
-> not been written or applied.
+> **Schema state as of 2026-08-11:** migrations `0002` (`memories.speaker_role`)
+> and `0003` (P1-A: `deleted_at`, the partial active-name unique index, dropping
+> the `daily_usage` space FK) are applied to **both the staging branch and
+> production**. A full column *and* index diff against a database built from
+> `packages/db/migrations` is identical (224 columns, 143 indexes) apart from one
+> cosmetic legacy name: production's `chunk_memories` primary key is still called
+> `source_memories_pkey` from an old table rename. Same index, same columns — but
+> a future migration must not reference that constraint by name.
 
 ## Decisions and non-regression rules
 
@@ -107,6 +111,8 @@ unverified against a replayed failure shape, which is what P0-D covers.
 | 2026-07-17 | Large-source batching | `494a755e` | — |
 | 2026-08-11 | P0-B, P0-C, P1-G, P1-F | `c8d8e493` | `5d000dfe` |
 | 2026-08-11 | P1-C, P1-D, P1-E (retrieval) | — | `940224a3` |
+| 2026-08-11 | P1-H `speaker_role` (migration `0002` first) | `7d89baed` | — |
+| 2026-08-11 | P1-A deferred deletion (migration `0003` first) | `7f781965` | `cbaf161c` |
 
 ### Migration `0002` applied to production 2026-08-11 — resolved
 
@@ -425,7 +431,7 @@ not be. This is the natural first alert once P1-B metrics are live.
 
 ## P1 — Reliability and quality-neutral simplification
 
-### [ ] P1-A. Implement deferred space deletion and retain usage history
+### [~] P1-A. Implement deferred space deletion and retain usage history
 
 **Why**
 
@@ -485,6 +491,62 @@ authoritative IDs have already disappeared.
 - Enable deferred deletion, then enable finalization.
 - Keep the hard-delete implementation available only as a short rollback path
   until all tombstones have been finalized successfully.
+
+**Implemented and deployed 2026-08-11 — finalizer still OFF**
+
+Steps 1–10 of the repository change are implemented. Migration `0003` is applied
+to staging **and** production; API `cbaf161c` and Ingestion `7f781965` are live.
+
+- `memory_spaces.deleted_at` plus a partial pending-deletion index.
+- Name uniqueness replaced by a partial unique index over active spaces.
+- `activeSpace()` applied to get-by-id/uuid/name, list, and the quota count; an
+  `includeDeleted` escape hatch exists for the deletion/finalization paths only.
+- `DELETE` sets the tombstone, then cancels jobs, then awaits cache
+  invalidation, then returns `204`. Tombstone-before-cancel is deliberate: the
+  cancel sweep then closes a bounded set rather than racing an open one.
+- `updateJobStatus` is compare-and-set on terminality, so a heartbeat can no
+  longer flip a cancelled job back to `processing` — and that refusal doubles as
+  the mid-source cancellation detector, giving a long multi-chunk source a
+  checkpoint it previously lacked.
+- Ingestion checks cancellation **and** space-active state between sources,
+  failing OPEN so a database blip cannot silently abandon a job.
+- `runSpaceFinalization` purges vectors in bounded pages before the parent row;
+  a vector failure leaves the tombstone for the next idempotent sweep.
+- `daily_usage_space_id_memory_spaces_id_fk` dropped.
+
+**Verified on live production** (test data created and fully removed afterwards;
+production ended at exactly its original 173 spaces / 0 tombstones):
+
+| Criterion | Result |
+|---|---|
+| `DELETE` returns 204 and row is retained with `deleted_at` | ✅ row 234 tombstoned |
+| Tombstoned space absent from `GET /spaces` and by uuid | ✅ 404, not listed |
+| Name reusable immediately, before cleanup | ✅ 201, two rows share the name |
+| `daily_usage` survives physical deletion | ✅ row retained |
+| Late usage write after the space row is gone | ✅ succeeds |
+| Uniqueness still enforced for active spaces | ✅ staging probe rejected |
+| Index/constraint parity vs migrations | ✅ 143/143 identical |
+
+Plus 18 tests against real Postgres covering eligibility ordering/bounding,
+active-job blocking, cross-org rejection, and idempotent repeat deletes.
+
+**Deliberate deviation from the acceptance gate.** The gate says "repeated delete
+while the tombstone exists is idempotent"; a repeat returns **404**, not 204,
+because the active-only lookup runs first. That is intentional — 404 is exactly
+what a repeat delete returned *before* this change, and the release-blocking
+invariant is public-API compatibility. Returning 204 would be the behaviour
+change. Concurrent double-deletes, where both requests observe an active space,
+do both return 204 via the CAS.
+
+**Remaining before this item is `[x]`**
+
+- `SPACE_FINALIZER_ENABLED` is unset in every environment, so no physical
+  deletion runs and tombstones accumulate indefinitely. Enabling it is the
+  destructive half and is a deliberate, separate decision.
+- The mid-flight deletion race (delete a space *while* a large ingestion is
+  running) has not been exercised against production; the fences are unit-tested
+  only.
+- A vector-purge failure path has not been injected end-to-end.
 
 ### [ ] P1-B. Activate existing metrics before reducing logs
 
