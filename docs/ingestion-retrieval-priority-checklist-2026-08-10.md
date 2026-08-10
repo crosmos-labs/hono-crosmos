@@ -458,7 +458,7 @@ However, source metadata cannot simply move after selection because
 - Staging p95 must not regress by more than 5%; otherwise keep the old one-query
   path until the second round-trip can be overlapped safely.
 
-### [ ] P1-E. Push exact retrieval bounds and projections into SQL
+### [x] P1-E. Push exact retrieval bounds and projections into SQL
 
 **Why**
 
@@ -485,6 +485,48 @@ memory costs.
   boundary, temporal `asOf`, visibility, and high-degree fixtures.
 - Keyword candidate IDs, rank positions, normalized scores, and hydrated values
   are identical.
+
+**Implemented 2026-08-11**
+
+- `getEdgesForEntities` applies the confidence rule and
+  `GRAPH_MAX_EDGES_PER_HOP` in SQL: `coalesce(confidence, 1.0) >= threshold`
+  reproduces the JavaScript `?? 1.0` default, `confidence` is
+  `double precision` so the comparison happens on the same IEEE double the
+  driver handed JavaScript, and the ordering is total (`id` is unique) so
+  `LIMIT` takes exactly the rows the old `slice` took.
+- The JavaScript confidence filter and cap are removed. The old dedup-by-edge-id
+  pass went with them: it was always a no-op, since this is a single-table
+  select with no join and a row cannot match twice.
+- `keywordSearch` selects `retrievalMemoryColumns` — the same projection every
+  other signal hydrates with — instead of the full row. It was pulling
+  `embedding` (1536 dimensions) and `meta` for up to `GIN_CANDIDATE_LIMIT`
+  candidates per search, none of which ranking or the response mapper reads.
+- Seed-entity to memory fanout is instrumented, not capped, via an optional
+  `onSeedFanout` callback logged as `retrieval.graph_seed_fanout`. A cap would
+  change graph recall and there is no measured basis for a safe bound yet.
+
+**Verification**
+
+These are ranking-sensitive, so equivalence is proven against a real database
+rather than a fake — NULL handling, float comparison and tie-break order are
+exactly what a hand-written fake would get wrong.
+
+- New harness: `apps/api/tests/helpers/test-db.ts` plus
+  `scripts/test-db-setup.sh`, which builds a `crosmos_test` database from
+  `packages/db/migrations`. Suites skip with a visible notice when it is
+  unreachable; a skip is never reported as a pass.
+- `apps/api/tests/graph-edges.pg.test.ts` — 12 cases running the OLD JavaScript
+  pipeline and the NEW SQL one over the same fixture and asserting identical
+  edge-id sequences: null confidence, threshold boundary (inclusive), zero
+  confidence, `valid_from` overriding `recorded_at`, id-descending tie-breaks,
+  temporal `asOf`, forgotten edges, per-user visibility, cross-space/cross-org,
+  inbound (target-side) matches, and a 250-edge high-degree hub interleaved with
+  sub-threshold edges so filter-before-cap ordering is exercised.
+- `apps/api/tests/keyword-projection.pg.test.ts` — 8 cases deep-comparing whole
+  candidates (not just ids) against a full-row implementation.
+- Mutation-checked: dropping the `coalesce` fails the null-confidence case, and
+  `>` instead of `>=` fails the boundary case. The suite is a real gate, not a
+  passing formality.
 
 ### [x] P1-F. Retry transient scheduled-job DB failures safely
 
