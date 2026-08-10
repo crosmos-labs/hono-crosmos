@@ -1,6 +1,19 @@
+import type { IngestionJobMessage } from '@crosmos/types';
+
 export interface Env {
   // Bindings
   HYPERDRIVE: Hyperdrive;
+  /**
+   * Producer binding onto the SAME queue this worker consumes. Used only to
+   * publish *continuations* — a job that advanced its durable checkpoints but
+   * ran out of per-invocation chunk budget gets a fresh message (attempt
+   * counter reset) instead of burning the delivery retry budget meant for
+   * failures. See `MAX_JOB_CONTINUATIONS` and `queue-consumer.ts`.
+   *
+   * Optional so the consumer degrades to the old re-queue behavior in local dev
+   * or any deployment where the binding hasn't been added yet.
+   */
+  INGESTION_QUEUE?: Queue<IngestionJobMessage>;
   // Workers AI — embeddings (bge-m3).
   AI: Ai;
   // Vectorize indexes (used when VECTOR_STORE=vectorize).

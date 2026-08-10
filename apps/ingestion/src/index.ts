@@ -124,7 +124,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       },
     });
     try {
-      const outcome = await processIngestion(message, {
+      const { outcome } = await processIngestion(message, {
         db,
         llm: getLLM(this.env),
         embedder: getEmbedder(this.env),
@@ -137,6 +137,11 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       // it ourselves — but `processIngestion` already reset the job to `pending`,
       // and the durable queue copy (enqueued at creation) will be delivered and
       // re-attempt it via the queue consumer's retry path. Just record it.
+      //
+      // Deliberately NO continuation is published here (P0-C). The RPC path's
+      // original durable queue message is still outstanding and will claim the
+      // pending job; publishing from here as well would put two live copies of
+      // the same job on the queue for no benefit.
       //  - retry_transient: a dependency was degraded (#4).
       //  - requeue_incomplete: the per-invocation chunk budget ran out before all
       //    sources finished; the re-delivery continues the remaining ones (#2).
@@ -184,6 +189,13 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       createEmbedder: () => getEmbedder(this.env),
       createVectorStore: () => getVectorStore(this.env, db),
       nowMs: () => systemClock.nowMs(),
+      // Left undefined when the producer binding is absent, which makes the
+      // consumer fall back to re-queueing the current delivery.
+      sendContinuation: this.env.INGESTION_QUEUE
+        ? async (message) => {
+            await this.env.INGESTION_QUEUE!.send(message);
+          }
+        : undefined,
       analytics: this.env.ANALYTICS,
       environment: this.env.ENVIRONMENT,
     };

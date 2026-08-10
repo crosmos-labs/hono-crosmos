@@ -77,6 +77,24 @@ export type IngestionOutcome =
   | 'retry_transient'
   | 'requeue_incomplete';
 
+/**
+ * The outcome plus the progress evidence the queue consumer needs to tell a
+ * *continuation* (this run advanced durable checkpoints and wants a fresh
+ * invocation) apart from a *loop* (this run advanced nothing yet still asks to
+ * continue). Only the former may bypass the delivery retry budget — see
+ * `MAX_JOB_CONTINUATIONS`.
+ */
+export interface IngestionRunResult {
+  outcome: IngestionOutcome;
+  /**
+   * Chunks committed during THIS invocation, summed across the job's sources.
+   * Every one of them corresponds to durable state: either a source marked
+   * `completed` or an advanced `ingest_next_sequence` checkpoint. Zero means the
+   * invocation produced no forward progress.
+   */
+  chunksProcessed: number;
+}
+
 export interface ProcessIngestionDeps {
   db: Database;
   llm: LLM;
@@ -151,7 +169,7 @@ function emitOutcomeMetric(
 export async function processIngestion(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
-): Promise<IngestionOutcome> {
+): Promise<IngestionRunResult> {
   const { db, llm, embedder, vectorStore, logger } = deps;
   const jobStart = performance.now();
   const scope: TenantScope = {
@@ -168,9 +186,9 @@ export async function processIngestion(
   const claim = await claimJob(db, msg.job_id, JOB_LEASE_MS);
   if (claim !== 'claimed') {
     logger.info('ingestion.job_claim_skipped', { reason: claim });
-    if (claim === 'not_found') return 'skipped_not_found';
-    if (claim === 'in_flight') return 'skipped_in_flight';
-    return 'skipped_terminal';
+    if (claim === 'not_found') return { outcome: 'skipped_not_found', chunksProcessed: 0 };
+    if (claim === 'in_flight') return { outcome: 'skipped_in_flight', chunksProcessed: 0 };
+    return { outcome: 'skipped_terminal', chunksProcessed: 0 };
   }
 
   logger.info('ingestion.job_started', {
@@ -248,7 +266,7 @@ export async function processIngestion(
       });
 
       // We owned the job; cancellation is a terminal outcome for this delivery.
-      return 'processed';
+      return { outcome: 'processed', chunksProcessed };
     }
 
     // Per-invocation chunk budget (issues #2 / #9). Once we've processed a full
@@ -444,7 +462,7 @@ export async function processIngestion(
       tokenCount: llm.totalTokens + embedder.totalTokens,
       errorCategory: rolledUpErrorCategory ?? 'external_service',
     });
-    return 'retry_transient';
+    return { outcome: 'retry_transient', chunksProcessed };
   }
 
   // Per-invocation chunk budget exhausted (issue #2). We stopped before all
@@ -482,7 +500,7 @@ export async function processIngestion(
       failedSourceCount: failedSourceIds.length,
       tokenCount: throughputTokens,
     });
-    return 'requeue_incomplete';
+    return { outcome: 'requeue_incomplete', chunksProcessed };
   }
 
   // Roll up job status — mirrors Python's `process_ingestion` terminal block.
@@ -559,5 +577,5 @@ export async function processIngestion(
     tokenCount: throughputTokens,
     errorCategory: failed > 0 ? rolledUpErrorCategory : undefined,
   });
-  return 'processed';
+  return { outcome: 'processed', chunksProcessed };
 }
