@@ -1,0 +1,1 @@
+ALTER TABLE "memories" ADD COLUMN "speaker_role" varchar(16);

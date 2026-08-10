@@ -676,7 +676,7 @@ field. Deliberately not "fixed" here by inventing a reuse ceiling, because that
 would change already-reviewed Durable Object semantics and could shed a
 legitimate rapid retry. Decide the policy when the SDK work lands.
 
-### [ ] P1-H. Persist extracted speaker attribution
+### [x] P1-H. Persist extracted speaker attribution
 
 **Why**
 
@@ -696,6 +696,41 @@ future ranking or attribution policy can evaluate its value.
 - User, assistant, system, tool, and null values round-trip correctly.
 - Existing rows remain valid with null.
 - Retrieval results and scores remain identical.
+
+**Implemented 2026-08-11**
+
+- `memories.speaker_role` is a nullable `varchar(16)`; migration
+  `packages/db/migrations/0002_opposite_doctor_spectrum.sql` is a single
+  `ALTER TABLE ... ADD COLUMN`. Nullable with no default is a catalog-only
+  change in modern Postgres — no table rewrite, only a brief lock.
+- Deliberately no enum and no `CHECK` constraint. `normalizeFacts` is the only
+  writer and already rejects anything outside user/assistant/system/tool, the
+  length bounds it, and every historical row is null. A constraint on a live
+  table would be migration risk for no behavioral gain in this phase.
+- Stage 7 of the pipeline persists `f.speakerRole`. Nothing reads it; it is not
+  exposed publicly and `retrievalMemoryColumns` is unchanged, which a test
+  asserts so a later change cannot silently widen the retrieval projection.
+- `apps/api/tests/speaker-role.pg.test.ts` — all four roles plus null round-trip,
+  a row inserted *without* the column at all (exactly what a still-deployed
+  older Worker writes) stays valid and null, and the column's shape is asserted
+  against `information_schema`.
+
+**Applied to the staging Neon branch 2026-08-11**
+
+Pre-flight: 4,410 memory rows / 3,248 kB, no long-running transactions, no
+in-flight ingestion jobs, column confirmed absent. Applied inside a transaction
+with `lock_timeout = 3s` and `statement_timeout = 30s`, so the migration would
+be rejected rather than queue behind live traffic.
+
+Post-apply: column present, nullable, no default; all 4,410 existing rows null;
+a full `information_schema` column diff against the migration-built database is
+**identical at 223 columns**, confirming `packages/db/migrations` is a faithful
+description of the production schema.
+
+**Production: not yet applied.** Awaiting the production Neon URL. The ordering
+is the safe one regardless: the column is additive and nullable, so it must be
+applied BEFORE the Worker build that writes it, and the currently deployed
+Worker does not mention the column at all.
 
 ## P2 — Benchmark-gated follow-up
 
@@ -795,7 +830,7 @@ must not be applied under the assumption that no users or jobs are active.
 | `memory_spaces.deleted_at` | Add nullable column and deletion lookup index | None; existing null rows are active | Deploy tombstone-aware readers and the worker fence before enabling soft deletion. |
 | Active-space name uniqueness | Replace the current constraint with a partial unique index | None | Create the partial index concurrently before dropping the old constraint; until then, a deleted name cannot be reused. |
 | Retained `daily_usage` | Drop only `daily_usage_space_id_memory_spaces_id_fk` | None | Historical org usage will intentionally stop decreasing when a space is deleted. Document this billing semantic. |
-| Persisted `speaker_role` | Add nullable memory column | None | Historical rows stay null; do not re-run extraction merely to populate it. |
+| Persisted `speaker_role` | Add nullable memory column — `0002_opposite_doctor_spectrum.sql`, **applied to staging 2026-08-11**, production pending | None | Historical rows stay null; do not re-run extraction merely to populate it. |
 | Optional `recall_id` | None | None | Requests that omit it must follow the current lease behavior. |
 | Deadline propagation | None | None | Abort handling must not turn a request that completes inside six seconds into a premature failure. |
 | Provenance/full-source split | None | None | `source` must remain byte-identical and `session_id` must still load before diverse selection. |
