@@ -30,13 +30,38 @@ ACC=17ebc9e30a1d9007b3b215b83492a487
 curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$ACC/analytics_engine/sql" \
   -H "Authorization: Bearer $CF_API_TOKEN" \
   -H "Content-Type: text/plain" \
-  --data "SELECT blob3 AS metric, count() FROM crosmos_api
+  --data "SELECT blob3 AS metric, sum(_sample_interval) AS events FROM crosmos_api
           WHERE timestamp > NOW() - INTERVAL '1' HOUR GROUP BY metric"
 ```
 
 `SHOW TABLES` lists datasets. Writing needs only the Worker binding; **querying**
 needs a token with `Account Analytics Read` (the Wrangler OAuth token already
 carries enough for this).
+
+### ⚠ Always count with `sum(_sample_interval)`, never `count()`
+
+Analytics Engine **samples**. Each stored row carries `_sample_interval`, the
+number of real events it represents; `count()` returns *stored rows*, which is a
+different and smaller number.
+
+Measured on production 2026-08-11: two searches emitted eight `retrieval_signal`
+points. `count()` reported **4**; `sum(_sample_interval)` reported **8**, because
+those rows came back with `_sample_interval = 2`.
+
+This matters more than it first looks. Sampling gets *more* aggressive as volume
+rises, so `count()` understates worst exactly when you are investigating an
+incident — the moment you are most likely to conclude "the error rate isn't that
+high". Averages are unaffected (`avg(double1)` is fine); **any count, rate or
+sum of occurrences must be weighted.**
+
+```sql
+-- WRONG: undercounts, and undercounts worse under load
+SELECT blob4 AS reason, count() FROM crosmos_api WHERE blob3 = 'search_throttled' GROUP BY reason
+
+-- RIGHT
+SELECT blob4 AS reason, sum(_sample_interval) AS events
+FROM crosmos_api WHERE blob3 = 'search_throttled' GROUP BY reason
+```
 
 ### Column convention
 
@@ -119,6 +144,24 @@ SELECT count(*) FROM memory_spaces WHERE deleted_at IS NOT NULL;
 
 This is the class of problem that produces no errors at all: the API returns 200
 with fewer, worse results. Metrics are the only way to see it before a user does.
+
+## Observed baseline (production, 2026-08-11)
+
+First real read, so treat these as shape rather than thresholds:
+
+```
+retrieval_signal   semantic  ok   avg candidates 50.0   <- at the candidate-pool cap
+retrieval_signal   graph     ok   avg candidates 50.0   <- at the candidate-pool cap
+retrieval_signal   keyword   ok   avg candidates  0.0
+retrieval_signal   temporal  ok   avg candidates  0.0
+```
+
+Keyword and temporal at zero were **expected here** — the probe queries were
+nonsense phrases with no lexical match and no date expression. That is the
+subtlety of this metric: zero is normal for those two on many real queries, so
+alert on a *change in rate* for a signal, not on any single zero. Semantic
+sitting exactly at 50 means it is saturating `CANDIDATE_POOL`, which is the
+expected shape and also why a semantic drop would be conspicuous.
 
 ## What this runbook does NOT cover
 
