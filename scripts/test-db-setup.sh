@@ -28,6 +28,13 @@ psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres -q \
   -c "DROP DATABASE IF EXISTS $DB" \
   -c "CREATE DATABASE $DB"
 
+# Suppress per-statement NOTICEs at the DATABASE level. `truncate ... cascade`
+# in the test reset emits one per cascaded table, and postgres.js prints each as
+# a structured object — dozens of lines per test, burying the assertions. Setting
+# it on the connection only covers ONE pooled connection, so set it here.
+psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres -q \
+  -c "ALTER DATABASE $DB SET client_min_messages = warning"
+
 # pgvector must exist before the baseline, which declares `vector(1024)` columns.
 psql -h "$HOST" -p "$PORT" -U "$USER" -d "$DB" -q \
   -c "CREATE EXTENSION IF NOT EXISTS vector"

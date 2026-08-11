@@ -17,7 +17,7 @@ import {
   resetTestData,
   seedTenant,
   type Tenant,
-} from './helpers/test-db';
+} from '@crosmos/test-support';
 
 const db: Database | null = await getTestDb();
 if (db === null) announceSkip('speaker-role.pg.test.ts');

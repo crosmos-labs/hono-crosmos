@@ -33,7 +33,7 @@ import {
   seedMemory,
   seedTenant,
   type Tenant,
-} from './helpers/test-db';
+} from '@crosmos/test-support';
 
 // Resolved at module scope, NOT in `beforeAll`: `describe.skip` has to be
 // chosen while the suite is being defined, and a `beforeAll` runs after that.

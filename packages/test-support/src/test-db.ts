@@ -36,8 +36,10 @@ export async function getTestDb(): Promise<Database | null> {
     const db = createDb(TEST_DATABASE_URL, { max: 4 });
     await db.execute(sql`select 1`);
     // `truncate ... cascade` emits one NOTICE per cascaded table, which
-    // postgres.js prints as a structured object. That is dozens of lines per
-    // test and buries the actual assertions.
+    // postgres.js prints as a structured object — dozens of lines per test.
+    // `scripts/test-db-setup.sh` sets this at the DATABASE level (a SET here
+    // covers only one of the pooled connections); this is a best-effort belt on
+    // a database created before that was added.
     await db.execute(sql`set client_min_messages = warning`);
     cached = db;
     reachable = true;
@@ -188,6 +190,57 @@ export async function seedEdge(
        ${(options.recordedAt ?? new Date()).toISOString()},
        ${options.visibility ?? 'org'},
        ${options.forgotten ? sql`now()` : sql`null`})
+    returning id`);
+  return row!.id;
+}
+
+export interface SeedJobOptions {
+  spaceId?: number;
+  status?: 'pending' | 'processing' | 'completed' | 'partial' | 'failed' | 'cancelled';
+  sourceIds?: number[];
+  /** Backdate `started_at` to simulate an expired lease. */
+  startedMinutesAgo?: number | null;
+}
+
+/** Insert an ingestion job and return its UUID (the job id used everywhere). */
+export async function seedJob(
+  db: Database,
+  tenant: Tenant,
+  options: SeedJobOptions = {},
+): Promise<string> {
+  const status = options.status ?? 'pending';
+  const startedAt =
+    options.startedMinutesAgo == null
+      ? null
+      : sql`now() - (${options.startedMinutesAgo} || ' minutes')::interval`;
+  const [row] = await db.execute<{ id: string }>(sql`
+    insert into ingestion_jobs (id, org_id, user_id, space_id, status, source_ids, started_at)
+    values (gen_random_uuid(), ${tenant.orgId}, ${tenant.userId},
+            ${options.spaceId ?? tenant.spaceId}, ${status},
+            ${JSON.stringify(options.sourceIds ?? [])}::jsonb, ${startedAt})
+    returning id`);
+  return row!.id;
+}
+
+/** Read a job's current status straight from the row. */
+export async function jobStatus(db: Database, jobId: string): Promise<string | null> {
+  const [row] = await db.execute<{ status: string }>(
+    sql`select status from ingestion_jobs where id = ${jobId}`,
+  );
+  return row?.status ?? null;
+}
+
+/** Create an additional space in the same org, optionally already tombstoned. */
+export async function seedSpace(
+  db: Database,
+  tenant: Tenant,
+  name: string,
+  options: { deleted?: boolean } = {},
+): Promise<number> {
+  const [row] = await db.execute<{ id: number }>(sql`
+    insert into memory_spaces (uuid, org_id, name, user_id, deleted_at)
+    values (gen_random_uuid(), ${tenant.orgId}, ${name}, ${tenant.userId},
+            ${options.deleted ? sql`now()` : sql`null`})
     returning id`);
   return row!.id;
 }
