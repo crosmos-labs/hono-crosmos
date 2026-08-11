@@ -286,9 +286,10 @@ artifact test fails; do not compensate by rebuilding unrelated source data.
   double that evaluates real Drizzle predicates (via `PgDialect`) against seeded
   rows and models the FK cascades, so scope bugs are caught by surviving-row
   assertions rather than by call-sequence snapshots.
-- The existing-data audit in “Existing-data audit required before rollout”
-  is still outstanding: this fix prevents future damage but cannot recreate
-  citation links already removed.
+- **Existing-data audit executed 2026-08-11** against production —
+  `scripts/audit-ingestion-integrity.sql` (read-only, reusable). Result:
+  **19 affected memories, all traceable to a single source.** Details in
+  “Existing-data audit required before rollout” below.
 
 ### [x] P0-C. Separate progress continuations from failure attempts
 
@@ -1155,6 +1156,56 @@ For confirmed affected data:
 
 A blanket re-ingestion can duplicate orphaned memories because the deleted
 junction no longer tells the purge which source owned them.
+
+### Audit result — production, 2026-08-11
+
+Run with `psql "$DATABASE_URL" -f scripts/audit-ingestion-integrity.sql`.
+
+| Check | Result | Verdict |
+|---|---|---|
+| Memories with no `chunk_memories` link | **19** | **Real damage** |
+| Completed sources with zero chunks | 434 | False positive — see below |
+| Sources with chunk-sequence gaps | 18 | False positive — see below |
+| Checkpoint ahead of persisted chunks | 0 | Clean |
+| Sources stuck `pending`/`processing` | 0 | Clean |
+
+**Two of the checks this document proposed are false positives.**
+`ingestSource` skips the chunk insert entirely when a chunk yields no facts
+(`if (facts.length === 0) return []`). So "completed source with zero chunks"
+just means the content produced nothing extractable — verified by sampling: they
+are short exchanges like "hola! qué hay" and assistant error strings. Sequence
+gaps likewise mean some chunks yielded facts and others did not, since sequence
+numbers come from the chunk plan rather than from what survived extraction. The
+audit script keeps both checks but labels them, because a sudden *change* is
+still worth noticing while the absolute value is not a defect.
+
+**The 19 real orphans are all from source 520**, created within a ~20-second
+window on 2026-07-17 12:13 UTC. That is the same source, and the same day, as
+the large-source ingestion stall — the incident whose redrive loop repeatedly
+re-entered the buggy purge. Source 520 is 26,341 characters, still
+`extraction_status = 'failed'`, and holds 8 chunks with a maximum sequence of
+15: partially processed, exactly as the stall left it.
+
+This also answers a question left open since that incident: **source 520's final
+state**. It never completed.
+
+**Impact is degradation, not loss.** All 19 memories are retrievable
+(`forgotten_at IS NULL`) and retain 39 entity links and 19 edges, so the
+semantic, keyword and graph signals all still find them. What they lost is the
+citation, so the API returns them with `source: null`.
+
+**No repair has been performed, deliberately.** The options are not equal:
+
+- *Leave them* — degraded attribution on 19 memories in one space. Zero risk.
+- *Re-ingest source 520* — would **duplicate** all 19, exactly as this document
+  warns, because the severed junction no longer tells the purge which source
+  owned them.
+- *Delete the 19, then re-ingest* — restores citations, but deletes real user
+  memories on the assumption that re-extraction reproduces them. It may not:
+  the extraction prompt and model have both changed since July.
+
+The third is the only true repair and it is a judgement call about user data, so
+it needs an explicit decision rather than an automated sweep.
 
 ### Backfills deliberately not required
 
