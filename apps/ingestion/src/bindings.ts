@@ -22,8 +22,10 @@ export interface Env {
   // throws a clear error if the backend is switched back without them.
   MEMORIES_INDEX?: VectorizeIndex;
   ENTITIES_INDEX?: VectorizeIndex;
-  // Analytics Engine — metrics sink (ingestion outcome/latency/tokens).
-  // Optional: unbound in local dev / tests, where createMetrics() is a no-op.
+  // Analytics Engine — metrics sink (ingestion outcome/latency/tokens). Bound
+  // in every deployed environment since 2026-08-11; still optional because
+  // `bun test` and direct library use have no binding, where `createMetrics`
+  // degrades to a silent no-op. See docs/metrics-runbook.md.
   ANALYTICS?: AnalyticsEngineDataset;
 
   // Vars

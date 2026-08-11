@@ -208,7 +208,7 @@ was deployed first; production `/health` returned 200 afterwards and
 | `[~]` | P1-7 AI/vector degradation | Search degrades auxiliary signals; ingestion now has source retries, durable checkpoints, retryable requeue, and Qdrant write retries. | Enable metrics. Defer provider-wide circuit breakers/concurrency controls until measurements justify them. |
 | `[ ]` | P1-8 `daily_usage` FK race | Usage writes still reference the live `memory_spaces` row with cascade deletion. | Remove that one FK while retaining the historical integer dimension. |
 | `[~]` | P2-1 lifecycle correlation | Request, job, and correlation IDs reach queue messages and many worker logs. | Make correlation consistent at all ingestion acceptance and terminal events. Triage/outbox systems are external. |
-| `[~]` | P2-2 event separation | Structured HTTP and stage events exist in code. | Analytics is disabled; dashboard construction is external. |
+| `[~]` | P2-2 event separation | Structured HTTP and stage events exist in code; Analytics Engine enabled 2026-08-11 and verified receiving them. | Dashboard construction is external. |
 | `[~]` | P2-3 metrics/log tuning | Bindings enabled 2026-08-11 in all envs; data verified queryable. | Measure for a meaningful period before reducing any log volume. |
 | `[~]` | P2-4 SLO alerts/runbooks | `docs/metrics-runbook.md` added 2026-08-11. | Alert thresholds/routing remain external. |
 | `[~]` | P2-5 regression/load/failure tests | `scripts/verify-incident-fixes.ts` exists. There is no automated API admission, deletion-race, or retrieval-equivalence suite. | Build the no-regression harness and run staged failure injection. |
@@ -552,9 +552,12 @@ do both return 204 via the CAS.
 
 **Why**
 
+_(Written before 2026-08-11; kept for the reasoning, but the premise is now
+resolved — see the Implemented block below.)_
+
 Both Workers already emit useful metrics, but their Analytics Engine bindings
-are commented out. As a result, throttle, signal degradation, ingestion
-outcome, and DLQ metrics are production no-ops.
+were commented out. As a result, throttle, signal degradation, ingestion
+outcome, and DLQ metrics were production no-ops.
 
 **Repository change**
 

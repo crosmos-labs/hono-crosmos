@@ -14,15 +14,6 @@ export interface IngestionRpc {
 export interface Env {
   // Bindings
   HYPERDRIVE: Hyperdrive;
-  /**
-   * Kill switch for the tombstoned-space finalizer (P1-A). Physical deletion
-   * runs ONLY when this is exactly `"true"`.
-   *
-   * Default-off on purpose: the tombstone and read-filtering half can ship and
-   * be observed in production before anything destructive runs, and flipping
-   * this back to unset stops all physical deletion without a code deploy.
-   */
-  SPACE_FINALIZER_ENABLED?: string;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
   // Service binding to the ingestion worker — direct RPC fast path that
@@ -39,8 +30,10 @@ export interface Env {
   // throws a clear error if the backend is switched back without them.
   MEMORIES_INDEX?: VectorizeIndex;
   ENTITIES_INDEX?: VectorizeIndex;
-  // Analytics Engine — metrics sink (counters/latencies). Optional: unbound in
-  // local dev / tests, where createMetrics() degrades to a no-op.
+  // Analytics Engine — metrics sink (counters/latencies). Bound in every
+  // deployed environment since 2026-08-11; still optional because `bun test`
+  // and direct library use have no binding, where `createMetrics` degrades to a
+  // silent no-op. See docs/metrics-runbook.md.
   ANALYTICS?: AnalyticsEngineDataset;
   // Durable-Object rate limiter (class RateLimiterDO). Strongly consistent and,
   // unlike KV, its counters cost zero put ops — so it backs every limiter that
@@ -97,6 +90,16 @@ export interface Env {
   RETRIEVAL_RERANKER_ENABLED?: string;
   // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
   ADMIN_TOOLS?: string;
+  /**
+   * Kill switch for the tombstoned-space finalizer (P1-A). Physical deletion
+   * runs ONLY when this is exactly `"true"`.
+   *
+   * Default-off on purpose: the tombstone and read-filtering half can ship and
+   * be observed in production before anything destructive runs, and flipping
+   * this back to unset stops all physical deletion without a code deploy — it
+   * is a var, so it takes effect on redeploy without a code change.
+   */
+  SPACE_FINALIZER_ENABLED?: string;
 
   // Operational limits (issue #6) — env overrides for the admission/backpressure
   // knobs. Optional: each falls back to its compile-time default (see
