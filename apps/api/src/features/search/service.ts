@@ -12,7 +12,7 @@ import {
 } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
-import { durationMs, type Logger } from '@crosmos/observability';
+import { durationMs, type Logger, type Metrics } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { attachCandidateProvenance, attachSourceContent } from './candidates';
 import {
@@ -91,6 +91,11 @@ export interface RetrieveInput {
    * Optional: omitted, retrieval behaves exactly as before.
    */
   signal?: AbortSignal;
+  /**
+   * Optional metrics sink. Only bounded-cardinality dimensions are tagged —
+   * signal name, ok/failed, a reason enum. Never ids, never the query.
+   */
+  metrics?: Metrics;
 }
 
 /**
@@ -298,6 +303,25 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const [semanticResults, keywordResults, graphResults, temporalResults] =
     unwrapSignals(settledSignals, logger);
 
+  // Per-signal health. A signal quietly returning zero candidates looks
+  // identical to "nothing matched" in the response, so without this a
+  // degraded-but-not-failing signal (a red vector store, a bad tsquery shape) is
+  // invisible until recall quality complains.
+  const signalNames = [
+    SourceSignal.SEMANTIC,
+    SourceSignal.KEYWORD,
+    SourceSignal.GRAPH,
+    SourceSignal.TEMPORAL,
+  ];
+  const signalResults = [semanticResults, keywordResults, graphResults, temporalResults];
+  settledSignals.forEach((settled, i) => {
+    input.metrics?.count('retrieval_signal', {
+      tags: [signalNames[i]!, settled.status === 'fulfilled' ? 'ok' : 'failed'],
+      values: [signalResults[i]!.length],
+      index: 'retrieval_signal',
+    });
+  });
+
   // Stage 4 — assemble ranked lists (order preserved) + RRF.
   const fusionStart = performance.now();
   const rankedLists: Array<[SourceSignal, RankedCandidate[]]> = [
@@ -387,6 +411,12 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     logger?.warn('retrieval.stage_skipped', {
       stage: 'rerank',
       reason: 'deadline_expired',
+    });
+    // Distinguishes "the reranker is off" from "we ran out of time before it".
+    // A rising rate here means the 6s budget is being consumed upstream.
+    input.metrics?.count('retrieval_deadline', {
+      tags: ['rerank', 'skipped'],
+      index: 'retrieval_deadline',
     });
     ceEnabled = false;
   }

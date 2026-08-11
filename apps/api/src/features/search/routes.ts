@@ -487,6 +487,7 @@ searchRoutes.openapi(
           entitlements,
           embedPromise,
           signal: deadline.signal,
+          metrics,
           logger: logger.child({ space_id: space.id }),
         }),
         limits.retrievalTimeoutSeconds * 1000,
