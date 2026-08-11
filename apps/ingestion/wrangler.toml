@@ -46,6 +46,16 @@ binding = "HYPERDRIVE"
 id = "f5a4b0b3c894450f9ad332221a92ff5a"
 localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+[[queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs-dev"
+
 # Queue consumer: one ingestion job per invocation. A job may carry many
 # source_ids, but each job is its own queue message; see .codex/pipelines.md.
 [[queues.consumers]]
@@ -84,12 +94,13 @@ max_retries = 3
 [ai]
 binding = "AI"
 
-# Analytics Engine: ingestion metrics sink (outcome/latency/tokens). Created on
-# first write; queried/alerted via the Analytics Engine SQL API.
-# DISABLED until Analytics Engine is enabled on the account (dash toggle).
-# [[analytics_engine_datasets]]
-# binding = "ANALYTICS"
-# dataset = "crosmos_ingestion_dev"
+# Analytics Engine — metrics sink. The dataset is created automatically on first
+# write; there is no provisioning command and (as of 2026-08) no account toggle
+# or beta signup. Querying is separate: it needs an API token with the
+# `Account Analytics Read` permission (SQL API / GraphQL), which writing does not.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_ingestion_dev"
 
 # Vectorize: vector storage (only when VECTOR_STORE=vectorize). DORMANT in
 # production — prod sets VECTOR_STORE=qdrant. Shared with the API worker.
@@ -157,10 +168,9 @@ region = "aws:us-east-1"
 binding = "AI"
 
 # Analytics Engine (prod ingestion metrics sink). Not inherited from top-level.
-# DISABLED until Analytics Engine is enabled on the account (dash toggle).
-# [[env.production.analytics_engine_datasets]]
-# binding = "ANALYTICS"
-# dataset = "crosmos_ingestion"
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_ingestion"
 
 # Vectorize (prod indexes, shared with the API worker).
 [[env.production.vectorize]]
@@ -177,6 +187,16 @@ binding = "HYPERDRIVE"
 # 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
 # us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
+
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+[[env.production.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs"
 
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
@@ -247,19 +267,34 @@ region = "aws:us-east-1"
 [env.staging.ai]
 binding = "AI"
 
-# Vectorize (DORMANT). Bound to existing dev indexes so the binding resolves.
-[[env.staging.vectorize]]
-binding = "MEMORIES_INDEX"
-index_name = "crosmos-memories-dev"
-
-[[env.staging.vectorize]]
-binding = "ENTITIES_INDEX"
-index_name = "crosmos-entities-dev"
+# Vectorize is DORMANT in staging (VECTOR_STORE=qdrant), so no binding is
+# declared here. It previously bound the `crosmos-memories-dev` /
+# `crosmos-entities-dev` indexes, which no longer exist in the account —
+# wrangler validates Vectorize bindings at deploy time whether or not the code
+# reads them, so every `--env staging` deploy failed with code 10159. Both
+# `getVectorStore` factories already throw a clear error if VECTOR_STORE is ever
+# set back to `vectorize` without these bindings.
 
 # Hyperdrive → staging NeonDB (ep-curly-mouse, same id as the API worker).
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
 id = "930052d5e0dc40c8911417c7ef3e8c13"
+
+# Producer binding onto the SAME queue this Worker consumes. Used only to
+# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
+# ran out of per-invocation budget is re-sent as a fresh message so its attempt
+# counter resets. Without this, healthy forward progress on a large source
+# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
+# source. Transient failures and in-flight polling still use the retry budget.
+# Analytics Engine (staging metrics sink). Separate dataset so staging traffic
+# never pollutes the production series a dashboard or alert reads.
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_ingestion_staging"
+
+[[env.staging.queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "ingestion-jobs-staging"
 
 [[env.staging.queues.consumers]]
 queue = "ingestion-jobs-staging"

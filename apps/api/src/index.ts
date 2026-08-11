@@ -7,6 +7,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from './bindings';
 import { errorEnvelope, isAppError } from './lib/errors';
 import { classifyDependencyError } from './lib/dependency-errors';
+import { runSweep, sweepMetrics } from './lib/sweep-retry';
 import {
   NO_RETRY_HEADERS,
   noRetryUntilHeaders,
@@ -16,6 +17,7 @@ import { authRoutes } from './features/auth/routes';
 import { billingRoutes, billingWebhookRoutes } from './features/billing/routes';
 import { runBillingReconciliation } from './features/billing/reconcile';
 import { runMaintenanceCleanup } from './features/maintenance/cleanup';
+import { runSpaceFinalization } from './features/maintenance/finalize-spaces';
 import { reapStaleJobs, runIngestionRedrive } from './features/maintenance/redrive';
 // Durable Object class for the per-IP rate limiter — must be exported from the
 // worker entry so the runtime can instantiate it.
@@ -285,62 +287,89 @@ export default {
     // The ingestion re-drive runs on a frequent cron (every 15 min) so wedged
     // sources recover quickly; billing + retention sweeps stay daily. Branch on
     // the firing schedule so the heavy daily sweeps don't run every 15 min.
-    // Each sweep is isolated — one failure must not block the others, and a
-    // cron failure is surfaced (logged), never silently lost.
     const isDaily = controller.cron === '17 3 * * *';
+
+    // Every sweep goes through `runSweep`, which keeps them isolated (it never
+    // throws, so one failure cannot block the others), surfaces failures rather
+    // than losing them, and adds a bounded retry for CLASSIFIED TRANSIENT
+    // database errors only. Without that retry a single dropped connection
+    // deferred a sweep's whole workload to the next cron — 15 minutes for the
+    // re-drive, a full day for the daily sweeps. Capacity exhaustion and every
+    // unclassified error still get exactly one attempt.
+    const metrics = sweepMetrics(env.ANALYTICS, env.ENVIRONMENT);
+    const sweep = <T>(name: string, run: () => Promise<T>) =>
+      runSweep(name, logger, run, { metrics });
 
     // Reap orphaned jobs first (cheap CAS update): flip jobs that crashed
     // mid-flight from `processing`/`pending` to `failed` so they stop pinning
     // the per-user pending cap + the global queue-depth gate and become terminal
     // for cleanup. The windowed counts already self-heal the gates; this makes
     // the rows' status reflect reality. See issue #3.
-    try {
-      const reaped = await reapStaleJobs(env);
-      if (reaped > 0) {
-        logger.info('cron.jobs_reaped', { trigger: 'cron', cron: controller.cron, jobs_reaped: reaped });
-      }
-    } catch (err) {
-      logger.error('cron.jobs_reap_failed', { trigger: 'cron' }, err);
+    const reap = await sweep('jobs_reap', () => reapStaleJobs(env));
+    if (reap.status === 'succeeded' && (reap.value ?? 0) > 0) {
+      logger.info('cron.jobs_reaped', {
+        trigger: 'cron',
+        cron: controller.cron,
+        jobs_reaped: reap.value,
+        attempts: reap.attempts,
+      });
     }
 
-    try {
-      const redriven = await runIngestionRedrive(env);
+    const redrive = await sweep('ingestion_redrive', () => runIngestionRedrive(env));
+    if (redrive.status === 'succeeded') {
       logger.info('cron.ingestion_redrive', {
         trigger: 'cron',
         cron: controller.cron,
-        jobs_created: redriven.jobsCreated,
-        sources_requeued: redriven.sourcesRequeued,
+        jobs_created: redrive.value!.jobsCreated,
+        sources_requeued: redrive.value!.sourcesRequeued,
+        attempts: redrive.attempts,
       });
-    } catch (err) {
-      logger.error('cron.ingestion_redrive_failed', { trigger: 'cron' }, err);
     }
 
     if (!isDaily) return;
 
-    try {
-      const billing = await runBillingReconciliation(env);
+    const billing = await sweep('billing_reconciliation', () =>
+      runBillingReconciliation(env),
+    );
+    if (billing.status === 'succeeded') {
       logger.info('cron.billing_reconciliation', {
         trigger: 'cron',
         cron: controller.cron,
-        subscriptions_expired: billing.expired,
-        checkouts_abandoned: billing.abandoned,
+        subscriptions_expired: billing.value!.expired,
+        checkouts_abandoned: billing.value!.abandoned,
+        attempts: billing.attempts,
       });
-    } catch (err) {
-      logger.error('cron.billing_reconciliation_failed', { trigger: 'cron' }, err);
     }
-    try {
-      const deleted = await runMaintenanceCleanup(env);
+
+    // Physical cleanup of tombstoned spaces. Daily, and a no-op unless
+    // SPACE_FINALIZER_ENABLED is set — see `runSpaceFinalization`.
+    const finalize = await sweep('space_finalization', () => runSpaceFinalization(env));
+    if (finalize.status === 'succeeded' && !finalize.value!.disabled) {
+      logger.info('cron.space_finalization', {
+        trigger: 'cron',
+        cron: controller.cron,
+        candidates: finalize.value!.candidates,
+        deleted_count: finalize.value!.finalized,
+        skipped_no_owner: finalize.value!.skippedActiveJobs,
+        failed_job_count: finalize.value!.failedVectorPurge,
+        attempts: finalize.attempts,
+      });
+    }
+
+    const cleanup = await sweep('maintenance_cleanup', () => runMaintenanceCleanup(env));
+    if (cleanup.status === 'succeeded') {
+      const deleted = cleanup.value!;
       logger.info('cron.maintenance_cleanup', {
         trigger: 'cron',
+        cron: controller.cron,
         deleted_count:
           deleted.authorizationCodes +
           deleted.revokedRefreshTokens +
           deleted.ingestionJobs +
           deleted.billingEvents +
           deleted.dailyUsage,
+        attempts: cleanup.attempts,
       });
-    } catch (err) {
-      logger.error('cron.maintenance_cleanup_failed', { trigger: 'cron' }, err);
     }
   },
 };

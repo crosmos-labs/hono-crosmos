@@ -48,6 +48,17 @@ export interface IngestionJobMessage {
   source_ids: number[];
   /** Producer wall-clock timestamp in milliseconds, used for queue-delay logs. */
   enqueued_at_ms?: number;
+  /**
+   * How many times this job has been re-published as a *continuation* — a fresh
+   * queue message sent by the ingestion consumer because the job made progress
+   * but ran out of per-invocation chunk budget (see `MAX_JOB_CONTINUATIONS`).
+   *
+   * Optional and defaulted to zero: messages enqueued before this field existed,
+   * and every message the API produces, legitimately omit it. It is bookkeeping
+   * for logs, metrics, and the runaway-loop bound — never an input to ingestion
+   * behavior itself.
+   */
+  continuation_count?: number;
 }
 
 export type IngestionJobStatus =

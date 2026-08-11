@@ -22,6 +22,12 @@ export interface EmbeddingUsage {
 
 export interface EmbedOptions {
   mode?: EmbeddingMode;
+  /**
+   * Caller deadline. Adapters COMBINE this with their own safety timeout rather
+   * than replacing it, so a request that is abandoned early stops consuming
+   * provider capacity while a hung provider is still bounded on its own.
+   */
+  signal?: AbortSignal;
 }
 
 export interface Embedder {

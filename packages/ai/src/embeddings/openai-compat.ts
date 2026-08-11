@@ -1,3 +1,4 @@
+import { isAbortError, withDeadline } from '@crosmos/runtime';
 import type { EmbedOptions, Embedder, EmbeddingUsage } from './port';
 
 /**
@@ -53,7 +54,7 @@ export class OpenAICompatEmbedder implements Embedder {
     return { vector: vectors[0]!, usage };
   }
 
-  async embedBatch(texts: string[], _opts?: EmbedOptions) {
+  async embedBatch(texts: string[], opts?: EmbedOptions) {
     if (texts.length === 0) {
       return {
         vectors: [],
@@ -77,9 +78,16 @@ export class OpenAICompatEmbedder implements Embedder {
           // Pin float arrays — some providers default to base64 otherwise.
           encoding_format: 'float',
         }),
-        signal: AbortSignal.timeout(EMBED_REQUEST_TIMEOUT_MS),
+        // Caller deadline AND the adapter's own hung-provider bound; whichever
+        // fires first wins. See `withDeadline`.
+        signal: withDeadline(EMBED_REQUEST_TIMEOUT_MS, opts?.signal),
       });
     } catch (err) {
+      // The CALLER's deadline fired, not ours. This is not a provider fault:
+      // reporting it as a retryable embedding failure would blame the provider
+      // for a request the client already abandoned, and would invite a retry of
+      // work nobody is waiting for. Propagate the abort unchanged.
+      if (isAbortError(err)) throw err;
       // Timeout / transient network failure → retryable (504) so the per-source
       // retry + queue backstop take over instead of the call hanging.
       const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';

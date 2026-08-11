@@ -107,13 +107,13 @@ class_name = "RateLimiterDO"
 tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
-# Analytics Engine: metrics sink (counters + latencies). Queryable via the
-# Analytics Engine SQL API / dashboard; alerts configured there. No provisioning
-# command — the dataset is created on first write.
-# DISABLED until Analytics Engine is enabled on the account (dash toggle).
-# [[analytics_engine_datasets]]
-# binding = "ANALYTICS"
-# dataset = "crosmos_api_dev"
+# Analytics Engine — metrics sink. The dataset is created automatically on first
+# write; there is no provisioning command and (as of 2026-08) no account toggle
+# or beta signup. Querying is separate: it needs an API token with the
+# `Account Analytics Read` permission (SQL API / GraphQL), which writing does not.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_api_dev"
 
 # Vectorize: vector storage for the retrieval read path (only when
 # VECTOR_STORE=vectorize). DORMANT in production — prod sets VECTOR_STORE=qdrant,
@@ -213,10 +213,9 @@ tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
 # Analytics Engine (prod metrics sink). Not inherited from top-level.
-# DISABLED until Analytics Engine is enabled on the account (dash toggle).
-# [[env.production.analytics_engine_datasets]]
-# binding = "ANALYTICS"
-# dataset = "crosmos_api"
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_api"
 
 # Vectorize (prod indexes). Create with:
 #   wrangler vectorize create crosmos-memories --dimensions=1024 --metric=cosine
@@ -328,15 +327,13 @@ class_name = "RateLimiterDO"
 tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
-# Vectorize (DORMANT — VECTOR_STORE=qdrant). Bound to the existing dev indexes so
-# the binding resolves without provisioning new ones; never read in staging.
-[[env.staging.vectorize]]
-binding = "MEMORIES_INDEX"
-index_name = "crosmos-memories-dev"
-
-[[env.staging.vectorize]]
-binding = "ENTITIES_INDEX"
-index_name = "crosmos-entities-dev"
+# Vectorize is DORMANT in staging (VECTOR_STORE=qdrant), so no binding is
+# declared here. It previously bound the `crosmos-memories-dev` /
+# `crosmos-entities-dev` indexes, which no longer exist in the account —
+# wrangler validates Vectorize bindings at deploy time whether or not the code
+# reads them, so every `--env staging` deploy failed with code 10159. Both
+# `getVectorStore` factories already throw a clear error if VECTOR_STORE is ever
+# set back to `vectorize` without these bindings.
 
 [env.staging.triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
@@ -360,6 +357,12 @@ id = "930052d5e0dc40c8911417c7ef3e8c13"
 [[env.staging.kv_namespaces]]
 binding = "API_KEY_CACHE"
 id = "0af915afd8064727b0290dbc2db10d0c"
+
+# Analytics Engine (staging metrics sink). Separate dataset so staging traffic
+# never pollutes the production series a dashboard or alert reads.
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "crosmos_api_staging"
 
 [[env.staging.queues.producers]]
 binding = "INGESTION_QUEUE"

@@ -12,9 +12,9 @@ import {
 } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
-import { durationMs, type Logger } from '@crosmos/observability';
+import { durationMs, type Logger, type Metrics } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
-import { attachSourceText } from './candidates';
+import { attachCandidateProvenance, attachSourceContent } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
@@ -82,6 +82,30 @@ export interface RetrieveInput {
    * identical vector + usage.
    */
   embedPromise?: ReturnType<Embedder['embed']>;
+  /**
+   * Request deadline. Forwarded to every cancellable downstream call (embedder,
+   * vector store, reranker) and checked between stages, so a search the client
+   * has already been told timed out stops consuming provider and connection
+   * capacity instead of running invisibly to completion.
+   *
+   * Optional: omitted, retrieval behaves exactly as before.
+   */
+  signal?: AbortSignal;
+  /**
+   * Optional metrics sink. Only bounded-cardinality dimensions are tagged —
+   * signal name, ok/failed, a reason enum. Never ids, never the query.
+   */
+  metrics?: Metrics;
+}
+
+/**
+ * True once the request deadline has passed. Checked BETWEEN stages, because
+ * aborting an in-flight fetch is necessary but not sufficient: without this the
+ * next stage would simply start a brand-new one on a request nobody is waiting
+ * for any more.
+ */
+function expired(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -198,7 +222,8 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // Stage 2 — embedding as a shared promise (semantic + graph await it). Prefer
   // the route's pre-started embed (overlaps the DB loads); else embed lazily.
   const embedStart = performance.now();
-  const embedSource = input.embedPromise ?? embedder.embed(query.text, { mode: 'search' });
+  const embedSource =
+    input.embedPromise ?? embedder.embed(query.text, { mode: 'search', signal: input.signal });
   const embedPromise = embedSource.then(
     (result) => {
       logger?.info('embedding.request_completed', {
@@ -233,7 +258,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const settledSignals = await Promise.allSettled([
     timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
       const { vector } = await embedPromise;
-      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool);
+      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool, input.signal);
     }),
     timeSignal(logger, SourceSignal.KEYWORD, () =>
       keywordSearch(query.text, db, scope, query.candidatePool),
@@ -250,6 +275,18 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         query.candidatePool,
         temporalRange ? temporalRange[1] : null,
         effectiveMaxDepth,
+        {
+          signal: input.signal,
+          // Observational only — this is the last unbounded read in the graph
+          // signal and we need its real distribution before deciding whether a
+          // cap is safe (a cap would change graph recall).
+          onSeedFanout: ({ seedEntityCount, memoryCount }) =>
+            logger?.info('retrieval.graph_seed_fanout', {
+              signal: SourceSignal.GRAPH,
+              entity_count: seedEntityCount,
+              memory_count: memoryCount,
+            }),
+        },
       );
     }),
     timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
@@ -265,6 +302,25 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   ]);
   const [semanticResults, keywordResults, graphResults, temporalResults] =
     unwrapSignals(settledSignals, logger);
+
+  // Per-signal health. A signal quietly returning zero candidates looks
+  // identical to "nothing matched" in the response, so without this a
+  // degraded-but-not-failing signal (a red vector store, a bad tsquery shape) is
+  // invisible until recall quality complains.
+  const signalNames = [
+    SourceSignal.SEMANTIC,
+    SourceSignal.KEYWORD,
+    SourceSignal.GRAPH,
+    SourceSignal.TEMPORAL,
+  ];
+  const signalResults = [semanticResults, keywordResults, graphResults, temporalResults];
+  settledSignals.forEach((settled, i) => {
+    input.metrics?.count('retrieval_signal', {
+      tags: [signalNames[i]!, settled.status === 'fulfilled' ? 'ok' : 'failed'],
+      values: [signalResults[i]!.length],
+      index: 'retrieval_signal',
+    });
+  });
 
   // Stage 4 — assemble ranked lists (order preserved) + RRF.
   const fusionStart = performance.now();
@@ -309,27 +365,31 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     candidate_count: candidateLookup.size,
   });
 
-  // Stage 5 — attach source text for the top candidates, CONCURRENTLY with the
-  // Stage-6 reranker below. The two are independent: the reranker scores each
-  // candidate's `content`, while attach only fills the `source`/`sourceId`
-  // fields that are first read at Stage 8. Starting it here (instead of awaiting
-  // before rerank) hides the ~120ms citation round-trip behind the ~280ms
-  // rerank. Non-fatal and never rejects: on failure candidates keep source=null
-  // (worker.md error-parity table). Awaited just before Stage 8.
+  // Stage 5 — attach candidate PROVENANCE (source id/uuid + session id) for the
+  // fused candidates, CONCURRENTLY with the Stage-6 reranker below. The two are
+  // independent: the reranker scores each candidate's `content`, while this only
+  // fills fields first read at Stage 8 — and `sessionId`, which session-diverse
+  // selection needs, so it cannot be deferred past selection. Starting it here
+  // (instead of awaiting before rerank) hides the citation round-trip behind the
+  // rerank. Non-fatal and never rejects: on failure candidates keep
+  // source=null (worker.md error-parity table). Awaited just before Stage 8.
+  //
+  // Full source TEXT is deliberately not loaded here — see `attachSourceContent`,
+  // which runs after selection over only the returned candidates.
   let attachPromise: Promise<void> = Promise.resolve();
   if (candidateLookup.size > 0) {
     const attachSourceStart = performance.now();
-    attachPromise = attachSourceText(db, scope, candidateLookup).then(
+    attachPromise = attachCandidateProvenance(db, scope, candidateLookup).then(
       () => {
         logger?.info('retrieval.stage_completed', {
-          stage: 'source_text_attach',
+          stage: 'source_provenance_attach',
           duration_ms: durationMs(attachSourceStart),
           candidate_count: candidateLookup.size,
         });
       },
-      (err) => {
+      (err: unknown) => {
         logger?.warn('retrieval.source_text_attach_failed', {
-          stage: 'source_text_attach',
+          stage: 'source_provenance_attach',
           duration_ms: durationMs(attachSourceStart),
           error_category: 'internal',
           dependency: 'database',
@@ -339,6 +399,28 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   }
 
   // Stage 6 — base scores (CE rerank OR rank-remap fallback).
+  //
+  // Deadline check before the reranker: it is the most expensive remaining
+  // external call, and by this point the signal fan-out has already run. If the
+  // client has been told the request timed out, starting a fresh ZeroEntropy
+  // call would burn provider capacity for a result nobody will read. Falling
+  // through leaves `ceEnabled = false`, which takes the existing rank-remap
+  // fallback path — the same well-tested degradation used when the reranker
+  // errors, not a new one.
+  if (ceEnabled && expired(input.signal)) {
+    logger?.warn('retrieval.stage_skipped', {
+      stage: 'rerank',
+      reason: 'deadline_expired',
+    });
+    // Distinguishes "the reranker is off" from "we ran out of time before it".
+    // A rising rate here means the 6s budget is being consumed upstream.
+    input.metrics?.count('retrieval_deadline', {
+      tags: ['rerank', 'skipped'],
+      index: 'retrieval_deadline',
+    });
+    ceEnabled = false;
+  }
+
   let baseScores = new Map<number, number>();
   if (ceEnabled) {
     const rerankStart = performance.now();
@@ -348,7 +430,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       if (c) selection.push(c);
     }
     try {
-      baseScores = await rerankCandidates(reranker!, query.text, selection);
+      baseScores = await rerankCandidates(reranker!, query.text, selection, input.signal);
       if (baseScores.size === 0) ceEnabled = false;
       logger?.info('retrieval.stage_completed', {
         stage: 'rerank',
@@ -507,6 +589,31 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     result_count: top.length,
     top_k: query.topK,
   });
+
+  // Stage 9.5 — full source text for the SELECTED candidates only, and only if
+  // the caller asked for it. Before this split the raw `sources.content` was
+  // pulled for every fused candidate, of which at most `topK` are returned.
+  // Bounded by the distinct sources in the final result, so it is a small
+  // by-id read. Non-fatal, matching the provenance attach: a failure leaves
+  // `source: null` rather than failing the search.
+  if (query.includeSource !== false && top.length > 0) {
+    const sourceContentStart = performance.now();
+    try {
+      await attachSourceContent(db, scope, top);
+      logger?.info('retrieval.stage_completed', {
+        stage: 'source_content_load',
+        duration_ms: durationMs(sourceContentStart),
+        result_count: top.length,
+      });
+    } catch (err) {
+      logger?.warn('retrieval.source_text_attach_failed', {
+        stage: 'source_content_load',
+        duration_ms: durationMs(sourceContentStart),
+        error_category: 'internal',
+        dependency: 'database',
+      }, err);
+    }
+  }
 
   // Stage 10 — touch (access-frequency bookkeeping) is a write side-effect. It
   // is intentionally NOT done here: the route schedules it off the critical

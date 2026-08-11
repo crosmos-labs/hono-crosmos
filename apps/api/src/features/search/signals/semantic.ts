@@ -25,10 +25,12 @@ export async function semanticSearch(
   queryEmbedding: number[],
   scope: TenantScope,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<RankedCandidate[]> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
     topK: limit,
     minScore: SEMANTIC_MIN_SCORE,
+    signal,
   });
   if (matches.length === 0) return [];
 

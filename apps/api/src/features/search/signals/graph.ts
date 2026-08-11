@@ -56,9 +56,23 @@ interface EdgeRow {
 }
 
 /**
- * Edge expansion query — port of `get_edges_for_entities`. Returns ALL
- * matching non-forgotten edges, newest-first by effective time
- * (`coalesce(valid_from, recorded_at)`), then id desc. No DISTINCT ON.
+ * Edge expansion query — port of `get_edges_for_entities`. Returns matching
+ * non-forgotten edges at or above `GRAPH_MIN_CONFIDENCE`, newest-first by
+ * effective time (`coalesce(valid_from, recorded_at)`), then id desc, bounded to
+ * `GRAPH_MAX_EDGES_PER_HOP`. No DISTINCT ON.
+ *
+ * The confidence rule and the per-hop cap used to run in JavaScript over an
+ * UNBOUNDED result set: a high-degree entity transferred every one of its edges
+ * out of Postgres so that all but the first 200 could be discarded in the
+ * Worker. Both are now expressed in SQL, which is exactly equivalent because:
+ *
+ *  - `coalesce(confidence, 1.0) >= x` reproduces the JS `edge.confidence ?? 1.0`
+ *    default, and `confidence` is `double precision`, so the comparison happens
+ *    on the same IEEE double the driver would have handed JavaScript;
+ *  - the ordering is total (`id` is unique), so `LIMIT` takes precisely the rows
+ *    the JS `slice` took;
+ *  - the JS pass also deduped by edge id, which was always a no-op — this is a
+ *    single-table select with no join, so a row can match at most once.
  */
 export async function getEdgesForEntities(
   db: Database,
@@ -79,6 +93,12 @@ export async function getEdgesForEntities(
   conditions.push(eq(edges.orgId, scope.orgId), eq(edges.spaceId, scope.spaceId));
   const edgeVisibility = graphEdgeVisibilityClause(scope);
   if (edgeVisibility !== undefined) conditions.push(edgeVisibility);
+  // A NULL confidence means "unspecified", which the traversal has always read
+  // as full confidence — keep that reading here rather than letting the NULL
+  // comparison silently drop the row.
+  conditions.push(
+    sql`coalesce(${edges.confidence}, 1.0) >= ${GRAPH_MIN_CONFIDENCE}::double precision`,
+  );
   // ISO string + cast, not a raw Date: a Date in a raw `sql` template is sent
   // untyped and the postgres.js driver rejects it ("must be string"). Only bites
   // when asOf is set (temporal + graph queries), so it was a latent bug.
@@ -96,7 +116,8 @@ export async function getEdgesForEntities(
     })
     .from(edges)
     .where(and(...conditions))
-    .orderBy(sql`${effectiveTime} desc`, desc(edges.id));
+    .orderBy(sql`${effectiveTime} desc`, desc(edges.id))
+    .limit(GRAPH_MAX_EDGES_PER_HOP);
 }
 
 function edgeRecencyFactor(
@@ -125,10 +146,12 @@ async function seedByMemory(
   vectorStore: VectorStore,
   queryEmbedding: number[],
   scope: TenantScope,
+  signal?: AbortSignal,
 ): Promise<Map<number, number>> {
   const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
     topK: GRAPH_SEED_LIMIT,
     minScore: GRAPH_SEED_THRESHOLD,
+    signal,
   });
   if (matches.length === 0) return new Map();
   const links = await getEntitiesForMemories(db, scope, matches.map((m) => m.id));
@@ -171,6 +194,17 @@ function seedByEntityName(
   return out;
 }
 
+export interface GraphSearchOptions {
+  /**
+   * Called once per search with the seed-entity → memory fanout, so the
+   * orchestrator can log/measure it. Observational only: it must not influence
+   * traversal, and it is optional so direct callers and tests can ignore it.
+   */
+  onSeedFanout?(stats: { seedEntityCount: number; memoryCount: number }): void;
+  /** Request deadline, forwarded to the vector store's remote calls. */
+  signal?: AbortSignal;
+}
+
 export async function graphSearchWithStore(
   db: Database,
   vectorStore: VectorStore,
@@ -180,6 +214,7 @@ export async function graphSearchWithStore(
   limit: number,
   asOf: Date | null,
   maxDepth: number,
+  options?: GraphSearchOptions,
 ): Promise<RankedCandidate[]> {
   const effectiveMaxDepth = maxDepth ?? MAX_DEPTH;
   const now = new Date();
@@ -195,8 +230,9 @@ export async function graphSearchWithStore(
     vectorStore.queryNearest('entities', queryEmbedding, scope, {
       topK: GRAPH_SEED_LIMIT,
       minScore: GRAPH_SEED_THRESHOLD,
+      signal: options?.signal,
     }),
-    seedByMemory(db, vectorStore, queryEmbedding, scope),
+    seedByMemory(db, vectorStore, queryEmbedding, scope, options?.signal),
   ]);
 
   // Visibility gate for the entity seeds: when per-user visibility is active,
@@ -245,6 +281,15 @@ export async function graphSearchWithStore(
       else memoryToSeedEntities.set(mid, [eid]);
     }
   }
+  // Seed-entity → memory fanout is the one remaining unbounded read in this
+  // signal: a hub entity linked to a large share of a space's memories drags all
+  // of them in. It is deliberately MEASURED, not capped — a cap would change
+  // graph recall, and there is no evidence yet of what a safe bound is. Decide
+  // from this number, not from intuition.
+  options?.onSeedFanout?.({
+    seedEntityCount: seedEntityIds.length,
+    memoryCount: memoryToSeedEntities.size,
+  });
   const scores = new Map<number, number>();
   for (const [mid, eids] of memoryToSeedEntities) {
     const seedRel = eids.map((eid) => entityRelevance.get(eid) ?? 0.0);
@@ -260,25 +305,14 @@ export async function graphSearchWithStore(
   for (let depth = 1; depth <= effectiveMaxDepth; depth++) {
     if (frontier.size === 0 || scores.size >= GRAPH_MEMORY_BUDGET) break;
 
+    // Already confidence-filtered, ordered and capped by SQL — see
+    // `getEdgesForEntities`. Preserve that order; do not re-sort.
     const hopEdges = await getEdgesForEntities(db, [...frontier], asOf, scope);
-
-    // Dedup by edge id, filter by confidence. Preserve SQL order (no resort).
-    const seenEdgeIds = new Set<number>();
-    let filtered: EdgeRow[] = [];
-    for (const edge of hopEdges) {
-      if (seenEdgeIds.has(edge.id)) continue;
-      seenEdgeIds.add(edge.id);
-      const confidence = edge.confidence ?? 1.0;
-      if (confidence >= GRAPH_MIN_CONFIDENCE) filtered.push(edge);
-    }
-    if (filtered.length > GRAPH_MAX_EDGES_PER_HOP) {
-      filtered = filtered.slice(0, GRAPH_MAX_EDGES_PER_HOP);
-    }
 
     const nextFrontier = new Set<number>();
     const nextFrontierRelevance = new Map<number, number>();
 
-    for (const edge of filtered) {
+    for (const edge of hopEdges) {
       const confidence = edge.confidence ?? 1.0;
       const src = edge.sourceEntityId;
       const tgt = edge.targetEntityId;

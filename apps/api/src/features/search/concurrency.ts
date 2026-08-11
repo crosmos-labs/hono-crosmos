@@ -34,8 +34,24 @@ export interface ConcurrencyLease {
 }
 
 export interface ConcurrencyLimiter {
-  /** Increment + check. `acquired: false` when already at `limit`. */
-  acquire(userKey: string, limit: number, ttlSeconds: number): Promise<ConcurrencyLease>;
+  /**
+   * Increment + check. `acquired: false` when already at `limit`.
+   *
+   * `leaseKey` is an optional stable identity for one LOGICAL request. When the
+   * backend supports it, re-acquiring with a live `leaseKey` refreshes that
+   * lease instead of taking a second slot, so retried copies of one logical
+   * recall cannot eat a user's whole concurrency budget. Backends without
+   * per-lease identity (KV, no-op) ignore it and behave exactly as before.
+   *
+   * The key is namespaced under `userKey`, so a caller can only ever collide
+   * with its own leases.
+   */
+  acquire(
+    userKey: string,
+    limit: number,
+    ttlSeconds: number,
+    leaseKey?: string,
+  ): Promise<ConcurrencyLease>;
   /** Release the lease returned by `acquire`. Always call in a `finally`. */
   release(userKey: string, token: string | null): Promise<void>;
 }
@@ -64,6 +80,8 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
     userKey: string,
     limit: number,
     ttlSeconds: number,
+    /** Accepted for interface parity and deliberately unused — see below. */
+    _leaseKey?: string,
   ): Promise<ConcurrencyLease> {
     const key = PREFIX + userKey;
     try {
@@ -72,7 +90,8 @@ export class KvConcurrencyLimiter implements ConcurrencyLimiter {
       if (current >= limit) return { acquired: false, token: null };
       await this.write(key, current + 1, Math.max(KV_MIN_TTL_SECONDS, ttlSeconds));
       // A bare counter has no per-lease identity; the DO limiter is the one that
-      // issues tokens. Release still decrements, so this stays correct — just
+      // issues tokens — and, for the same reason, the only one that can honour a
+      // `leaseKey`. Release still decrements, so this stays correct — just
       // approximate, which is what this fallback has always been.
       return UNTRACKED;
     } catch (err) {
@@ -143,11 +162,15 @@ export class DoConcurrencyLimiter implements ConcurrencyLimiter {
     userKey: string,
     limit: number,
     ttlSeconds: number,
+    leaseKey?: string,
   ): Promise<ConcurrencyLease> {
     try {
       const res = await this.stub(userKey).fetch('https://concurrency/acquire', {
         method: 'POST',
-        body: JSON.stringify({ limit, ttlSeconds }),
+        // `leaseKey` is only meaningful here: the DO is the one backend with
+        // per-lease identity. It is already namespaced by the `conc:${userKey}`
+        // instance, so one user's key can never touch another's slots.
+        body: JSON.stringify({ limit, ttlSeconds, leaseKey }),
       });
       const { success, token } = (await res.json()) as {
         success: boolean;
