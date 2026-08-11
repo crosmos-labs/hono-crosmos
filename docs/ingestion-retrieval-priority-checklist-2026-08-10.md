@@ -27,9 +27,9 @@ are recorded as dependencies, not as repository-owned completion checkboxes.
 > **Implementation status (updated 2026-08-11).** Execution has started. Each
 > completed item carries an "Implemented" block recording what shipped, how it
 > was verified, and what its acceptance gate still does *not* cover. Done:
-> P0-B, P0-C, P0-D, P1-C, P1-D, P1-E, P1-F, P1-G, P1-H. Partial: P1-A (shipped
-> and verified, but its finalizer is switched off). Remaining: P0-A, P1-B
-> (external prerequisite), and all of P2. Items marked `[x]` in the
+> P0-B, P0-C, P0-D, P1-B, P1-C, P1-D, P1-E, P1-F, P1-G, P1-H. Partial: P1-A
+> (shipped and verified, but its finalizer is switched off). Remaining: P0-A and
+> all of P2 except the runbook half of P2-4. Items marked `[x]` in the
 > incident-reconciliation table below are pre-existing remediations, not new
 > work — see each item's own block for what changed today.
 
@@ -209,8 +209,8 @@ was deployed first; production `/health` returned 200 afterwards and
 | `[ ]` | P1-8 `daily_usage` FK race | Usage writes still reference the live `memory_spaces` row with cascade deletion. | Remove that one FK while retaining the historical integer dimension. |
 | `[~]` | P2-1 lifecycle correlation | Request, job, and correlation IDs reach queue messages and many worker logs. | Make correlation consistent at all ingestion acceptance and terminal events. Triage/outbox systems are external. |
 | `[~]` | P2-2 event separation | Structured HTTP and stage events exist in code. | Analytics is disabled; dashboard construction is external. |
-| `[ ]` | P2-3 metrics/log tuning | Metrics calls exist but Analytics Engine bindings are commented out in both Workers. | Enable the bindings after the account/datasets exist, then measure before reducing logs. |
-| `[ ]` | P2-4 SLO alerts/runbooks | No repository runbook closes the incident loop. | Add repository runbook after metrics are live. Alert configuration is external. |
+| `[~]` | P2-3 metrics/log tuning | Bindings enabled 2026-08-11 in all envs; data verified queryable. | Measure for a meaningful period before reducing any log volume. |
+| `[~]` | P2-4 SLO alerts/runbooks | `docs/metrics-runbook.md` added 2026-08-11. | Alert thresholds/routing remain external. |
 | `[~]` | P2-5 regression/load/failure tests | `scripts/verify-incident-fixes.ts` exists. There is no automated API admission, deletion-race, or retrieval-equivalence suite. | Build the no-regression harness and run staged failure injection. |
 
 ## P0 — Correctness and proof before optimization
@@ -548,7 +548,7 @@ do both return 204 via the CAS.
   only.
 - A vector-purge failure path has not been injected end-to-end.
 
-### [ ] P1-B. Activate existing metrics before reducing logs
+### [x] P1-B. Activate existing metrics before reducing logs
 
 **Why**
 
@@ -577,9 +577,46 @@ outcome, and DLQ metrics are production no-ops.
 
 **External dependencies**
 
-- `[external]` Enable Analytics Engine and create/authorize the datasets.
+- ~~`[external]` Enable Analytics Engine and create/authorize the datasets.~~
+  **Resolved 2026-08-11 — this prerequisite did not exist.** Cloudflare creates
+  Analytics Engine datasets automatically on first write; there is no dashboard
+  toggle, provisioning command or beta signup. Verified empirically: the
+  bindings deploy cleanly and data points are queryable through the SQL API
+  within seconds. The blocking comment in both `wrangler.toml` files predated
+  the feature leaving beta.
 - `[external]` Build provider/Cloudflare dashboards and alerts from the emitted
-  metrics.
+  metrics. Still outside this repository — but `docs/metrics-runbook.md` now
+  supplies the queries and thresholds to build them from.
+
+**Implemented 2026-08-11**
+
+- Bindings enabled for development, staging and production in both Workers.
+  Staging writes to its own datasets (`crosmos_api_staging`,
+  `crosmos_ingestion_staging`) so staging traffic can never pollute a production
+  series an alert reads.
+- Every metric this repository has emitted for months was a silent no-op until
+  now. That is the direct reason the 2026-07-25 incident was hard to *understand*
+  rather than hard to fix.
+- New measurements: `ingestion_continuation` (published/refused, refusal reason,
+  continuation count + chunks processed), `retrieval_signal` (per-signal
+  candidate count and ok/failed), `retrieval_deadline` (reranker skipped because
+  the budget was already spent). `cron_sweep` and `space_finalized` /
+  `space_finalize_failed` were added earlier with P1-F and P1-A.
+- Bounded cardinality is a rule, not a guideline: request, user, org, space,
+  source, job and recall IDs stay in structured logs. Analytics Engine samples
+  by index, so a high-cardinality tag distorts sampling *and* explodes storage.
+- `docs/metrics-runbook.md` covers overload, dependency failure, stuck ingestion,
+  deletion backlog and recall degradation, plus the column convention and query
+  recipes. This also satisfies the repository half of **P2-4**.
+
+**Verified**
+
+Production traffic produced queryable `http_request` and `search` data points
+within ~30s of the first write, read back through the Analytics Engine SQL API.
+
+**Not done, deliberately:** log sampling has NOT been reduced. The acceptance
+gate says to verify metric coverage first, and coverage has minutes of data, not
+weeks.
 
 ### [x] P1-C. Cancel retrieval work after the request deadline
 
