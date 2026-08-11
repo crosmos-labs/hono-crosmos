@@ -4,10 +4,13 @@
 
 | Domain | Purpose |
 |---|---|
-| `hono.crosmos.dev` | Cloudflare Workers TypeScript/Hono deployment used for active development/migration validation |
-| `api.crosmos.dev` | Current customer-facing Python production API, in `../crosmos-mem` |
+| `api.crosmos.dev` | Current customer-facing TypeScript/Hono production API deployed from this repository |
+| `staginghono.crosmos.dev` | TypeScript/Hono staging API |
+| `hono.crosmos.dev` | Legacy migration hostname; not the current customer-facing production endpoint |
 
-The Workers `production` environment is real Cloudflare production infrastructure, but functionally this repo is still the development/migration target until traffic moves from `api.crosmos.dev`.
+The Workers `production` environment in this repository is the live production
+system serving `api.crosmos.dev`. The old Python repository at `../crosmos-mem`
+is retained only as historical/reference code.
 
 ## Cloudflare Topology
 
