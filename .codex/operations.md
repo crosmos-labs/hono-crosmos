@@ -65,7 +65,7 @@ Use Wrangler for secret updates, scoped to the correct app and environment.
 
 ## Observability
 
-- Cloudflare dashboard shows Workers, Queues, usage, and live events for `hono.crosmos.dev`.
+- Cloudflare dashboard shows Workers, Queues, usage, and live events for the production Hono Worker serving `api.crosmos.dev`.
 - Use `wrangler tail` from the app package when logs are needed.
 - Cloudflare Workers Logs are enabled in each Worker's `wrangler.toml`; application logs use structured JSON objects through `@crosmos/observability`.
 

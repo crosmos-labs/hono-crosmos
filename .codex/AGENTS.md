@@ -12,9 +12,9 @@ Use the compact files in `.codex/` as the durable project memory. Read only the 
 ## Current State
 
 - This repo is the TypeScript/Hono Cloudflare Workers implementation.
-- `hono.crosmos.dev` is live and used for active development/migration validation.
-- `api.crosmos.dev` is still the current customer-facing Python production API.
-- The Python source/reference repo is `../crosmos-mem`.
+- `api.crosmos.dev` is the current customer-facing TypeScript/Hono production API deployed from this repo.
+- `staginghono.crosmos.dev` is the Hono staging environment.
+- The old Python repo at `../crosmos-mem` is historical/reference code only; it is not the current production API.
 - Package manager is Bun. Do not introduce npm/yarn/pnpm lockfiles.
 - Current product constraints and performance problems are documented in `.codex/current-problems.md`.
 
