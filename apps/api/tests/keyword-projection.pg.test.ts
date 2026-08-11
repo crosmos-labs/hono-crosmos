@@ -27,7 +27,7 @@ import {
   seedMemory,
   seedTenant,
   type Tenant,
-} from './helpers/test-db';
+} from '@crosmos/test-support';
 
 const db: Database | null = await getTestDb();
 if (db === null) announceSkip('keyword-projection.pg.test.ts');

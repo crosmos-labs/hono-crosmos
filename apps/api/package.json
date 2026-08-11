@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241224.0",
+    "@crosmos/test-support": "workspace:*",
     "@types/bun": "^1.3.14",
     "typescript": "^5.6.3",
     "wrangler": "4"
