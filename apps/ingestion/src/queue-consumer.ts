@@ -1,5 +1,5 @@
 import type { Database } from '@crosmos/db';
-import type { Logger } from '@crosmos/observability';
+import { createMetrics, type Logger } from '@crosmos/observability';
 import type { QueueDelivery } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { VectorStore } from '@crosmos/vector';
@@ -82,6 +82,16 @@ async function continueOrRetry(
         ? {}
         : { error_category: 'internal', dependency: 'pipeline' }),
     });
+    // tags: outcome, reason (both bounded enums — never ids).
+    // values: continuation_count, chunks_processed.
+    createMetrics(deps.analytics, {
+      service: 'ingestion',
+      environment: deps.environment,
+    }).count('ingestion_continuation', {
+      tags: ['refused', reason],
+      values: [continuationCount, chunksProcessed],
+      index: 'ingestion_continuation',
+    });
     delivery.retry({ delaySeconds: BACKSTOP_RETRY_DELAY_SECONDS });
     return;
   }
@@ -119,6 +129,16 @@ async function continueOrRetry(
     continuation_count: next,
     chunks_processed: chunksProcessed,
     attempt: delivery.attempts,
+  });
+  // A rising continuation_count with a flat chunks_processed is the signature of
+  // a source that is churning without progressing.
+  createMetrics(deps.analytics, {
+    service: 'ingestion',
+    environment: deps.environment,
+  }).count('ingestion_continuation', {
+    tags: ['published', 'checkpoint_advanced'],
+    values: [next, chunksProcessed],
+    index: 'ingestion_continuation',
   });
   delivery.ack();
 }
