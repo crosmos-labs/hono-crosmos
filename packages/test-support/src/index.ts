@@ -7,3 +7,5 @@
  * reaching across `apps/*` boundaries couples the two Workers.
  */
 export * from './test-db';
+export * from './fixtures';
+export * from './memory-vector-store';

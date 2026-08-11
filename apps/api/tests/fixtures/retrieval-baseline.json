@@ -1,0 +1,366 @@
+{
+  "capturedAt": "2026-08-11T18:45:48.710Z",
+  "note": "Expected retrieval output for the fixture corpus. A diff here means ranking changed — review it, do not regenerate reflexively.",
+  "queries": {
+    "q1-single-session": {
+      "query": "why did I stop drinking dairy milk",
+      "candidates": [
+        {
+          "content": "User has been experiencing stomach upset from dairy for a few months.",
+          "memoryType": "semantic",
+          "finalScore": 0.7514744562939626,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User's stomach is much better after switching to oat milk.",
+          "memoryType": "semantic",
+          "finalScore": 0.43897758687542504,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User switched to oat milk in their morning coffee.",
+          "memoryType": "semantic",
+          "finalScore": 0.3093134321708461,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "memoryType": "semantic",
+          "finalScore": 0.11276881651350563,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User signed up for a 100km charity bike ride in June 2026.",
+          "memoryType": "episode",
+          "finalScore": 0.10560700603275855,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User is staying in Alfama during their holiday in Lisbon in the last week of April 2026.",
+          "memoryType": "semantic",
+          "finalScore": 0.10295530132837735,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User was promoted to engineering manager on 2026-02-07.",
+          "memoryType": "episode",
+          "finalScore": 0.09037921320513985,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User has been reading a lot of translated Japanese fiction lately.",
+          "memoryType": "semantic",
+          "finalScore": 0.0822244619780002,
+          "sessionId": "sess-07-reading"
+        },
+        {
+          "content": "User changed to a darker roast for their daily morning latte because darker roasts cut through oat milk better.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.18056858877388407,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.10078360110717335,
+          "sessionId": "sess-04-travel"
+        }
+      ]
+    },
+    "q2-multi-session": {
+      "query": "what do I drink in the morning and how has it changed",
+      "candidates": [
+        {
+          "content": "User switched to oat milk in their morning coffee.",
+          "memoryType": "semantic",
+          "finalScore": 0.8811321333453686,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User switched to a darker roast for their daily morning latte.",
+          "memoryType": "semantic",
+          "finalScore": 0.8362426689802281,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User changed to a darker roast for their daily morning latte because darker roasts cut through oat milk better.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.8320183851339245,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User's stomach is much better after switching to oat milk.",
+          "memoryType": "semantic",
+          "finalScore": 0.6477982179521103,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User makes a latte every single morning before work.",
+          "memoryType": "semantic",
+          "finalScore": 0.5119606084565301,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User is staying in Alfama during their holiday in Lisbon in the last week of April 2026.",
+          "memoryType": "semantic",
+          "finalScore": 0.15161542035056605,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "memoryType": "episode",
+          "finalScore": 0.13628595265072102,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User signed up for a 100km charity bike ride in June 2026.",
+          "memoryType": "episode",
+          "finalScore": 0.1196208776486635,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User was promoted to engineering manager on 2026-02-07.",
+          "memoryType": "episode",
+          "finalScore": 0.10837081815793036,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User has been experiencing stomach upset from dairy for a few months.",
+          "memoryType": "semantic",
+          "finalScore": 0.30795576157373306,
+          "sessionId": "sess-01-coffee"
+        }
+      ]
+    },
+    "q3-temporal": {
+      "query": "what am I training for in June",
+      "candidates": [
+        {
+          "content": "User signed up for a 100km charity bike ride in June 2026.",
+          "memoryType": "episode",
+          "finalScore": 0.9956534427365282,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "memoryType": "episode",
+          "finalScore": 0.7655287202572367,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User plans to book a proper bike fit next week.",
+          "memoryType": "episode",
+          "finalScore": 0.3747669249210179,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.25405056424966627,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User wants to read a longer translated Japanese fiction book next, with a length under 500 pages.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.2497398944048823,
+          "sessionId": "sess-07-reading"
+        },
+        {
+          "content": "User is nervous about the first performance review cycle as an engineering manager.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.20661313087072466,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User's longest bike ride so far is 60km.",
+          "memoryType": "semantic",
+          "finalScore": 0.253269538660912,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "memoryType": "semantic",
+          "finalScore": 0.34234473073814736,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User has been experiencing stomach upset from dairy for a few months.",
+          "memoryType": "semantic",
+          "finalScore": 0.1124299367979013,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User's stomach is much better after switching to oat milk.",
+          "memoryType": "semantic",
+          "finalScore": 0.10433122311900132,
+          "sessionId": "sess-05-coffee-followup"
+        }
+      ]
+    },
+    "q4-knowledge-update": {
+      "query": "what is the longest bike ride I have done",
+      "candidates": [
+        {
+          "content": "User's longest bike ride so far is 60km.",
+          "memoryType": "semantic",
+          "finalScore": 0.8119147454997584,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "memoryType": "episode",
+          "finalScore": 0.5337494720890467,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "memoryType": "semantic",
+          "finalScore": 0.4468603750691099,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User signed up for a 100km charity bike ride in June 2026.",
+          "memoryType": "episode",
+          "finalScore": 0.4138505560973117,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User is staying in Alfama during their holiday in Lisbon in the last week of April 2026.",
+          "memoryType": "semantic",
+          "finalScore": 0.09400115091526146,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User switched to a darker roast for their daily morning latte.",
+          "memoryType": "semantic",
+          "finalScore": 0.08384280049422145,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User was promoted to engineering manager on 2026-02-07.",
+          "memoryType": "episode",
+          "finalScore": 0.06379502349151815,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User switched to oat milk in their morning coffee.",
+          "memoryType": "semantic",
+          "finalScore": 0.06188468433993272,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User has been reading a lot of translated Japanese fiction lately.",
+          "memoryType": "semantic",
+          "finalScore": 0.057324175898868755,
+          "sessionId": "sess-07-reading"
+        },
+        {
+          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.08781017317938514,
+          "sessionId": "sess-04-travel"
+        }
+      ]
+    },
+    "q5-work": {
+      "query": "how many people do I manage",
+      "candidates": [
+        {
+          "content": "User manages a team of six engineers, two of whom are more senior than the user.",
+          "memoryType": "semantic",
+          "finalScore": 0.8337581892923576,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User was promoted to engineering manager on 2026-02-07.",
+          "memoryType": "episode",
+          "finalScore": 0.3410013259063222,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User signed up for a 100km charity bike ride in June 2026.",
+          "memoryType": "episode",
+          "finalScore": 0.12234016173879168,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User switched to a darker roast for their daily morning latte.",
+          "memoryType": "semantic",
+          "finalScore": 0.11153152291457397,
+          "sessionId": "sess-05-coffee-followup"
+        },
+        {
+          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.10668452360276487,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User plans to book a proper bike fit next week.",
+          "memoryType": "episode",
+          "finalScore": 0.10369539051607024,
+          "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User makes a latte every single morning before work.",
+          "memoryType": "semantic",
+          "finalScore": 0.09863358754101778,
+          "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User has been reading a lot of translated Japanese fiction lately.",
+          "memoryType": "semantic",
+          "finalScore": 0.0932147230818236,
+          "sessionId": "sess-07-reading"
+        },
+        {
+          "content": "User is nervous about the first performance review cycle as an engineering manager.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.27530345897634484,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User has been cycling for about three years.",
+          "memoryType": "semantic",
+          "finalScore": 0.10316890915753314,
+          "sessionId": "sess-02-cycling"
+        }
+      ]
+    },
+    "q6-diversify": {
+      "query": "what are my hobbies and interests",
+      "candidates": [
+        {
+          "content": "User rides a steel touring bike that is heavy but they love it.",
+          "memoryType": "semantic",
+          "finalScore": 0.5440263102044961,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User has been reading a lot of translated Japanese fiction lately.",
+          "memoryType": "semantic",
+          "finalScore": 0.542281593582341,
+          "sessionId": "sess-07-reading"
+        },
+        {
+          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.501025867869523,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User has been cycling for about three years.",
+          "memoryType": "semantic",
+          "finalScore": 0.4179365100225143,
+          "sessionId": "sess-02-cycling"
+        },
+        {
+          "content": "User's longest bike ride so far is 60km.",
+          "memoryType": "semantic",
+          "finalScore": 0.3644155805568962,
+          "sessionId": "sess-02-cycling"
+        }
+      ]
+    }
+  }
+}

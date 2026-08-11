@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",
     "deploy:staging": "wrangler deploy --env staging",
-    "test": "bun test",
+    "test": "TEST_DATABASE_URL=${TEST_DATABASE_URL:-postgresql://crosmos:crosmos@localhost:5433/crosmos_test_ingestion} bun test",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "typecheck": "tsc --noEmit",
     "tail": "wrangler tail"
