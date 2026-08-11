@@ -139,6 +139,18 @@ export interface IngestSourceInput {
    * budget so total chunks across all sources stay within one invocation's cap.
    */
   chunkBudgetRemaining?: number;
+  /**
+   * Chunks processed concurrently within a batch. Defaults to
+   * `CHUNK_CONCURRENCY`; production never sets it.
+   *
+   * Exists so a reproducible run is possible. Concurrent chunks share the
+   * mutable `seenFactKeys` set and race entity resolution, so the SAME source
+   * ingested twice can legitimately yield different facts and entities. That is
+   * an accepted trade (the Stage-1 vector dedup hint still catches cross-chunk
+   * duplicates) but it makes byte-exact baselines impossible, so tests pin it
+   * to 1.
+   */
+  chunkConcurrency?: number;
 }
 
 const EMPTY_RESULT = (
@@ -686,12 +698,13 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // infra error) aborts the batch; its partially-written chunks are purged from
   // the checkpoint on the next attempt, so a retry never duplicates.
   const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
-  for (let i = 0; i < batch.length; i += CHUNK_CONCURRENCY) {
+  const chunkConcurrency = Math.max(1, input.chunkConcurrency ?? CHUNK_CONCURRENCY);
+  for (let i = 0; i < batch.length; i += chunkConcurrency) {
     // Mid-source lease heartbeat (issue #1), once per concurrency window:
     // re-stamp the job's `started_at` so a long-but-healthy source isn't
     // reclaimed and double-processed. Throttled + best-effort in the caller.
     await input.heartbeat?.();
-    const window = batch.slice(i, i + CHUNK_CONCURRENCY);
+    const window = batch.slice(i, i + chunkConcurrency);
     const windowResults = await Promise.all(window.map((chunk) => ingestChunk(chunk)));
     for (const r of windowResults) allIngested.push(...r);
   }

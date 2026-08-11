@@ -96,6 +96,17 @@ export interface RetrieveInput {
    * signal name, ok/failed, a reason enum. Never ids, never the query.
    */
   metrics?: Metrics;
+  /**
+   * Wall-clock reference for the time-dependent parts of scoring — recency decay
+   * and persistence's intrinsic decay. Defaults to now; production never sets it.
+   *
+   * Exists because those scores are genuinely a function of the current time, so
+   * two runs seconds apart produce slightly different values. That is correct
+   * behavior and invisible in production, but it makes an exact scoring baseline
+   * impossible. Freezing it is what lets a regression test compare scores rather
+   * than only ordering.
+   */
+  now?: Date;
 }
 
 /**
@@ -167,6 +178,9 @@ function failureFields(err: unknown): {
 
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const { query, scope, deps } = input;
+  // One clock reading for the whole request, so every candidate is scored
+  // against the same instant rather than drifting across the loop.
+  const scoringNow = input.now ?? new Date();
   const { db, embedder, reranker, vectorStore } = deps;
   const logger = input.logger;
 
@@ -504,8 +518,14 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       ranked.createdAt,
       ranked.accessFrequency,
       ranked.lastAccessedAt,
+      scoringNow,
     );
-    const recency = computeRecency(ranked.createdAt, ranked.recordedAt, ranked.eventTime);
+    const recency = computeRecency(
+      ranked.createdAt,
+      ranked.recordedAt,
+      ranked.eventTime,
+      scoringNow,
+    );
     const recencyFactor = recencyAlpha * (recency - RECENCY_CENTER);
 
     let totalBoost: number;
