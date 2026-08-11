@@ -358,8 +358,13 @@ reach the DLQ without a processing failure.
 
 **Not yet done**
 
-- Continuation metrics (`P1-B`) still require the Analytics Engine bindings.
-- Staging/production replay of a >15-window source is pending deployment.
+- ~~Continuation metrics require the Analytics Engine bindings.~~ Done
+  2026-08-11: `ingestion_continuation` now emits published/refused with the
+  refusal reason, continuation count and chunks processed. See P1-B.
+- A real >15-window source has not been replayed. Deployed to production
+  (`7f781965`), but no source large enough to need more than 15 invocations has
+  been ingested since, so the path that motivated this item is proven by tests
+  and not yet by traffic.
 
 ### [x] P0-D. Verify the deployed incident fixes
 
