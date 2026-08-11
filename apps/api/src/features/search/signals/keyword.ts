@@ -12,6 +12,7 @@ import { type Database, memories } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
 import { and, desc, isNull, sql } from 'drizzle-orm';
 import { scopeMemories } from '../../../lib/scope';
+import { retrievalMemoryColumns } from '../candidates';
 import { GIN_CANDIDATE_LIMIT, MIN_KEYWORD_SCORE } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { boundTsqueryText } from '../tsquery';
@@ -31,7 +32,13 @@ export async function keywordSearch(
   const rankExpr = sql<number>`ts_rank_cd(${tsVector}, ${tsQuery}, 33)`;
 
   const rows = await db
-    .select({ memory: memories, rank: rankExpr })
+    // Project only the columns ranking actually reads. Selecting the whole row
+    // pulled `embedding` — a 1536-dimension vector per candidate, up to
+    // GIN_CANDIDATE_LIMIT of them — plus `meta`, out of Postgres and into Worker
+    // memory on every keyword search, none of which is ever read. The column set
+    // is `retrievalMemoryColumns`, the same projection every other signal
+    // hydrates with, so candidate values are unchanged.
+    .select({ memory: retrievalMemoryColumns, rank: rankExpr })
     .from(memories)
     .where(
       and(

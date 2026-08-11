@@ -14,10 +14,8 @@ import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
-import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { invalidateSpace } from '../../lib/gate-cache';
 import { PaginationQuerySchema } from '../../lib/zod-common';
-import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
@@ -26,9 +24,9 @@ import { getOrganizationByIdOrThrow } from '../orgs/service';
 import { getSpaceUsage } from '../usage/service';
 import {
   createSpaceAtomic,
-  deleteSpace,
   getSpaceByUuid,
   listSpaces,
+  tombstoneSpace,
   SPACE_QUOTA_EXCEEDED,
 } from './service';
 
@@ -312,81 +310,55 @@ spaceRoutes.openapi(
       throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
     }
 
-    await getJobStore(db).cancelJobsForSpace(space.id);
-
-    const { deleted, memoryIds, entityIds } = await deleteSpace(db, {
-      orgId: space.orgId,
-      spaceId: space.id,
-    });
-    if (!deleted) {
-      throw new HTTPException(404, { message: `Space ${space_uuid} not found` });
-    }
-
     const logger = createLogger({
       service: 'api',
       environment: c.env.ENVIRONMENT,
-      base: {
-        org_id: space.orgId,
-        space_id: space.id,
-      },
+      base: { org_id: space.orgId, space_id: space.id },
     });
 
-    // Drop the cached gate entry — this space no longer exists.
-    waitUntilLogged(
-      c,
-      logger,
-      'gate_cache.space_invalidation_failed',
-      invalidateSpace(c.env, space_uuid),
-      { stage: 'gate_cache_invalidation' },
-    );
+    // ── Deferred deletion ────────────────────────────────────────────────
+    //
+    // The tombstone goes FIRST, before cancelling jobs. Ordering matters: from
+    // this instant every normal read path treats the space as absent and no new
+    // work can enter it, so the cancel sweep below is closing a bounded set
+    // rather than racing an open one. Doing it the other way round leaves a
+    // window where a job is cancelled but a fresh one can still be created.
+    //
+    // Physical removal — cascading away sources, memories, entities, edges, and
+    // purging their vectors — happens later in the maintenance sweep, once the
+    // ingestion lease has lapsed and no jobs remain. Deleting immediately raced
+    // in-flight workers and made a failed vector purge unrecoverable, because
+    // the authoritative ids were already gone.
+    const tombstoned = await tombstoneSpace(db, {
+      orgId: space.orgId,
+      spaceId: space.id,
+    });
 
-    // The DB cascade removed all of the space's memories + entities, but cannot
-    // reach the external vector index (Vectorize). Purge their vectors best-
-    // effort, off the response path, in bounded chunks. No-op when vectors live
-    // in the pg column (the cascade already removed them).
-    const vectorStore = getVectorStore(c.env, db);
-    if (!vectorStore.persistsInColumn) {
-      logger.info('spaces.vector_purge_scheduled', {
-        deleted_count: memoryIds.length + entityIds.length,
-        vector_count: memoryIds.length + entityIds.length,
-      });
-      if (memoryIds.length > 0) {
-        waitUntilLogged(
-          c,
-          logger,
-          'spaces.vector_purge_failed',
-          deleteVectorsChunked(vectorStore, 'memories', memoryIds),
-          { scope: 'memories', vector_count: memoryIds.length },
-        );
-      }
-      if (entityIds.length > 0) {
-        waitUntilLogged(
-          c,
-          logger,
-          'spaces.vector_purge_failed',
-          deleteVectorsChunked(vectorStore, 'entities', entityIds),
-          { scope: 'entities', vector_count: entityIds.length },
-        );
-      }
+    // Cancel regardless of whether WE set the tombstone: a repeated delete must
+    // still converge, and a job could have been created between a previous
+    // tombstone and now.
+    await getJobStore(db).cancelJobsForSpace(space.id);
+
+    logger.info('spaces.deleted', {
+      // false ⇒ already tombstoned by an earlier call. Still a 204: the space is
+      // gone from the caller's point of view, which was already true.
+      deterministic: tombstoned,
+      reason: tombstoned ? 'tombstoned' : 'already_tombstoned',
+    });
+
+    // Drop the cached gate entry — reads must stop resolving this space NOW,
+    // not when the (up to) TTL-long cache entry happens to expire. This is the
+    // one step whose failure would leave the space briefly reachable, so it is
+    // awaited rather than deferred.
+    try {
+      await invalidateSpace(c.env, space_uuid);
+    } catch (err) {
+      logger.warn('gate_cache.space_invalidation_failed', {
+        stage: 'gate_cache_invalidation',
+      }, err);
     }
+
     return c.body(null, 204);
   },
 );
 
-/** Max vector ids per `deleteByIds` call (bounds the upstream request size). */
-const VECTOR_DELETE_CHUNK = 1000;
-
-/**
- * Purge vectors from the external store in bounded chunks so a large space
- * delete doesn't issue one unbounded request. Best-effort: the caller wraps this
- * in `waitUntilLogged`, so a rejection is logged rather than failing the request.
- */
-async function deleteVectorsChunked(
-  vectorStore: VectorStore,
-  collection: 'memories' | 'entities',
-  ids: number[],
-): Promise<void> {
-  for (let i = 0; i < ids.length; i += VECTOR_DELETE_CHUNK) {
-    await vectorStore.deleteByIds(collection, ids.slice(i, i + VECTOR_DELETE_CHUNK));
-  }
-}

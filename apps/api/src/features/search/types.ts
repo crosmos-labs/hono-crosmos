@@ -49,6 +49,13 @@ export interface RetrievalQuery {
   rerank: boolean; // default true
   graph: boolean; // default true
   diversify: boolean; // default false
+  /**
+   * Whether the caller wants the full original source text on each result.
+   * When false, retrieval skips the post-selection source-content read
+   * entirely. Optional and defaulted to true so existing callers that omit it
+   * keep the previous behaviour.
+   */
+  includeSource?: boolean; // default true
 }
 
 /**

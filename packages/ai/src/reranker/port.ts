@@ -17,6 +17,11 @@ export interface RerankOptions {
   topK?: number;
   /** Override the provider's default model id. */
   model?: string;
+  /**
+   * Caller deadline; combined with the adapter's own safety timeout. See
+   * `EmbedOptions.signal`.
+   */
+  signal?: AbortSignal;
 }
 
 export interface Reranker {

@@ -6,12 +6,12 @@
  * `apps/api/src/integrations/job-store/pg.ts` so cross-app coupling stays
  * minimal (we'd promote to `packages/db/` only if drift becomes a problem).
  */
-import { ingestionJobs, type Database } from '@crosmos/db';
+import { ingestionJobs, memorySpaces, type Database } from '@crosmos/db';
 import type {
   IngestionJobResult,
   IngestionJobStatus,
 } from '@crosmos/types';
-import { and, eq, lt, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, notInArray, or } from 'drizzle-orm';
 
 export interface UpdateStatusOptions {
   result?: IngestionJobResult;
@@ -142,7 +142,7 @@ export async function updateJobStatus(
   jobId: string,
   status: IngestionJobStatus,
   opts: UpdateStatusOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const now = new Date();
   const values: Record<string, unknown> = { status };
   // LOAD-BEARING — DO NOT REMOVE: re-stamping `started_at` on every
@@ -162,5 +162,51 @@ export async function updateJobStatus(
   if (opts.result !== undefined) values.result = opts.result;
   if (opts.error !== undefined) values.errorMessage = opts.error;
   if (opts.stage !== undefined) values.currentStage = opts.stage;
-  await db.update(ingestionJobs).set(values).where(eq(ingestionJobs.id, jobId));
+
+  // Compare-and-set on TERMINALITY. Without this the per-source and per-chunk
+  // heartbeats write `status = 'processing'` by job id alone, so a job the API
+  // cancelled (space deleted, user cancelled) is silently RESURRECTED to
+  // `processing` by the very run that was supposed to be stopping — and the
+  // cancellation is then invisible to everyone reading job status.
+  //
+  // Terminal is final: once a job is completed/partial/failed/cancelled nothing
+  // may move it. The caller learns the write did not apply from the return
+  // value and can stop early.
+  const updated = await db
+    .update(ingestionJobs)
+    .set(values)
+    .where(
+      and(
+        eq(ingestionJobs.id, jobId),
+        notInArray(ingestionJobs.status, [...TERMINAL_STATUSES]),
+      ),
+    )
+    .returning({ id: ingestionJobs.id });
+  return updated.length > 0;
+}
+
+/**
+ * Is this job's space still active (not tombstoned)?
+ *
+ * Deferred deletion means `DELETE /spaces/{uuid}` returns 204 immediately while
+ * a job may still be mid-flight. Job cancellation is the primary fence, but it
+ * is a separate row: a job created between the tombstone and the cancel sweep,
+ * or one whose cancel write lost a race, would otherwise keep writing memories
+ * into a space the user has deleted — rows the finalizer then has to clean up,
+ * and which are briefly visible if anything reads without the active filter.
+ *
+ * Checked alongside `isJobCancelled` at the same boundaries. Fails OPEN: if this
+ * query throws we continue, because a transient database blip must not silently
+ * abandon ingestion. The tombstone is durable, so the next boundary re-checks.
+ */
+export async function isSpaceActive(
+  db: Database,
+  spaceId: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: memorySpaces.id })
+    .from(memorySpaces)
+    .where(and(eq(memorySpaces.id, spaceId), isNull(memorySpaces.deletedAt)))
+    .limit(1);
+  return rows.length > 0;
 }

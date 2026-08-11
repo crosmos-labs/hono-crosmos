@@ -1,3 +1,4 @@
+import { isAbortError, withDeadline } from '@crosmos/runtime';
 import {
   VectorStoreError,
   type QueryOptions,
@@ -106,6 +107,7 @@ export class QdrantStore implements VectorStore {
       'POST',
       `/collections/${this.collectionName(collection)}/points/search`,
       body,
+      opts.signal,
     );
 
     const minScore = opts.minScore;
@@ -227,6 +229,13 @@ export class QdrantStore implements VectorStore {
     method: string,
     path: string,
     body?: unknown,
+    /**
+     * Caller deadline, combined with (never replacing) REQUEST_TIMEOUT_MS. Read
+     * paths pass it so a search the client already abandoned stops holding a
+     * Qdrant connection; write paths leave it undefined, since ingestion
+     * durability must not be cut short by a caller going away.
+     */
+    signal?: AbortSignal,
   ): Promise<T> {
     let res: Response;
     try {
@@ -237,9 +246,12 @@ export class QdrantStore implements VectorStore {
           'Content-Type': 'application/json',
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: withDeadline(REQUEST_TIMEOUT_MS, signal),
       });
     } catch (err) {
+      // A caller-deadline abort is not a Qdrant fault; propagate it unchanged
+      // rather than reporting a retryable 504 for a request nobody awaits.
+      if (isAbortError(err)) throw err;
       const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
       throw new QdrantRequestError(
         `Qdrant ${method} ${path} ${

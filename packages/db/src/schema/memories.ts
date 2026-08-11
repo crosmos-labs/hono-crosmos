@@ -9,6 +9,7 @@ import {
   text,
   timestamp,
   uuid,
+  varchar,
   vector,
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
@@ -49,6 +50,23 @@ export const memories = pgTable(
     visibility: memoryVisibility('visibility').notNull().default('private'),
     content: text('content').notNull(),
     memoryType: memoryType('memory_type').notNull(),
+    /**
+     * Who said the thing this fact came from: `user`, `assistant`, `system`,
+     * `tool`, or null when the extractor did not attribute it.
+     *
+     * The extraction prompt has always produced this and the cross-chunk dedup
+     * key has always included it, but persistence dropped it — so the signal was
+     * computed and thrown away on every ingest. Storing it makes it available to
+     * a future attribution or ranking policy; nothing reads it today, and it is
+     * deliberately not exposed on the public API.
+     *
+     * Plain nullable `varchar(16)` rather than an enum or a CHECK constraint:
+     * `normalizeFacts` is the only writer and already rejects anything outside
+     * the four roles, the length bounds it, and every historical row is null.
+     * Adding a constraint to a live multi-million-row table would be extra
+     * migration risk for no behavioral gain in this phase.
+     */
+    speakerRole: varchar('speaker_role', { length: 16 }),
     embedding: vector('embedding', { dimensions: 1024 }),
     importanceScore: doublePrecision('importance_score'),
     meta: jsonb('meta'),

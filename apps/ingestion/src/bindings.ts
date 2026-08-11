@@ -1,13 +1,31 @@
+import type { IngestionJobMessage } from '@crosmos/types';
+
 export interface Env {
   // Bindings
   HYPERDRIVE: Hyperdrive;
+  /**
+   * Producer binding onto the SAME queue this worker consumes. Used only to
+   * publish *continuations* — a job that advanced its durable checkpoints but
+   * ran out of per-invocation chunk budget gets a fresh message (attempt
+   * counter reset) instead of burning the delivery retry budget meant for
+   * failures. See `MAX_JOB_CONTINUATIONS` and `queue-consumer.ts`.
+   *
+   * Optional so the consumer degrades to the old re-queue behavior in local dev
+   * or any deployment where the binding hasn't been added yet.
+   */
+  INGESTION_QUEUE?: Queue<IngestionJobMessage>;
   // Workers AI — embeddings (bge-m3).
   AI: Ai;
-  // Vectorize indexes (used when VECTOR_STORE=vectorize).
-  MEMORIES_INDEX: VectorizeIndex;
-  ENTITIES_INDEX: VectorizeIndex;
-  // Analytics Engine — metrics sink (ingestion outcome/latency/tokens).
-  // Optional: unbound in local dev / tests, where createMetrics() is a no-op.
+  // Optional: only bound where VECTOR_STORE=vectorize. Staging and production
+  // run Qdrant, and wrangler validates Vectorize bindings at deploy time even
+  // when nothing reads them, so those envs declare none. `getVectorStore`
+  // throws a clear error if the backend is switched back without them.
+  MEMORIES_INDEX?: VectorizeIndex;
+  ENTITIES_INDEX?: VectorizeIndex;
+  // Analytics Engine — metrics sink (ingestion outcome/latency/tokens). Bound
+  // in every deployed environment since 2026-08-11; still optional because
+  // `bun test` and direct library use have no binding, where `createMetrics`
+  // degrades to a silent no-op. See docs/metrics-runbook.md.
   ANALYTICS?: AnalyticsEngineDataset;
 
   // Vars

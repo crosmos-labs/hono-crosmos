@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@crosmos/db": "workspace:*",
+    "@crosmos/runtime": "workspace:*",
     "drizzle-orm": "^0.36.4"
   },
   "devDependencies": {

@@ -11,6 +11,7 @@
     "build": "turbo build",
     "deploy": "turbo deploy",
     "typecheck": "turbo typecheck",
+    "test": "turbo test",
     "db:generate": "bun --filter @crosmos/db generate",
     "db:migrate": "bun --filter @crosmos/db migrate"
   },
