@@ -297,15 +297,26 @@ async function collectSpaceEntityIds(
 
 export interface DeleteSpaceResult {
   deleted: boolean;
-  /** Memory ids whose vectors must be purged from the external vector store. */
+  /** Memory ids whose vectors were purged from the external vector store. */
   memoryIds: number[];
   /**
-   * Entity ids whose vectors must be purged. Unlike a single-source delete,
+   * Entity ids whose vectors were purged. Unlike a single-source delete,
    * entities ARE space-scoped and the space's FK cascade physically removes
    * them, so their vectors are orphaned too and must be deleted.
    */
   entityIds: number[];
 }
+
+/**
+ * Purges the external vector index for a space being physically deleted.
+ *
+ * Invoked by `deleteSpace` AFTER the ids are collected and BEFORE the parent row
+ * is deleted. Throwing aborts the delete and leaves the tombstone intact.
+ */
+export type PurgeSpaceVectors = (ids: {
+  memoryIds: number[];
+  entityIds: number[];
+}) => Promise<void>;
 
 /**
  * Mirrors Python: cascade handles sources/memories/entities/edges via FK rules
@@ -404,13 +415,29 @@ export async function countActiveJobsForSpace(
 
 export async function deleteSpace(
   db: Database,
-  input: { orgId: number; spaceId: number },
+  input: { orgId: number; spaceId: number; purgeVectors?: PurgeSpaceVectors },
 ): Promise<DeleteSpaceResult> {
   // Collect ids BEFORE the delete — the cascade makes the rows unreachable.
   const [memoryIds, entityIds] = await Promise.all([
     collectSpaceMemoryIds(db, input.orgId, input.spaceId),
     collectSpaceEntityIds(db, input.orgId, input.spaceId),
   ]);
+
+  // Purge the external index BEFORE the parent row, and let a failure propagate
+  // so the row survives. This ordering is the whole reason deferred deletion
+  // exists, and it is owned here rather than by the caller because getting it
+  // backwards is unrecoverable, not merely inefficient: `memory_spaces` is the
+  // only way to enumerate a tombstone, and these ids are the only way to
+  // enumerate its vectors. Delete the row first and a failed purge strands
+  // vectors in the index with nothing left to find them by — the `VectorStore`
+  // port exposes `deleteByIds` only, so there is no filter-delete fallback.
+  //
+  // Leaving the tombstone instead makes the next sweep re-derive the same ids
+  // and retry. `deleteByIds` is idempotent, so re-purging already-purged vectors
+  // is harmless. Mirrors `purgeSourceArtifacts` in the ingestion pipeline.
+  if (input.purgeVectors) {
+    await input.purgeVectors({ memoryIds, entityIds });
+  }
 
   const deleted = await db
     .delete(memorySpaces)

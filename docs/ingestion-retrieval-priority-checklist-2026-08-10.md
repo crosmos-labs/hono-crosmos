@@ -24,6 +24,15 @@ This checklist is intentionally scoped to this repository. SDK changes,
 Cloudflare account configuration, provider dashboards, and other external work
 are recorded as dependencies, not as repository-owned completion checkboxes.
 
+> **Update 2026-08-12.** Preparing to enable the P1-A finalizer surfaced two
+> defects in the destructive path — the vector purge ran after the parent-row
+> delete (breaking P1-A's own retry gate), and the re-drive sweep resurrected
+> jobs in tombstoned spaces (which would have prevented any tombstone from ever
+> finalizing). Both are fixed and mutation-checked; neither is deployed. See
+> P1-A below. P0-A's harness landed but its suite is still disabled pending a
+> `bun test` reproducibility divergence — see the file header of
+> `apps/api/tests/pipeline-baseline.pg.test.ts`.
+>
 > **Implementation status (updated 2026-08-11).** Execution has started. Each
 > completed item carries an "Implemented" block recording what shipped, how it
 > was verified, and what its acceptance gate still does *not* cover. Done:
@@ -516,8 +525,9 @@ to staging **and** production; API `cbaf161c` and Ingestion `7f781965` are live.
   checkpoint it previously lacked.
 - Ingestion checks cancellation **and** space-active state between sources,
   failing OPEN so a database blip cannot silently abandon a job.
-- `runSpaceFinalization` purges vectors in bounded pages before the parent row;
-  a vector failure leaves the tombstone for the next idempotent sweep.
+- ~~`runSpaceFinalization` purges vectors in bounded pages before the parent row;
+  a vector failure leaves the tombstone for the next idempotent sweep.~~
+  **This was false when written — corrected 2026-08-12, see below.**
 - `daily_usage_space_id_memory_spaces_id_fk` dropped.
 
 **Verified on live production** (test data created and fully removed afterwards;
@@ -544,15 +554,86 @@ invariant is public-API compatibility. Returning 204 would be the behaviour
 change. Concurrent double-deletes, where both requests observe an active space,
 do both return 204 via the CAS.
 
+**Two blockers found and fixed 2026-08-12, before enabling the finalizer**
+
+Reviewing the finalizer *because* enabling it was the next step turned up a
+defect that the item's own acceptance gate names, and a cross-sweep interaction
+nobody had looked for. Both are fixed; neither is deployed yet.
+
+**1. The vector purge ran AFTER the parent row delete.**
+
+The gate says: *"A vector purge failure does not hard-delete the parent and
+succeeds on retry."* It did the opposite. `runSpaceFinalization` called
+`deleteSpace` (which collects ids **and** deletes the row, cascading everything)
+and only then purged vectors from the collected id list. A purge failure
+therefore left the row already gone, so:
+
+- `listSpacesPendingDeletion` could never rediscover it — it selects on
+  `deleted_at IS NOT NULL`, and there was no row;
+- the `failedVectorPurge` counter and the `space_finalize_failed` metric both
+  claimed "retried next sweep" when nothing would ever retry;
+- the vectors were stranded in Qdrant with no way to enumerate them, because
+  `VectorStore` exposes `deleteByIds` only — no filter-delete.
+
+The file header, the `deleteSpace` doc comment, and this checklist all asserted
+the correct order. Only the code disagreed. It survived because **no test
+supplied a vector store to the finalizer at all**, let alone a failing one: all
+18 P1-A cases exercised the service layer directly.
+
+Fixed by moving the ordering *into* `deleteSpace` as a `purgeVectors` callback
+invoked between collecting the ids and deleting the row, so a throw aborts the
+delete and the tombstone survives. The call site can no longer sequence it
+wrongly. `apps/ingestion/src/ingestion/pipeline.ts` already had this exact
+pattern, with a comment explaining why — the finalizer was the one divergent
+site.
+
+**2. The re-drive sweep resurrected jobs in tombstoned spaces.**
+
+`redriveStuckSources` selected candidates from `sources` with no join to
+`memory_spaces`. Deleting a space holding a stuck/failed source put two crons in
+a loop: re-drive mints a job every 15 minutes → the worker's `isSpaceActive`
+fence cancels it → but while it existed `countActiveJobsForSpace` was non-zero,
+so the finalizer skipped that space. **The tombstone would never finalize**, and
+the cause would have looked like a finalizer bug. Eventually the source burns its
+re-drive budget and fires `ingestion.sources_abandoned` at ERROR with a paging
+metric that means "we gave up on user data" — for a space the user deliberately
+deleted.
+
+Fixed with an `isNull(memorySpaces.deletedAt)` inner join on both the candidate
+query and the budget-exhausted query. Note this one is live *today*,
+independently of the finalizer.
+
+**Neither has caused production damage.** The finalizer has never run in any
+environment, so bug 1 stranded nothing: production still holds zero tombstones
+and no space has been physically deleted. Bug 2 could only have bitten a space
+that was both deleted and holding a non-terminal source, and there have been no
+deletions to date. The window was closed before it opened, which is the argument
+for reading the destructive path *before* switching it on rather than after.
+
+**Verification**
+
+- `apps/api/tests/space-deletion.pg.test.ts` — 6 new cases under "vector purge
+  ordering": the purge observes the space row still present, a failing purge
+  leaves both row and memories intact, the space stays eligible for the next
+  sweep, the retry re-derives an identical id set and succeeds, entity vectors
+  are included, and omitting the callback still deletes.
+- `apps/api/tests/redrive-tombstone.pg.test.ts` — 5 cases including a positive
+  control (active space → candidate found), no job created for a tombstoned
+  space, sibling spaces unaffected, and no spurious abandonment page.
+- **Mutation-checked, both.** Restoring the old ordering fails 4 of the 6 new
+  ordering cases; removing the tombstone predicate fails 4 of the 5 re-drive
+  cases. Neither suite is a passing formality.
+
 **Remaining before this item is `[x]`**
 
+- Not yet deployed. Both fixes are committed only.
 - `SPACE_FINALIZER_ENABLED` is unset in every environment, so no physical
   deletion runs and tombstones accumulate indefinitely. Enabling it is the
-  destructive half and is a deliberate, separate decision.
+  destructive half and is a deliberate, separate decision — now unblocked, but
+  still a decision.
 - The mid-flight deletion race (delete a space *while* a large ingestion is
   running) has not been exercised against production; the fences are unit-tested
   only.
-- A vector-purge failure path has not been injected end-to-end.
 
 ### [x] P1-B. Activate existing metrics before reducing logs
 
