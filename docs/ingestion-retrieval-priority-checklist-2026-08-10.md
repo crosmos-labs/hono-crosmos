@@ -630,10 +630,87 @@ for reading the destructive path *before* switching it on rather than after.
 - `SPACE_FINALIZER_ENABLED` is unset in every environment, so no physical
   deletion runs and tombstones accumulate indefinitely. Enabling it is the
   destructive half and is a deliberate, separate decision — now unblocked, but
-  still a decision.
+  still a decision, and **open on purpose**: see the retention question below.
 - The mid-flight deletion race (delete a space *while* a large ingestion is
   running) has not been exercised against production; the fences are unit-tested
   only.
+
+### Open question: should a deleted space ever be physically deleted?
+
+**Raised 2026-08-12, deliberately deferred. Nothing is blocked on it.**
+
+The finalizer is built, fixed, and off. Before switching it on, the prior
+question was asked and is worth recording rather than re-deriving later: the
+system currently does a soft delete, that works, so why destroy anything at all?
+
+**Operationally, nothing needs the row gone.** This was checked rather than
+assumed:
+
+| Concern | Already handled without physical deletion |
+|---|---|
+| Name reuse after delete | Partial unique index on `(org_id, name) WHERE deleted_at IS NULL` — a deleted name is immediately reusable |
+| Space quota | `countSpaces` applies `activeSpace()`, so a delete frees capacity at once |
+| Retrieval leakage | Qdrant filters by `spaceId`; Postgres filters by `activeSpace()`. A tombstoned space is unreachable from search |
+| Storage | Negligible at current scale — production is 173 spaces and ~4,400 memories. The Qdrant vectors for a deleted space cost approximately nothing |
+| Billing history | `daily_usage` already survives deletion by design (its FK was dropped) |
+
+So the case for enabling the finalizer *soon* is weak, and the case for keeping
+tombstones a while is strong: **today a mistaken `DELETE /spaces` is fully
+recoverable**, because every row is still present and only `deleted_at` needs
+clearing.
+
+**But "never delete" is a different claim from "not yet", and it is weaker for
+two reasons.**
+
+1. **Erasure obligations.** A user pressed delete and the data is still there.
+   GDPR/CCPA right to erasure, India's DPDP Act, and any DPA signed with a B2B
+   customer all bear on this. Crosmos is multi-tenant with space-scoped keys, so
+   the first enterprise security review will ask what happens to data after
+   deletion. "Retained indefinitely, just hidden" is not an answer worth having
+   to give.
+2. **"Forever" is the absence of a policy, not a policy.** The current behaviour
+   is *retained until somebody remembers to write SQL*. That is not more
+   user-friendly than deleting — it is undecided. A stated period is both safer
+   and more honest.
+
+**There is also no restore path.** `includeDeleted` exists only inside
+`features/spaces/service.ts` for the deletion and finalization paths; no route,
+script, or admin surface un-deletes a space. Undoing a mistaken delete today
+means hand-written SQL against production Neon. That is tolerable while the
+window is infinite and becomes a real gap the moment it is not.
+
+**Proposed resolution (not implemented, not decided).** Neither extreme. Keep the
+finalizer and make the grace period a retention policy:
+
+```ts
+// apps/api/src/features/maintenance/finalize-spaces.ts
+export const SPACE_FINALIZE_GRACE_MS = 30 * 24 * 60 * 60_000; // 30 days
+```
+
+The constant already gates eligibility, so this is a one-line change. It yields a
+30-day undo window — vastly better than the current 10 minutes and better than
+"write SQL by hand" — while the data does eventually leave, so the retention
+period can be stated plainly to a customer. It also makes enabling the flag a
+slow, observable decision rather than an irreversible one: nothing is deleted for
+the first 30 days after switch-on, and `space_finalized` metrics appear before
+anything disappears.
+
+If that route is taken, an explicit restore path (admin-only, audited) should
+land with it, so the undo window is usable by someone who is not holding a `psql`
+session.
+
+**What does *not* wait on this decision.** The re-drive tombstone fix above
+matters **more** under an indefinite-tombstone model, not less: a deleted space
+holding a stuck source mints a fresh ingestion job every 15 minutes forever,
+burning the source's re-drive budget and eventually firing
+`ingestion.sources_abandoned` at ERROR — an alert meaning "we lost user data" —
+for a space the user deliberately deleted. With a finalizer that eventually
+resolves when the space is purged. Without one it never does. Deploy it either
+way.
+
+Retention policy is tracked alongside the log-retention work in
+[the observability checklist](./observability-admin-analytics-checklist-2026-08-12.md);
+the two are the same shape of question and should be answered in one place.
 
 ### [x] P1-B. Activate existing metrics before reducing logs
 
