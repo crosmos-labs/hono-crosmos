@@ -29,6 +29,7 @@ import {
   getTestDb,
   resetTestData,
   seedEdge,
+  seedEdges,
   seedEntity,
   seedMemory,
   seedTenant,
@@ -289,8 +290,9 @@ describeDb('getEdgesForEntities — SQL bounds match the old JS pipeline', () =>
     // be filtered BEFORE the cap applies — if the cap were applied first, the
     // two implementations would disagree here.
     const base = new Date('2026-03-01T00:00:00Z').getTime();
+    const batch: Parameters<typeof seedEdges>[2] = [];
     for (let i = 0; i < 250; i++) {
-      await seedEdge(db!, tenant, {
+      batch.push({
         sourceEntityId: hub,
         targetEntityId: leaf,
         memoryId,
@@ -299,7 +301,7 @@ describeDb('getEdgesForEntities — SQL bounds match the old JS pipeline', () =>
         recordedAt: new Date(base + i * 60_000),
       });
       if (i % 5 === 0) {
-        await seedEdge(db!, tenant, {
+        batch.push({
           sourceEntityId: hub,
           targetEntityId: leaf,
           memoryId,
@@ -309,6 +311,9 @@ describeDb('getEdgesForEntities — SQL bounds match the old JS pipeline', () =>
         });
       }
     }
+    // One statement rather than 300 round-trips: same rows, same insertion
+    // order, therefore the same ascending ids the tie-break depends on.
+    await seedEdges(db!, tenant, batch);
 
     const ids = await assertEquivalent([hub], orgScope(tenant));
     expect(ids).toHaveLength(GRAPH_MAX_EDGES_PER_HOP);

@@ -1,6 +1,6 @@
-import { createDb, sources, type Database } from '@crosmos/db';
+import { createDb, memorySpaces, sources, type Database } from '@crosmos/db';
 import { createLogger, createMetrics } from '@crosmos/observability';
-import { and, gt, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import type { Env } from '../../bindings';
 import { getJobStore, reapStaleIngestionJobs } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
@@ -130,7 +130,15 @@ export async function redriveStuckSources(
   const attempts = sql<number>`coalesce((${sources.meta}->>'redrive_attempts')::int, 0)`;
 
   // Candidates: not-completed sources past their settle window, within the
-  // recency window, under the per-source re-drive budget.
+  // recency window, under the per-source re-drive budget, in a space that still
+  // exists.
+  //
+  // The join is what excludes tombstoned spaces (P1-A). Without it this sweep
+  // mints fresh jobs every 15 minutes for sources whose space is being deleted.
+  // Nothing is written — the worker's `isSpaceActive` fence cancels them — but
+  // the jobs are non-terminal while they exist, so `countActiveJobsForSpace`
+  // sees them and the finalizer skips that space forever. A deleted space would
+  // never be cleaned up, and the cause would look like a finalizer bug.
   const candidates = await db
     .select({
       id: sources.id,
@@ -141,8 +149,10 @@ export async function redriveStuckSources(
       extractionStatus: sources.extractionStatus,
     })
     .from(sources)
+    .innerJoin(memorySpaces, eq(sources.spaceId, memorySpaces.id))
     .where(
       and(
+        isNull(memorySpaces.deletedAt),
         gt(sources.updatedAt, recencyFloor),
         sql`${attempts} < ${MAX_REDRIVE_ATTEMPTS}`,
         or(
@@ -167,11 +177,18 @@ export async function redriveStuckSources(
   // while still non-terminal are excluded from the candidate query above and
   // would otherwise sit `pending`/`processing` forever. Mark them terminally
   // failed so they leave limbo and surface in monitoring.
+  // Same tombstone exclusion as the candidate query, and for a sharper reason:
+  // marking these terminally failed logs `ingestion.sources_abandoned` at ERROR
+  // with a paging metric, because it means real data loss. A source in a space
+  // the user deliberately deleted is not data loss, and paging on it would train
+  // whoever carries the pager to ignore the one alert that must never be noise.
   const exhausted = await db
     .select({ id: sources.id })
     .from(sources)
+    .innerJoin(memorySpaces, eq(sources.spaceId, memorySpaces.id))
     .where(
       and(
+        isNull(memorySpaces.deletedAt),
         gt(sources.updatedAt, recencyFloor),
         sql`${attempts} >= ${MAX_REDRIVE_ATTEMPTS}`,
         sql`${sources.extractionStatus} in ('pending','processing')`,

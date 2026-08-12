@@ -17,6 +17,13 @@
  * place and the next sweep retries — idempotently, because the ids are still
  * derivable.
  *
+ * That ordering is enforced by `deleteSpace`, which takes the purge as a
+ * callback and runs it between collecting the ids and deleting the row. It is
+ * deliberately not this file's job to sequence: this sweep read correct-looking
+ * like the comment above for a full release while actually deleting the row
+ * first, because the two steps were separate calls here and nothing failed when
+ * they were swapped.
+ *
  * Disabled by default. `SPACE_FINALIZER_ENABLED=true` turns it on, so the
  * tombstone/read-filtering half can be deployed and observed before anything
  * destructive runs.
@@ -110,27 +117,24 @@ export async function runSpaceFinalization(env: Env): Promise<FinalizeSpacesResu
     }
 
     try {
-      // Collects memory + entity ids (keyset-paginated), then deletes the
-      // parent row, whose cascade removes everything the space owns.
-      // `daily_usage` deliberately survives: its FK was dropped so billing
-      // history outlives the space.
+      // Collects memory + entity ids (keyset-paginated), purges their vectors,
+      // and only then deletes the parent row, whose cascade removes everything
+      // the space owns. `daily_usage` deliberately survives: its FK was dropped
+      // so billing history outlives the space.
       const { deleted, memoryIds, entityIds } = await deleteSpace(db, {
         orgId: space.orgId,
         spaceId: space.id,
+        purgeVectors: vectorStore.persistsInColumn
+          ? undefined // cascade already removed them from the pg column
+          : async ({ memoryIds: mIds, entityIds: eIds }) => {
+              await deleteVectorsChunked(vectorStore, 'memories', mIds);
+              await deleteVectorsChunked(vectorStore, 'entities', eIds);
+            },
       });
       if (!deleted) {
         // Raced another finalizer run. Not an error.
         spaceLogger.info('spaces.finalize_skipped', { reason: 'already_gone' });
         continue;
-      }
-
-      if (!vectorStore.persistsInColumn) {
-        // NOTE: ids were collected before the row delete above, so they remain
-        // usable here even though the Postgres rows are gone. A failure now
-        // leaves orphaned vectors — reported, and reconciled by P2-D rather
-        // than silently ignored.
-        await deleteVectorsChunked(vectorStore, 'memories', memoryIds);
-        await deleteVectorsChunked(vectorStore, 'entities', entityIds);
       }
 
       result.finalized++;
@@ -149,14 +153,15 @@ export async function runSpaceFinalization(env: Env): Promise<FinalizeSpacesResu
         index: 'space_finalized',
       });
     } catch (err) {
-      // Leave the tombstone: the next sweep retries. This is exactly the case
-      // immediate hard deletion could not recover from.
+      // The tombstone survives, so the next sweep retries. This is exactly the
+      // case immediate hard deletion could not recover from — and it only holds
+      // because `deleteSpace` purges vectors before the row and propagates the
+      // failure instead of pressing on.
       result.failedVectorPurge++;
-      spaceLogger.error(
-        'spaces.finalize_failed',
-        { error_category: 'internal', dependency: 'vector' },
-        err,
-      );
+      // Not asserting `dependency: 'vector'`: a collect or delete can fail here
+      // too, and mislabelling every failure as the vector store sends whoever
+      // reads this at Qdrant when the problem is Postgres.
+      spaceLogger.error('spaces.finalize_failed', { error_category: 'internal' }, err);
       metrics.count('space_finalize_failed', {
         tags: [env.ENVIRONMENT],
         index: 'space_finalize_failed',

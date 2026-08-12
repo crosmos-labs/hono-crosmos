@@ -194,6 +194,43 @@ export async function seedEdge(
   return row!.id;
 }
 
+/**
+ * Batch form of `seedEdge`, in ONE statement. Ids are assigned in array order,
+ * exactly as sequential calls would, so id-descending tie-breaks are unchanged.
+ *
+ * Exists because a fixture that awaits a few hundred single-row inserts spends
+ * its whole budget on round-trips: the 300-edge high-degree case took >5s and
+ * intermittently blew the default test timeout once another suite was competing
+ * for the same database. A fixture slow enough to flake is a fixture that gets
+ * deleted, and this one guards a ranking-equivalence claim.
+ */
+export async function seedEdges(
+  db: Database,
+  tenant: Tenant,
+  rows: SeedEdgeOptions[],
+): Promise<number[]> {
+  if (rows.length === 0) return [];
+  const values = rows.map(
+    (o) => sql`(gen_random_uuid(), ${tenant.orgId}, ${tenant.spaceId},
+       ${o.ownerUserId ?? tenant.userId},
+       ${o.sourceEntityId}, ${o.targetEntityId},
+       ${o.memoryId ?? null}, 'related_to',
+       ${o.confidence === undefined ? 1.0 : o.confidence},
+       ${o.validFrom ? o.validFrom.toISOString() : null},
+       ${(o.recordedAt ?? new Date()).toISOString()},
+       ${o.visibility ?? 'org'},
+       ${o.forgotten ? sql`now()` : sql`null`})`,
+  );
+  const inserted = await db.execute<{ id: number }>(sql`
+    insert into edges
+      (uuid, org_id, space_id, owner_user_id, source_entity_id, target_entity_id,
+       memory_id, relation_type, confidence, valid_from, recorded_at, visibility,
+       forgotten_at)
+    values ${sql.join(values, sql`, `)}
+    returning id`);
+  return inserted.map((r) => r.id);
+}
+
 export interface SeedJobOptions {
   spaceId?: number;
   status?: 'pending' | 'processing' | 'completed' | 'partial' | 'failed' | 'cancelled';

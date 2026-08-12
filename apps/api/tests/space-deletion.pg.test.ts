@@ -27,6 +27,7 @@ import {
   announceSkip,
   getTestDb,
   resetTestData,
+  seedEntity,
   seedMemory,
   seedTenant,
   type Tenant,
@@ -294,8 +295,9 @@ describeDb('physical deletion and usage retention', () => {
     await tombstoneSpace(db!, orgInput(space.id));
     const { memoryIds } = await deleteSpace(db!, orgInput(space.id));
 
-    // Ids are collected BEFORE the cascade, which is what makes a failed vector
-    // purge retryable rather than leaving unreachable orphans.
+    // Ids are collected BEFORE the cascade. Necessary but not sufficient for a
+    // retryable purge — see the vector-purge ordering block below for the other
+    // half.
     expect(memoryIds).toHaveLength(2);
   });
 
@@ -310,5 +312,159 @@ describeDb('physical deletion and usage retention', () => {
 
     expect(await getSpaceByUuid(db!, keeper.uuid)).not.toBeNull();
     expect(await usageRowCount(keeper.id)).toBe(1);
+  });
+});
+
+/**
+ * Vector-purge ordering.
+ *
+ * This block exists because the finalizer shipped with the order INVERTED: it
+ * deleted the parent row and then purged vectors from the collected ids. Every
+ * test above still passed, because none of them supplied a vector store, let
+ * alone a failing one. The result was silent and unrecoverable — a purge failure
+ * left vectors in Qdrant with the tombstone already gone, and `VectorStore`
+ * exposes `deleteByIds` only, so nothing could enumerate them afterwards.
+ *
+ * The invariant: on failure the space row SURVIVES, because the row is the only
+ * handle the next sweep has.
+ */
+describeDb('vector purge ordering', () => {
+  /** Records what was purged, and whether the space row still existed at the time. */
+  async function spaceExists(spaceId: number): Promise<boolean> {
+    const rows = await db!
+      .select({ id: memorySpaces.id })
+      .from(memorySpaces)
+      .where(eq(memorySpaces.id, spaceId));
+    return rows.length > 0;
+  }
+
+  test('vectors are purged while the space row still exists', async () => {
+    const space = await createSpace('doomed');
+    await seedMemory(db!, { ...tenant, spaceId: space.id }, { content: 'a fact' });
+    await tombstoneSpace(db!, orgInput(space.id));
+
+    const existedDuringPurge: boolean[] = [];
+    await deleteSpace(db!, {
+      ...orgInput(space.id),
+      purgeVectors: async () => {
+        existedDuringPurge.push(await spaceExists(space.id));
+      },
+    });
+
+    // The ordering assertion. Under the inverted implementation this is false:
+    // the row is already gone by the time the purge runs, so a failure has
+    // nothing left to retry from.
+    expect(existedDuringPurge).toEqual([true]);
+    expect(await spaceExists(space.id)).toBe(false);
+  });
+
+  test('a failed purge leaves the space row and the tombstone intact', async () => {
+    const space = await createSpace('doomed');
+    await seedMemory(db!, { ...tenant, spaceId: space.id }, { content: 'a fact' });
+    await tombstoneSpace(db!, orgInput(space.id));
+    await backdateTombstone(space.id, 30);
+
+    await expect(
+      deleteSpace(db!, {
+        ...orgInput(space.id),
+        purgeVectors: async () => {
+          throw new Error('qdrant unavailable');
+        },
+      }),
+    ).rejects.toThrow('qdrant unavailable');
+
+    // Row survives, so the next sweep can retry. The memories survive with it —
+    // a half-deleted space would be worse than an undeleted one.
+    expect(await spaceExists(space.id)).toBe(true);
+    const [row] = await db!.execute<{ c: number }>(
+      sql`select count(*)::int as c from memories where space_id = ${space.id}`,
+    );
+    expect(row!.c).toBe(1);
+  });
+
+  test('the space is still eligible for the next sweep after a failed purge', async () => {
+    const space = await createSpace('doomed');
+    await tombstoneSpace(db!, orgInput(space.id));
+    await backdateTombstone(space.id, 30);
+
+    await expect(
+      deleteSpace(db!, {
+        ...orgInput(space.id),
+        purgeVectors: async () => {
+          throw new Error('qdrant unavailable');
+        },
+      }),
+    ).rejects.toThrow();
+
+    // The actual retry mechanism: the finalizer re-discovers it by tombstone.
+    const pending = await listSpacesPendingDeletion(db!, {
+      graceMs: 10 * 60_000,
+      limit: 10,
+    });
+    expect(pending.map((p) => p.id)).toContain(space.id);
+  });
+
+  test('the retry re-derives the same ids and succeeds', async () => {
+    const space = await createSpace('doomed');
+    const spaceTenant = { ...tenant, spaceId: space.id };
+    const m1 = await seedMemory(db!, spaceTenant, { content: 'one' });
+    const m2 = await seedMemory(db!, spaceTenant, { content: 'two' });
+    const e1 = await seedEntity(db!, spaceTenant, 'Priya');
+    await tombstoneSpace(db!, orgInput(space.id));
+
+    const attempts: Array<{ memoryIds: number[]; entityIds: number[] }> = [];
+    let failNext = true;
+    const purge = async (ids: { memoryIds: number[]; entityIds: number[] }) => {
+      attempts.push(ids);
+      if (failNext) {
+        failNext = false;
+        throw new Error('transient');
+      }
+    };
+
+    await expect(
+      deleteSpace(db!, { ...orgInput(space.id), purgeVectors: purge }),
+    ).rejects.toThrow('transient');
+    const second = await deleteSpace(db!, { ...orgInput(space.id), purgeVectors: purge });
+
+    expect(second.deleted).toBe(true);
+    expect(attempts).toHaveLength(2);
+    // Identical id sets across attempts — the property that makes the retry
+    // idempotent rather than a partial second pass.
+    expect(attempts[0]).toEqual(attempts[1]!);
+    expect(attempts[1]!.memoryIds.sort()).toEqual([m1, m2].sort());
+    expect(attempts[1]!.entityIds).toEqual([e1]);
+    expect(await spaceExists(space.id)).toBe(false);
+  });
+
+  test('entity vectors are purged too, not just memories', async () => {
+    const space = await createSpace('doomed');
+    const spaceTenant = { ...tenant, spaceId: space.id };
+    await seedMemory(db!, spaceTenant, { content: 'a fact' });
+    await seedEntity(db!, spaceTenant, 'Blue Harbor');
+    await tombstoneSpace(db!, orgInput(space.id));
+
+    const seen: Array<{ memoryIds: number[]; entityIds: number[] }> = [];
+    await deleteSpace(db!, {
+      ...orgInput(space.id),
+      purgeVectors: async (ids) => {
+        seen.push(ids);
+      },
+    });
+
+    // Entities are space-scoped and cascade with the space, so their vectors
+    // orphan exactly like memory vectors do.
+    expect(seen[0]!.memoryIds).toHaveLength(1);
+    expect(seen[0]!.entityIds).toHaveLength(1);
+  });
+
+  test('omitting the purge callback deletes the row (pg-column vector store)', async () => {
+    const space = await createSpace('doomed');
+    await tombstoneSpace(db!, orgInput(space.id));
+
+    // `persistsInColumn: true` needs no external purge; the cascade covers it.
+    const result = await deleteSpace(db!, orgInput(space.id));
+    expect(result.deleted).toBe(true);
+    expect(await spaceExists(space.id)).toBe(false);
   });
 });
