@@ -39,6 +39,7 @@ import { spaceRoutes } from './features/spaces/routes';
 import { usageRoutes } from './features/usage/routes';
 import { analyticsRoutes, spaceAnalyticsRoutes } from './features/analytics/routes';
 import { visibilityRoutes } from './features/visibility/routes';
+import { connectorRoutes } from './features/connectors/routes';
 
 // Max request body, in bytes. Bounds memory/transfer abuse (the audit flagged
 // ~50MB conversation-ingest bodies being accepted). 10MB is generous for text
@@ -310,6 +311,7 @@ app.route('/api/v1/jobs', jobRoutes);
 app.route('/api/v1/usage', usageRoutes);
 app.route('/api/v1/analytics', analyticsRoutes);
 app.route('/api/v1/billing', billingRoutes);
+app.route('/api/v1/connectors', connectorRoutes);
 app.route('/webhooks', billingWebhookRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);

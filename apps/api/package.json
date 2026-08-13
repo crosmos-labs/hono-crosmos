@@ -16,6 +16,7 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
+    "@composio/core": "^0.16.0",
     "@crosmos/ai": "workspace:*",
     "@crosmos/db": "workspace:*",
     "@crosmos/observability": "workspace:*",

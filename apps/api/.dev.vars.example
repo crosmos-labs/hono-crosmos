@@ -8,6 +8,12 @@ POLAR_WEBHOOK_SECRET=
 # Random 32-byte secret; used only for pseudonymous rate-limit log correlation.
 LOG_IP_HASH_SALT=replace-with-openssl-rand-hex-32
 
+# External connectors. Create the Notion auth config in Composio; the callback
+# should be a frontend page that polls GET /api/v1/connectors/{connection_id}.
+COMPOSIO_API_KEY=your-composio-api-key
+COMPOSIO_NOTION_AUTH_CONFIG_ID=ac_your-notion-auth-config
+CONNECTOR_CALLBACK_URL=http://localhost:3000/connectors/callback
+
 # Retrieval providers default to Cloudflare (Workers AI + Vectorize) via the
 # bindings in wrangler.toml — no keys needed for the default path.
 # These are only required when flipping to the fallback providers:

@@ -91,6 +91,11 @@ export interface Env {
   OPENROUTER_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
   VOYAGE_API_KEY?: string;
+  // External connectors. Composio manages OAuth credentials; the auth config
+  // and browser callback are server-controlled rather than accepted from users.
+  COMPOSIO_API_KEY?: string;
+  COMPOSIO_NOTION_AUTH_CONFIG_ID?: string;
+  CONNECTOR_CALLBACK_URL?: string;
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it
   // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
   RETRIEVAL_RERANKER_ENABLED?: string;

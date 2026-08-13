@@ -4,6 +4,7 @@ export * from './organizations';
 export * from './api-keys';
 export * from './oauth';
 export * from './memory-spaces';
+export * from './connector-connections';
 export * from './sources';
 export * from './chunks';
 export * from './memories';
