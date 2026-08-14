@@ -491,9 +491,10 @@ Documentation and a script; no runtime effect.
 
 ### [ ] O-7. Close the full request timing budget and add per-request waterfalls
 
-_Proposed 2026-08-14 after the first live benchmark. Aggregate stage metrics are
-working; complete application timing, custom spans, Grafana trace/log export,
-and an operator-tested single-request workflow are not implemented._
+_In progress 2026-08-14. The outermost private `request_total` metric/log/custom
+span and its boundary documentation are implemented locally. Complete timing
+coverage, Grafana trace/log export, deployment, and an operator-tested
+single-request workflow remain._
 
 **Why**
 

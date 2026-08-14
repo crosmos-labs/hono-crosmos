@@ -60,6 +60,61 @@ export const app = new OpenAPIHono<HonoEnv>({
   },
 });
 
+// The outer application clock deliberately runs before CORS, request-id,
+// security, body-limit, access logging, auth, and every route. It ends once
+// Hono has produced the Response object; it cannot and does not claim to
+// measure delivery of the final byte to the caller.
+app.use('*', async (c, next) => {
+  const started = performance.now();
+  const path = new URL(c.req.url).pathname;
+  const measure = async (span?: Span) => {
+    try {
+      await next();
+      const elapsed = durationMs(started);
+      const outcome = c.res.status >= 500 ? 'failed' : 'ok';
+      span?.setAttribute('http.request.method', c.req.method);
+      span?.setAttribute('url.path', path);
+      span?.setAttribute('http.response.status_code', c.res.status);
+      span?.setAttribute('crosmos.outcome', outcome);
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { request_id: c.var.requestId },
+      }).info('api.request_total', {
+        method: c.req.method,
+        path,
+        status_code: c.res.status,
+        status: outcome,
+        duration_ms: elapsed,
+      });
+      createMetrics(c.env.ANALYTICS, {
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        version: c.env.CF_VERSION_METADATA?.id,
+      }).count('request_total', {
+        // blob4 is deploy version; blob5+: method, path, status, outcome.
+        // double1: response-ready duration_ms.
+        tags: [c.req.method, path, String(c.res.status), outcome],
+        values: [elapsed],
+        index: 'request_total',
+      });
+    } catch (error) {
+      span?.setAttribute('crosmos.outcome', 'failed');
+      throw error;
+    }
+  };
+
+  // The custom-spans runtime surface is newer than this app's pinned
+  // compatibility-date type bundle, so retain the narrow structural cast until
+  // that bundle is upgraded independently.
+  const tracing = (c.executionCtx as ExecutionContext & { tracing?: Tracing }).tracing;
+  if (tracing) {
+    await tracing.enterSpan('api.request_total', measure);
+    return;
+  }
+  await measure();
+});
+
 app.use(
   '*',
   cors({
