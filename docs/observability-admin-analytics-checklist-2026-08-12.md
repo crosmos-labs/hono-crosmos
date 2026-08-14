@@ -508,7 +508,9 @@ deployment, and an operator-tested single-request workflow remain. The outer
 request clock classifies every 4xx/5xx response as `failed`; a regression test
 pins both metric and span behavior for a 404. Search now has a parent
 `search_total` span/metric around admission and retrieval, plus explicit
-response-build and response-serialization children._
+response-build and response-serialization children. Ingestion orchestration now
+times stable job-claim, stop-check, source-status, checkpoint, usage-rollup,
+retry-reset, and terminal-write database families around their actual awaits._
 
 **Why**
 
