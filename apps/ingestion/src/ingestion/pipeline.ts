@@ -497,22 +497,6 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // caught by the Stage-1 vector dedup hint against already-persisted memories.
   const seenFactKeys = new Set<string>();
 
-  // Stage 1 for the whole bounded window. The common path is one provider
-  // request, one Qdrant batch request, and one hydration query. Each chunk's
-  // hint list is rebuilt in its own ANN order, so extraction sees the exact
-  // same input shape as the former per-chunk path.
-  const batchedExistingMemories = input.existingMemories === undefined
-    ? await prepareExistingMemoryHints({
-        db,
-        scope,
-        chunks: batch,
-        embedder,
-        vectorStore,
-        stages,
-        logger,
-      })
-    : null;
-
   // Stages 1–7 for a single chunk: dedup hint → extract → graph → normalize →
   // temporal → embed → persist. Returns the persisted memories paired with the
   // facts they came from; entity ids are resolved later, once across all chunks.
@@ -524,6 +508,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   }
   const prepareChunk = async (
     chunk: SourceChunk,
+    batchedExistingMemories: Map<number, string[]> | null,
   ): Promise<PreparedChunk | null> => {
     const { sequence, content: chunkContent } = chunk;
     const chunkContext = chunk.context ?? input.context ?? lookbackContext ?? null;
@@ -742,33 +727,9 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     return { chunk, facts, vectors };
   };
 
-  // Process THIS batch's chunks with bounded concurrency (issue #1) to cut
-  // wall-clock — independent chunks needn't run strictly serially. The
-  // per-invocation subrequest budget is a TOTAL, not a concurrency limit, so this
-  // changes latency, not the cap math. Cross-chunk dedup (`seenFactKeys`) is
-  // best-effort and tolerates the interleaving. A chunk that throws (retryable
-  // infra error) aborts the batch; its partially-written chunks are purged from
-  // the checkpoint on the next attempt, so a retry never duplicates.
-  const preparedChunks: PreparedChunk[] = [];
-  const chunkConcurrency = Math.max(1, input.chunkConcurrency ?? CHUNK_CONCURRENCY);
-  for (let i = 0; i < batch.length; i += chunkConcurrency) {
-    // Mid-source lease heartbeat (issue #1), once per concurrency window:
-    // re-stamp the job's `started_at` so a long-but-healthy source isn't
-    // reclaimed and double-processed. Throttled + best-effort in the caller.
-    await input.heartbeat?.();
-    const window = batch.slice(i, i + chunkConcurrency);
-    const windowResults = await Promise.all(window.map((chunk) => prepareChunk(chunk)));
-    for (const prepared of windowResults) {
-      if (prepared) preparedChunks.push(prepared);
-    }
-  }
-
-  // Stage 7 — one short transaction for this bounded window. No LLM,
-  // embedding, or vector-store call runs inside it. A post-commit Qdrant
-  // failure is recovered exactly as before: the next attempt's partial-batch
-  // purge follows chunk_memories to remove these authoritative rows/vectors.
   const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
-  if (preparedChunks.length > 0) {
+  const persistPreparedWindow = async (preparedChunks: PreparedChunk[]) => {
+    if (preparedChunks.length === 0) return;
     const persistStart = performance.now();
     const entries = preparedChunks.flatMap((prepared) =>
       prepared.facts.map((fact, index) => ({
@@ -857,6 +818,38 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     entries.forEach(({ fact }, index) => {
       allIngested.push({ memoryId: memoryRows[index]!.id, fact });
     });
+  };
+
+  // Process THIS batch's chunks with bounded concurrency (issue #1) to cut
+  // wall-clock — independent chunks needn't run strictly serially. Stage-1
+  // hints and Stage-7 persistence are batched within the same concurrency
+  // window. Persist before advancing to the next window so later chunks see
+  // exactly the memories the former per-window orchestration had committed;
+  // batching across that boundary changes extraction prompts and facts.
+  const chunkConcurrency = Math.max(1, input.chunkConcurrency ?? CHUNK_CONCURRENCY);
+  for (let i = 0; i < batch.length; i += chunkConcurrency) {
+    // Mid-source lease heartbeat (issue #1), once per concurrency window:
+    // re-stamp the job's `started_at` so a long-but-healthy source isn't
+    // reclaimed and double-processed. Throttled + best-effort in the caller.
+    await input.heartbeat?.();
+    const window = batch.slice(i, i + chunkConcurrency);
+    const windowHints = input.existingMemories === undefined
+      ? await prepareExistingMemoryHints({
+          db,
+          scope,
+          chunks: window,
+          embedder,
+          vectorStore,
+          stages,
+          logger,
+        })
+      : null;
+    const windowResults = await Promise.all(
+      window.map((chunk) => prepareChunk(chunk, windowHints)),
+    );
+    await persistPreparedWindow(
+      windowResults.filter((prepared): prepared is PreparedChunk => prepared !== null),
+    );
   }
 
   // Stage 8 — entity resolution + memory_entities + edges for THIS batch's facts.
