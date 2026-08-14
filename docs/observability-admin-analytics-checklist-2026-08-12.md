@@ -148,7 +148,8 @@ So the real gaps are narrower than they feel:
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
 | 2026-08-14 | Created the private R2 archive bucket with a verified 90-day lifecycle; deployed the admin Worker behind the Access application; configured its issuer/AUD/four-email allowlist; verified the unauthenticated redirect, issuer JWKS, a successful allowlisted `/admin/whoami` browser session, and production totals from `/admin/overview`. | — | — | `78889c96-00b8-4cef-81ca-d7853366fb38` |
 | 2026-08-14 | Enabled account Logpush job `1838803` for Workers Trace Events using Cloudflare's automatic R2 destination `cloudflare-managed-9459b43b`; retained the generated writer's original permission after its Health view stalled while edited; added the verified 90-day expiry rule; and inspected a landed API record with the required fields, no raw-IP-named field, and no truncation marker. Object timestamps show delivery began before the permission restoration, so no causal delivery failure is attributed to the narrower scope. Redeployed the unchanged Workers after job creation to make Logpush eligibility explicit. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
-| 2026-08-14 | Provisioned Grafana Cloud with a read-only Cloudflare Analytics datasource and imported the seven-panel dashboard. Corrected Analytics Engine timestamp/function/subquery incompatibilities, excluded legacy blob layouts, and verified live weighted endpoint, error, stage, and zero-throttle rendering. Raw-SQL parity, retention, and staging-burst gates remain. | — | — | — |
+| 2026-08-14 | Provisioned Grafana Cloud with a read-only Cloudflare Analytics datasource and imported the seven-panel dashboard. Corrected Analytics Engine timestamp/function/subquery incompatibilities, excluded legacy blob layouts, and verified live weighted endpoint, error, stage, and zero-throttle rendering. Direct Cloudflare SQL for the same 24-hour window matched the visible 16 attempts, zero rejections, 301 requests, two errors, and endpoint/stage percentiles. Retention and staging-burst gates remain. | — | — | — |
+| 2026-08-14 | Checked only the currently deployed cohorts, per the operator's requested scope. API `4d746005` had 66 sampled requests with zero errors, zero 429/503 responses, and six unthrottled searches (observed p50 `1,923 ms`, p95 `3,813 ms`; provisional due to sample size). Ingestion `4e3aaa96` had 10 completed jobs, no recorded failure outcome, p50 `3,297 ms`, and p95 `7,113 ms`. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
 
 ---
 
@@ -298,8 +299,10 @@ Additive; revert the call sites.
 
 ### [~] O-4. Restore an end-to-end retrieval latency number the harness can read
 
-_Header, strict reader, and tests implemented locally 2026-08-14. Regenerating
-the production result file requires deploying the API Worker first._
+_Header, strict reader, tests, and production deployment completed 2026-08-14.
+The current API cohort reports search p50 `1,923 ms` and observed p95 `3,813
+ms`, but only six requests exist. Regenerating the controlled production result
+file remains._
 
 **Why**
 
@@ -346,8 +349,9 @@ measurement is unavailable.
 _Grafana Cloud, its Account Analytics Read datasource, and the seven-panel
 dashboard were provisioned and rendered successfully on 2026-08-14. Live data
 shows weighted endpoint/error/stage results and a healthy zero-throttle cohort.
-Raw-SQL parity, a staging throttle burst, and dataset-retention measurement
-remain._
+Raw SQL for the same moving 24-hour window reproduced its 16 attempts, zero
+rejections, 301 requests, two errors, and endpoint/stage values. A staging
+throttle burst and dataset-retention measurement remain._
 
 **Why**
 
@@ -394,10 +398,15 @@ ClickHouse signature.
 External configuration only. Deleting the dashboard changes no repository
 behavior.
 
-### [~] O-6. Write down the before/after procedure
+### [x] O-6. Write down the before/after procedure
 
 _The comparison script, minimum-sample refusal, tests, and procedure were added
-2026-08-14. It still needs two deployed versions to complete the live gate._
+2026-08-14. A live run against versions `561a810c` and `4d746005` correctly
+refused every endpoint because both cohorts did not yet have 100 comparable
+requests. On 2026-08-14 the operator explicitly scoped the immediate latency
+check to the current version rather than a historical comparison; current-only
+measurements are recorded above. The procedure remains available for a future
+change that needs attribution._
 
 **Why**
 
@@ -423,6 +432,11 @@ every time and the results are not comparable to each other.
   reproduce a delta that matches an independently measured one.
 - The script refuses to report a percentile below a stated minimum sample count
   rather than printing a confident number from six requests.
+
+**Operating decision (2026-08-14):** the historical live-delta exercise was
+waived for this rollout in favor of checking the current deployed version. The
+minimum-sample refusal was exercised successfully; no low-sample delta was
+reported.
 
 **Rollback**
 
