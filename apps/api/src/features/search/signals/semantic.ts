@@ -12,7 +12,7 @@
  * truncates below `SEMANTIC_MIN_SCORE`).
  */
 import type { Database } from '@crosmos/db';
-import type { VectorStore } from '@crosmos/vector';
+import type { VectorMatch, VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { hydrateMemories } from '../candidates';
 import { SEMANTIC_MIN_SCORE } from '../constants';
@@ -26,12 +26,14 @@ export async function semanticSearch(
   scope: TenantScope,
   limit: number,
   signal?: AbortSignal,
+  matchesOverride?: VectorMatch[],
 ): Promise<RankedCandidate[]> {
-  const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
-    topK: limit,
-    minScore: SEMANTIC_MIN_SCORE,
-    signal,
-  });
+  const matches = matchesOverride ?? await vectorStore.queryNearest(
+    'memories',
+    queryEmbedding,
+    scope,
+    { topK: limit, minScore: SEMANTIC_MIN_SCORE, signal },
+  );
   if (matches.length === 0) return [];
 
   const rows = await hydrateMemories(db, scope, matches.map((m) => m.id));

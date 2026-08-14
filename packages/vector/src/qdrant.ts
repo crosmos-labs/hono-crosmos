@@ -2,6 +2,7 @@ import { isAbortError, withDeadline } from '@crosmos/runtime';
 import {
   VectorStoreError,
   type QueryOptions,
+  type NearestQuery,
   type UpsertItem,
   type VectorCollection,
   type VectorMatch,
@@ -162,6 +163,68 @@ export class QdrantStore implements VectorStore {
       }
       return out;
     });
+  }
+
+  async queryNearestMany(
+    collection: VectorCollection,
+    searches: NearestQuery[],
+  ): Promise<VectorMatch[][]> {
+    if (searches.length === 0) return [];
+    const active = searches
+      .map((search, index) => ({ search, index }))
+      .filter(({ search }) => search.vector.length > 0 && search.opts.topK > 0);
+    const output = searches.map(() => [] as VectorMatch[]);
+    if (active.length === 0) return output;
+
+    // All searches share one transport request. Abort as soon as any caller's
+    // deadline aborts: the batch cannot return one component independently.
+    const controller = new AbortController();
+    const listeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
+    for (const { search } of active) {
+      const signal = search.opts.signal;
+      if (!signal) continue;
+      if (signal.aborted) controller.abort(signal.reason);
+      const listener = () => controller.abort(signal.reason);
+      signal.addEventListener('abort', listener, { once: true });
+      listeners.push({ signal, listener });
+    }
+    try {
+      const json = await this.request<{
+        result: Array<Array<{ id: number; score: number }>>;
+      }>(
+        'POST',
+        `/collections/${this.collectionName(collection)}/points/search/batch`,
+        {
+          searches: active.map(({ search }) => {
+            const body: Record<string, unknown> = {
+              vector: search.vector,
+              limit: search.opts.topK,
+              filter: {
+                must: [{ key: 'spaceId', match: { value: search.scope.spaceId } }],
+              },
+              with_payload: false,
+              with_vector: false,
+            };
+            if (search.opts.minScore !== undefined) {
+              body.score_threshold = search.opts.minScore;
+            }
+            return body;
+          }),
+        },
+        controller.signal,
+      );
+      active.forEach(({ search, index }, resultIndex) => {
+        const minScore = search.opts.minScore;
+        output[index] = (json.result[resultIndex] ?? [])
+          .filter((match) => minScore === undefined || match.score >= minScore)
+          .map((match) => ({ id: Number(match.id), score: match.score }));
+      });
+      return output;
+    } finally {
+      for (const { signal, listener } of listeners) {
+        signal.removeEventListener('abort', listener);
+      }
+    }
   }
 
   async fetchVectors(

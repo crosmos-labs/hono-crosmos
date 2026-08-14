@@ -12,12 +12,20 @@ import {
 } from '@crosmos/ai';
 import type { Database } from '@crosmos/db';
 import type { VectorStore } from '@crosmos/vector';
-import { durationMs, type Logger, type Metrics } from '@crosmos/observability';
+import {
+  createStageRecorder,
+  durationMs,
+  type Logger,
+  type Metrics,
+  type StageRecorder,
+} from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { attachCandidateProvenance, attachSourceContent } from './candidates';
 import {
   BOOST_MAX,
   BOOST_MIN,
+  GRAPH_SEED_LIMIT,
+  GRAPH_SEED_THRESHOLD,
   MAX_DEPTH,
   RECENCY_ALPHA,
   RECENCY_ALPHA_FALLBACK,
@@ -25,6 +33,7 @@ import {
   RERANK_RELEVANCE_FLOOR,
   RERANKER_MAX_CANDIDATES,
   SESSION_DIVERSITY_PENALTY,
+  SEMANTIC_MIN_SCORE,
   TEMPORAL_CANDIDATE_LIMIT,
   TEMPORAL_CENTER,
   TEMPORAL_PROXIMITY_ALPHA,
@@ -82,6 +91,11 @@ export interface RetrieveInput {
    * identical vector + usage.
    */
   embedPromise?: ReturnType<Embedder['embed']>;
+  /**
+   * Let the HTTP route load selected source text alongside owner enrichment.
+   * Standalone callers omit this and retain the self-contained behavior.
+   */
+  deferSourceContent?: boolean;
   /**
    * Request deadline. Forwarded to every cancellable downstream call (embedder,
    * vector store, reranker) and checked between stages, so a search the client
@@ -183,13 +197,19 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const scoringNow = input.now ?? new Date();
   const { db, embedder, reranker, vectorStore } = deps;
   const logger = input.logger;
+  const stages = createStageRecorder({
+    logger,
+    metrics: input.metrics,
+    event: 'retrieval.stage_completed',
+    metric: 'api_stage',
+  });
 
   // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
   const temporalParseStart = performance.now();
   const temporalRange = extractTemporalRange(query.text);
-  logger?.info('retrieval.stage_completed', {
-    stage: 'temporal_parse',
-    duration_ms: durationMs(temporalParseStart),
+  stages.record('temporal_parse', 'ok', durationMs(temporalParseStart), {}, {
+    inputCount: query.text.length,
+    outputCount: temporalRange === null ? 0 : 1,
   });
 
   // Stage 1 — entitlements → feature flags. The route passes pre-fetched
@@ -201,12 +221,11 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   } else {
     entitlements = null;
     try {
-      const entitlementStart = performance.now();
-      entitlements = await getEntitlements(db, scope.orgId);
-      logger?.info('retrieval.stage_completed', {
-        stage: 'entitlements',
-        duration_ms: durationMs(entitlementStart),
-      });
+      entitlements = await stages.time(
+        'entitlements',
+        {},
+        () => getEntitlements(db, scope.orgId),
+      );
     } catch (err) {
       logger?.warn('retrieval.entitlements_load_failed', {
         stage: 'entitlements',
@@ -240,26 +259,72 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     input.embedPromise ?? embedder.embed(query.text, { mode: 'search', signal: input.signal });
   const embedPromise = embedSource.then(
     (result) => {
-      logger?.info('embedding.request_completed', {
-        stage: 'retrieval_query_embedding',
+      stages.record('retrieval_query_embedding', 'ok', durationMs(embedStart), {
         embedding_mode: 'search',
         embedding_count: 1,
-        duration_ms: durationMs(embedStart),
         token_count: result.usage.totalTokens,
-      });
+      }, { inputCount: 1, outputCount: result.vector.length });
       return result;
     },
     (err) => {
-      logger?.error('embedding.request_failed', {
-        stage: 'retrieval_query_embedding',
+      stages.record('retrieval_query_embedding', 'failed', durationMs(embedStart), {
         embedding_mode: 'search',
         embedding_count: 1,
-        duration_ms: durationMs(embedStart),
         ...failureFields(err),
-      }, err);
+      }, { inputCount: 1 }, err);
       throw err;
     },
   );
+
+  // Semantic retrieval and graph memory seeding use the same query vector and
+  // collection but intentionally different limits/thresholds. Qdrant can run
+  // those as two independent searches in one HTTP batch. Other adapters fall
+  // back to the exact former calls, preserving portability and result order.
+  const memoryAnnPromise = embedPromise.then(async ({ vector }) => {
+    const start = performance.now();
+    const searches = [
+      {
+        vector,
+        scope,
+        opts: {
+          topK: query.candidatePool,
+          minScore: SEMANTIC_MIN_SCORE,
+          signal: input.signal,
+        },
+      },
+      ...(graphEnabled
+        ? [{
+            vector,
+            scope,
+            opts: {
+              topK: GRAPH_SEED_LIMIT,
+              minScore: GRAPH_SEED_THRESHOLD,
+              signal: input.signal,
+            },
+          }]
+        : []),
+    ];
+    try {
+      const results = vectorStore.queryNearestMany
+        ? await vectorStore.queryNearestMany('memories', searches)
+        : await Promise.all(searches.map((search) =>
+            vectorStore.queryNearest('memories', search.vector, search.scope, search.opts)));
+      stages.record('memory_ann_batch', 'ok', durationMs(start), {}, {
+        inputCount: searches.length,
+        outputCount: results.reduce((sum, matches) => sum + matches.length, 0),
+        transferBytes: searches.length * vector.length * 4,
+      });
+      return results;
+    } catch (err) {
+      stages.record('memory_ann_batch', 'failed', durationMs(start), {
+        ...failureFields(err),
+      }, {
+        inputCount: searches.length,
+        transferBytes: searches.length * vector.length * 4,
+      }, err);
+      throw err;
+    }
+  });
 
   // Stage 3 — four signals in parallel.
   //
@@ -270,16 +335,26 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   //
   // Policy (see `unwrapSignals`): semantic is essential, the rest are auxiliary.
   const settledSignals = await Promise.allSettled([
-    timeSignal(logger, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
+    timeSignal(logger, stages, SourceSignal.SEMANTIC, async (): Promise<RankedCandidate[]> => {
       const { vector } = await embedPromise;
-      return semanticSearch(db, vectorStore, vector, scope, query.candidatePool, input.signal);
+      const [semanticMatches] = await memoryAnnPromise;
+      return semanticSearch(
+        db,
+        vectorStore,
+        vector,
+        scope,
+        query.candidatePool,
+        input.signal,
+        semanticMatches,
+      );
     }),
-    timeSignal(logger, SourceSignal.KEYWORD, () =>
+    timeSignal(logger, stages, SourceSignal.KEYWORD, () =>
       keywordSearch(query.text, db, scope, query.candidatePool),
     ),
-    timeSignal(logger, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
+    timeSignal(logger, stages, SourceSignal.GRAPH, async (): Promise<RankedCandidate[]> => {
       if (!graphEnabled) return [];
       const { vector } = await embedPromise;
+      const [, graphSeedMatches] = await memoryAnnPromise;
       return graphSearchWithStore(
         db,
         vectorStore,
@@ -291,6 +366,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         effectiveMaxDepth,
         {
           signal: input.signal,
+          memorySeedMatches: graphSeedMatches,
           // Observational only — this is the last unbounded read in the graph
           // signal and we need its real distribution before deciding whether a
           // cap is safe (a cap would change graph recall).
@@ -303,7 +379,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
         },
       );
     }),
-    timeSignal(logger, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
+    timeSignal(logger, stages, SourceSignal.TEMPORAL, async (): Promise<RankedCandidate[]> => {
       if (temporalRange === null) return [];
       return temporalSearch(
         db,
@@ -351,11 +427,12 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
 
   const selectorFused = reciprocalRankFusion(rankedLists);
   const fallbackFused = selectorFused;
-  logger?.info('retrieval.stage_completed', {
-    stage: 'fusion',
-    duration_ms: durationMs(fusionStart),
+  stages.record('fusion', 'ok', durationMs(fusionStart), {
     candidate_count: selectorFused.length,
     graph_enabled: graphEnabled,
+  }, {
+    inputCount: rankedLists.reduce((sum, [, candidates]) => sum + candidates.length, 0),
+    outputCount: selectorFused.length,
   });
 
   const lookupStart = performance.now();
@@ -373,11 +450,9 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       }
     }
   }
-  logger?.info('retrieval.stage_completed', {
-    stage: 'candidate_lookup',
-    duration_ms: durationMs(lookupStart),
+  stages.record('candidate_lookup', 'ok', durationMs(lookupStart), {
     candidate_count: candidateLookup.size,
-  });
+  }, { inputCount: selectorFused.length, outputCount: candidateLookup.size });
 
   // Stage 5 — attach candidate PROVENANCE (source id/uuid + session id) for the
   // fused candidates, CONCURRENTLY with the Stage-6 reranker below. The two are
@@ -395,19 +470,15 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     const attachSourceStart = performance.now();
     attachPromise = attachCandidateProvenance(db, scope, candidateLookup).then(
       () => {
-        logger?.info('retrieval.stage_completed', {
-          stage: 'source_provenance_attach',
-          duration_ms: durationMs(attachSourceStart),
+        stages.record('source_provenance_attach', 'ok', durationMs(attachSourceStart), {
           candidate_count: candidateLookup.size,
-        });
+        }, { inputCount: candidateLookup.size, outputCount: candidateLookup.size });
       },
       (err: unknown) => {
-        logger?.warn('retrieval.source_text_attach_failed', {
-          stage: 'source_provenance_attach',
-          duration_ms: durationMs(attachSourceStart),
+        stages.record('source_provenance_attach', 'failed', durationMs(attachSourceStart), {
           error_category: 'internal',
           dependency: 'database',
-        }, err);
+        }, { inputCount: candidateLookup.size }, err);
       },
     );
   }
@@ -446,33 +517,27 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     try {
       baseScores = await rerankCandidates(reranker!, query.text, selection, input.signal);
       if (baseScores.size === 0) ceEnabled = false;
-      logger?.info('retrieval.stage_completed', {
-        stage: 'rerank',
-        duration_ms: durationMs(rerankStart),
+      stages.record('rerank', 'ok', durationMs(rerankStart), {
         candidate_count: selection.length,
         result_count: baseScores.size,
         ce_enabled: ceEnabled,
-      });
+      }, { inputCount: selection.length, outputCount: baseScores.size });
     } catch (err) {
-      logger?.warn('retrieval.rerank_failed_falling_back', {
-        stage: 'rerank',
-        duration_ms: durationMs(rerankStart),
+      stages.record('rerank', 'failed', durationMs(rerankStart), {
         candidate_count: selection.length,
         ...failureFields(err),
-      }, err);
+      }, { inputCount: selection.length }, err);
       ceEnabled = false;
     }
   }
   if (!ceEnabled) {
     const rankRemapStart = performance.now();
     baseScores = rankRemap(fallbackFused);
-    logger?.info('retrieval.stage_completed', {
-      stage: 'rank_remap',
-      duration_ms: durationMs(rankRemapStart),
+    stages.record('rank_remap', 'ok', durationMs(rankRemapStart), {
       candidate_count: fallbackFused.length,
       result_count: baseScores.size,
       ce_enabled: false,
-    });
+    }, { inputCount: fallbackFused.length, outputCount: baseScores.size });
   }
 
   // Join the concurrent Stage-5 source-text attach before Stage 8 reads
@@ -602,13 +667,11 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   } else {
     top = selectSessionDiverse(selectable, query.topK);
   }
-  logger?.info('retrieval.stage_completed', {
-    stage: 'score_and_select',
-    duration_ms: durationMs(scoringStart),
+  stages.record('score_and_select', 'ok', durationMs(scoringStart), {
     candidate_count: scored.length,
     result_count: top.length,
     top_k: query.topK,
-  });
+  }, { inputCount: pool.length, outputCount: top.length });
 
   // Stage 9.5 — full source text for the SELECTED candidates only, and only if
   // the caller asked for it. Before this split the raw `sources.content` was
@@ -616,22 +679,22 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // Bounded by the distinct sources in the final result, so it is a small
   // by-id read. Non-fatal, matching the provenance attach: a failure leaves
   // `source: null` rather than failing the search.
-  if (query.includeSource !== false && top.length > 0) {
+  if (
+    query.includeSource !== false
+    && top.length > 0
+    && input.deferSourceContent !== true
+  ) {
     const sourceContentStart = performance.now();
     try {
       await attachSourceContent(db, scope, top);
-      logger?.info('retrieval.stage_completed', {
-        stage: 'source_content_load',
-        duration_ms: durationMs(sourceContentStart),
+      stages.record('source_content_load', 'ok', durationMs(sourceContentStart), {
         result_count: top.length,
-      });
+      }, { inputCount: top.length, outputCount: top.length });
     } catch (err) {
-      logger?.warn('retrieval.source_text_attach_failed', {
-        stage: 'source_content_load',
-        duration_ms: durationMs(sourceContentStart),
+      stages.record('source_content_load', 'failed', durationMs(sourceContentStart), {
         error_category: 'internal',
         dependency: 'database',
-      }, err);
+      }, { inputCount: top.length }, err);
     }
   }
 
@@ -699,6 +762,7 @@ function unwrapSignals(
 
 async function timeSignal(
   logger: Logger | undefined,
+  stages: StageRecorder,
   signal: SourceSignal,
   fn: () => Promise<RankedCandidate[]>,
 ): Promise<RankedCandidate[]> {
@@ -710,6 +774,10 @@ async function timeSignal(
       duration_ms: durationMs(start),
       result_count: results.length,
     });
+    stages.record(`signal_${signal}`, 'ok', durationMs(start), {
+      signal,
+      result_count: results.length,
+    }, { outputCount: results.length });
     return results;
   } catch (err) {
     logger?.error('retrieval.signal_failed', {
@@ -717,6 +785,10 @@ async function timeSignal(
       duration_ms: durationMs(start),
       ...failureFields(err),
     }, err);
+    stages.record(`signal_${signal}`, 'failed', durationMs(start), {
+      signal,
+      ...failureFields(err),
+    }, {}, err);
     throw err;
   }
 }

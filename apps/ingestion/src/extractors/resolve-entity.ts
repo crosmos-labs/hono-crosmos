@@ -20,7 +20,11 @@ import {
   type Database,
   type Entity,
 } from '@crosmos/db';
-import { durationMs, type Logger } from '@crosmos/observability';
+import {
+  createStageRecorder,
+  type Logger,
+  type StageRecorder,
+} from '@crosmos/observability';
 import { type TenantScope } from '@crosmos/types';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { VectorStore } from '@crosmos/vector';
@@ -189,78 +193,115 @@ export async function resolveEntities(
   embedder: Embedder,
   vectorStore: VectorStore,
   logger?: Logger,
+  stageRecorder?: StageRecorder,
 ): Promise<ResolvedEntity[]> {
   if (extracted.length === 0) return [];
+  const stages = stageRecorder ?? createStageRecorder({
+    logger,
+    event: 'ingestion.stage_completed',
+    metric: 'ingestion_stage',
+  });
 
   const names = extracted.map((e) => e.name);
-  const embedStart = performance.now();
-  const { vectors } = await embedder.embedBatch(names, { mode: 'document' });
-  logger?.info('embedding.request_completed', {
-    stage: 'entity_embedding',
-    embedding_mode: 'document',
-    embedding_count: names.length,
-    duration_ms: durationMs(embedStart),
-  });
+  const { vectors } = await stages.time(
+    'entity_embedding',
+    { embedding_mode: 'document', embedding_count: names.length },
+    () => embedder.embedBatch(names, { mode: 'document' }),
+    (result) => ({ inputCount: names.length, outputCount: result.vectors.length }),
+  );
 
-  const candidatePoolStart = performance.now();
-  const pool = await fetchCandidatePool(db, scope, vectorStore, vectors);
-  logger?.info('ingestion.stage_completed', {
-    stage: 'entity_candidate_pool',
-    duration_ms: durationMs(candidatePoolStart),
-    candidate_count: pool.length,
-  });
+  const pool = await stages.time(
+    'entity_candidate_pool',
+    {},
+    () => fetchCandidatePool(db, scope, vectorStore, vectors),
+    (candidates) => ({ inputCount: vectors.length, outputCount: candidates.length }),
+  );
 
-  const upsertStart = performance.now();
-  const out: ResolvedEntity[] = [];
+  const out = new Array<ResolvedEntity>(extracted.length);
   // Collect index-backed vector upserts and flush them in ONE call after the
   // loop (vs one per entity). Each is a counted subrequest on HTTP-backed
   // stores (Qdrant), so batching keeps ingestion under the per-invocation cap.
   const vectorUpserts: { id: number; vector: number[]; orgId: number; spaceId: number }[] = [];
-  for (let i = 0; i < extracted.length; i++) {
-    const e = extracted[i]!;
-    const emb = vectors[i] ?? null;
+  await stages.time('entity_upsert', {}, async () => {
+    const unresolved: Array<{
+      index: number;
+      extracted: NormalizedEntity;
+      embedding: number[] | null;
+    }> = [];
+    for (let i = 0; i < extracted.length; i++) {
+      const e = extracted[i]!;
+      const emb = vectors[i] ?? null;
 
-    const fuzzy = pool.length > 0 ? fuzzyResolve(e.name, pool) : null;
-    if (fuzzy) {
-      out.push({ extracted: e, entityId: fuzzy.entityId, isNew: false });
-      continue;
+      const fuzzy = pool.length > 0 ? fuzzyResolve(e.name, pool) : null;
+      if (fuzzy) {
+        out[i] = { extracted: e, entityId: fuzzy.entityId, isNew: false };
+        continue;
+      }
+      unresolved.push({ index: i, extracted: e, embedding: emb });
     }
-    // pg backend stores the vector in the column; vectorize keeps it null on
-    // the row and gets the vector upserted to the index after insert.
-    const columnEmbedding = vectorStore.persistsInColumn ? emb : null;
-    const upserted = await getOrCreateEntity(db, scope, e.name, e.entityType, columnEmbedding);
-    // Index-backed stores (vectorize): upsert the vector for EVERY resolved
-    // entity in this run, not only freshly-inserted ones. The row commits in
-    // autocommit above; if a prior run's vector upsert failed AFTER the row
-    // committed (Workers-AI/Vectorize 429/503 — the documented prod ceiling),
-    // `purgeSourceArtifacts` preserves the entity, so the retry sees
-    // `isNew=false` and would otherwise NEVER re-upsert — leaving the entity
-    // permanently invisible to ANN resolution. Vectorize upsert is idempotent,
-    // so re-upserting an existing vector is safe and cheap. The pg backend
-    // persists the vector in-column, so it's excluded here.
-    if (!vectorStore.persistsInColumn && emb) {
-      vectorUpserts.push({
-        id: upserted.entityId,
-        vector: emb,
-        orgId: scope.orgId,
-        spaceId: scope.spaceId,
-      });
+
+    if (unresolved.length > 0) {
+      // One race-safe insert for every unresolved normalized name. The unique
+      // (space_id, lower(name)) index remains the concurrency authority; a
+      // concurrent winner is resolved by the single authoritative SELECT below.
+      const inserted = await db
+        .insert(entities)
+        .values(unresolved.map(({ extracted: entity, embedding }) => ({
+          orgId: scope.orgId,
+          spaceId: scope.spaceId,
+          name: entity.name,
+          entityType: entity.entityType,
+          embedding: vectorStore.persistsInColumn ? embedding : null,
+        })))
+        .onConflictDoNothing()
+        .returning({ id: entities.id, name: entities.name });
+      const normalizedNames = [...new Set(unresolved.map(({ extracted: entity }) =>
+        casefold(entity.name)))];
+      const authoritative = await db
+        .select({ id: entities.id, name: entities.name })
+        .from(entities)
+        .where(and(
+          eq(entities.orgId, scope.orgId),
+          eq(entities.spaceId, scope.spaceId),
+          inArray(sql<string>`lower(${entities.name})`, normalizedNames),
+        ));
+      const idByName = new Map(authoritative.map((row) => [casefold(row.name), row.id]));
+      const insertedIds = new Set(inserted.map((row) => row.id));
+
+      for (const item of unresolved) {
+        const entityId = idByName.get(casefold(item.extracted.name));
+        if (entityId === undefined) {
+          throw new Error(
+            `Entity bulk upsert completed but no row was found for ${item.extracted.name}`,
+          );
+        }
+        out[item.index] = {
+          extracted: item.extracted,
+          entityId,
+          isNew: insertedIds.has(entityId),
+        };
+        // Index-backed stores must upsert every resolved entity, including a
+        // conflict left by a prior post-commit vector failure. Idempotent.
+        if (!vectorStore.persistsInColumn && item.embedding) {
+          vectorUpserts.push({
+            id: entityId,
+            vector: item.embedding,
+            orgId: scope.orgId,
+            spaceId: scope.spaceId,
+          });
+        }
+      }
     }
-    out.push({
-      extracted: e,
-      entityId: upserted.entityId,
-      isNew: upserted.isNew,
-    });
-  }
-  // Single batched vector upsert for all resolved entities in this source.
-  if (vectorUpserts.length > 0) {
-    await vectorStore.upsert('entities', vectorUpserts);
-  }
-  logger?.info('ingestion.stage_completed', {
-    stage: 'entity_upsert',
-    duration_ms: durationMs(upsertStart),
-    entity_count: out.length,
-  });
+
+    // Single batched vector upsert for all resolved entities in this source.
+    if (vectorUpserts.length > 0) {
+      // Duplicate normalized names may map to the same authoritative row. Keep
+      // the final vector once instead of sending duplicate point ids.
+      const byId = new Map(vectorUpserts.map((item) => [item.id, item]));
+      await vectorStore.upsert('entities', [...byId.values()]);
+    }
+    return out;
+  }, (resolved) => ({ inputCount: extracted.length, outputCount: resolved.length }));
   return out;
 }
 

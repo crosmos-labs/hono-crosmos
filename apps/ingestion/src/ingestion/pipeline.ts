@@ -28,7 +28,12 @@ import {
   type Database,
   type Memory,
 } from '@crosmos/db';
-import { durationMs, type Logger } from '@crosmos/observability';
+import {
+  createStageRecorder,
+  durationMs,
+  type Logger,
+  type Metrics,
+} from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { VectorStore } from '@crosmos/vector';
@@ -39,7 +44,11 @@ import {
   MAX_CHUNKS_PER_SOURCE,
 } from '../constants';
 import { extractGraph, extractMemories } from '../extractors/extract';
-import { DropCounter, normalizeFacts } from '../extractors/normalize';
+import {
+  attachGraphToFacts,
+  DropCounter,
+  normalizeBaseFacts,
+} from '../extractors/normalize';
 import {
   buildNameToIdMap,
   casefold,
@@ -124,6 +133,7 @@ export interface IngestSourceInput {
   /** Caller-supplied dedup hint (overrides the Stage-1 DB lookup). */
   existingMemories?: string[];
   logger?: Logger;
+  metrics?: Metrics;
   /**
    * Mid-source lease heartbeat (issue #1). Called once per chunk; the job-level
    * handler throttles it to re-stamp `started_at` so a long-but-healthy source
@@ -284,13 +294,23 @@ export async function purgeSourceArtifacts(
 
 export async function ingestSource(input: IngestSourceInput): Promise<IngestResult> {
   const { db, scope, sourceId, llm, embedder, vectorStore, logger } = input;
+  const stages = createStageRecorder({
+    logger,
+    metrics: input.metrics,
+    event: 'ingestion.stage_completed',
+    metric: 'ingestion_stage',
+  });
 
   // Stage 0 — load + preprocess. Load and chunk FIRST (both read-only /
   // in-memory) so the per-invocation bounds (issues #1 / #2) are enforced BEFORE
   // the destructive purge or any expensive AI work — an over-budget source must
   // be left completely untouched so a re-queue can process it cleanly later.
-  const loadStart = performance.now();
-  const source = await loadSource(db, sourceId);
+  const source = await stages.time(
+    'load_source',
+    {},
+    () => loadSource(db, sourceId),
+    (loaded) => ({ outputCount: loaded.tokenCount }),
+  );
   const contentType = (source.contentType ?? 'text').toLowerCase();
   if (contentType !== 'text' && contentType !== 'markdown' && contentType !== 'conversation') {
     throw new Error(`Unsupported content_type: ${source.contentType}`);
@@ -317,10 +337,6 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   const recordedAt = validSessionDate ?? new Date();
   const ownerUserId = source.ownerUserId;
   const visibility = source.visibility as 'private' | 'org';
-  logger?.info('ingestion.stage_completed', {
-    stage: 'load_source',
-    duration_ms: durationMs(loadStart),
-  });
 
   // Stage 0.5 — chunk the source by content type. Conversations become
   // fixed-size turn windows (each carrying the prior window as lookback context
@@ -382,47 +398,126 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // instead of re-running from the top every attempt (the source-520 failure
   // mode). On a fresh start (nextSeq === 0) this purges the whole source.
   // Idempotent: a clean slate is a single empty indexed SELECT.
-  const purgeStart = performance.now();
-  const purged = await purgeSourceArtifacts(db, vectorStore, sourceId, plan.start);
-  if (purged > 0) {
-    logger?.info('ingestion.stage_completed', {
-      stage: 'purge_partial_batch',
-      duration_ms: durationMs(purgeStart),
-      memory_count: purged,
-      from_sequence: plan.start,
-    });
-  }
+  await stages.time(
+    'purge_partial_batch',
+    { from_sequence: plan.start },
+    () => purgeSourceArtifacts(db, vectorStore, sourceId, plan.start),
+    (count) => ({ inputCount: batch.length, outputCount: count }),
+  );
 
   // Dedup keys shared across chunks of THIS batch so a fact recurring in
   // overlapping windows isn't persisted twice (#8). Cross-BATCH duplicates are
   // caught by the Stage-1 vector dedup hint against already-persisted memories.
   const seenFactKeys = new Set<string>();
 
+  // Stage 1 for the whole bounded window. The common path is one provider
+  // request, one Qdrant batch request, and one hydration query. Each chunk's
+  // hint list is rebuilt in its own ANN order, so extraction sees the exact
+  // same input shape as the former per-chunk path.
+  const prepareExistingMemoryHints = async (
+    chunksToPrepare: SourceChunk[],
+    maySplit: boolean,
+  ): Promise<Map<number, string[]>> => {
+    try {
+      const { vectors } = await stages.time(
+        'existing_memory_embedding_batch',
+        {},
+        () => embedder.embedBatch(
+          chunksToPrepare.map((chunk) => chunk.content),
+          { mode: 'search' },
+        ),
+        (result) => ({
+          inputCount: chunksToPrepare.length,
+          outputCount: result.vectors.length,
+        }),
+      );
+      const scopeArg = { orgId: scope.orgId, spaceId: scope.spaceId };
+      const queryOptions = { topK: EXISTING_MEMORY_LOOKUP_LIMIT };
+      const matchLists = await stages.time(
+        'existing_memory_ann_batch',
+        {},
+        () => vectorStore.queryNearestBatch
+          ? vectorStore.queryNearestBatch('memories', vectors, scopeArg, queryOptions)
+          : Promise.all(vectors.map((vector) =>
+              vectorStore.queryNearest('memories', vector, scopeArg, queryOptions))),
+        (results) => ({
+          inputCount: vectors.length,
+          outputCount: results.reduce((sum, matches) => sum + matches.length, 0),
+          transferBytes: vectors.length * embedder.dimensions * 4,
+        }),
+      );
+      const ids = [...new Set(matchLists.flatMap((matches) => matches.map((match) => match.id)))];
+      const rows = await stages.time(
+        'existing_memory_hydration_batch',
+        {},
+        () => ids.length === 0
+          ? Promise.resolve([] as Array<{ id: number; content: string }>)
+          : db
+              .select({ id: memoriesTable.id, content: memoriesTable.content })
+              .from(memoriesTable)
+              .where(and(
+                inArray(memoriesTable.id, ids),
+                sql`${memoriesTable.forgottenAt} IS NULL`,
+              )),
+        (hydrated) => ({ inputCount: ids.length, outputCount: hydrated.length }),
+      );
+      const contentById = new Map(rows.map((row) => [row.id, row.content]));
+      return new Map(chunksToPrepare.map((chunk, index) => [
+        chunk.sequence,
+        (matchLists[index] ?? [])
+          .map((match) => contentById.get(match.id))
+          .filter((content): content is string => content !== undefined),
+      ]));
+    } catch (err) {
+      if (maySplit && chunksToPrepare.length > 1) {
+        const middle = Math.ceil(chunksToPrepare.length / 2);
+        const halves = await Promise.all([
+          prepareExistingMemoryHints(chunksToPrepare.slice(0, middle), false),
+          prepareExistingMemoryHints(chunksToPrepare.slice(middle), false),
+        ]);
+        return new Map(halves.flatMap((half) => [...half]));
+      }
+      logger?.warn('ingestion.existing_memory_lookup_failed', {
+        chunk_count: chunksToPrepare.length,
+        ...failureFields(err),
+      }, err);
+      return new Map(chunksToPrepare.map((chunk) => [chunk.sequence, []]));
+    }
+  };
+
+  const batchedExistingMemories = input.existingMemories === undefined
+    ? await prepareExistingMemoryHints(batch, true)
+    : null;
+
   // Stages 1–7 for a single chunk: dedup hint → extract → graph → normalize →
   // temporal → embed → persist. Returns the persisted memories paired with the
   // facts they came from; entity ids are resolved later, once across all chunks.
   // Mirrors Python's `_ingest_chunk`.
-  const ingestChunk = async (
+  interface PreparedChunk {
+    chunk: SourceChunk;
+    facts: NormalizedFact[];
+    vectors: number[][];
+  }
+  const prepareChunk = async (
     chunk: SourceChunk,
-  ): Promise<{ memoryId: number; fact: NormalizedFact }[]> => {
-    const { sequence, content: chunkContent, chunker } = chunk;
+  ): Promise<PreparedChunk | null> => {
+    const { sequence, content: chunkContent } = chunk;
     const chunkContext = chunk.context ?? input.context ?? lookbackContext ?? null;
 
     // Stage 1 — existing-memory dedup hint (search-mode embedding of THIS
     // chunk, not the whole source: a bounded, focused dedup query).
-    let existingMemories = input.existingMemories;
+    let existingMemories = input.existingMemories
+      ?? batchedExistingMemories?.get(sequence);
     if (!existingMemories) {
       const lookupStart = performance.now();
       try {
         const embedStart = performance.now();
         const { vector } = await embedder.embed(chunkContent, { mode: 'search' });
-        logger?.info('embedding.request_completed', {
-          stage: 'existing_memory_lookup',
+        stages.record('existing_memory_embedding', 'ok', durationMs(embedStart), {
           sequence,
           embedding_mode: 'search',
           embedding_count: 1,
-          duration_ms: durationMs(embedStart),
-        });
+        }, { inputCount: 1, outputCount: vector.length });
         const matches = await vectorStore.queryNearest(
           'memories',
           vector,
@@ -450,19 +545,15 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
             .map((id) => contentById.get(id))
             .filter((c): c is string => c !== undefined);
         }
-        logger?.info('ingestion.stage_completed', {
-          stage: 'existing_memory_lookup',
+        stages.record('existing_memory_lookup', 'ok', durationMs(lookupStart), {
           sequence,
-          duration_ms: durationMs(lookupStart),
           memory_count: existingMemories.length,
-        });
+        }, { inputCount: ids.length, outputCount: existingMemories.length });
       } catch (err) {
-        logger?.warn('ingestion.existing_memory_lookup_failed', {
-          stage: 'existing_memory_lookup',
+        stages.record('existing_memory_lookup', 'failed', durationMs(lookupStart), {
           sequence,
-          duration_ms: durationMs(lookupStart),
           ...failureFields(err),
-        }, err);
+        }, {}, err);
         existingMemories = [];
       }
     }
@@ -479,78 +570,73 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         existingMemories,
       }, input.modelOverride);
     } catch (err) {
-      logger?.error('llm.request_failed', {
-        stage: 'memory_extraction',
+      stages.record('memory_extraction', 'failed', durationMs(memoryExtractionStart), {
         sequence,
         model: input.modelOverride ?? llm.defaultModel,
-        duration_ms: durationMs(memoryExtractionStart),
         token_count: llm.totalTokens - llmTokensBeforeMemory,
         ...failureFields(err),
-      }, err);
+      }, { inputCount: 1 }, err);
       throw err;
     }
-    logger?.info('llm.request_completed', {
-      stage: 'memory_extraction',
+    stages.record('memory_extraction', 'ok', durationMs(memoryExtractionStart), {
       sequence,
       model: input.modelOverride ?? llm.defaultModel,
-      duration_ms: durationMs(memoryExtractionStart),
       memory_count: rawMemories.length,
       token_count: llm.totalTokens - llmTokensBeforeMemory,
-    });
+    }, { inputCount: 1, outputCount: rawMemories.length });
 
     // Empty is a valid terminal extraction result. In particular, when the
     // existing-memory hint already covers the content, retrying without that
     // hint would bypass dedup and persist the same fact again.
-    if (rawMemories.length === 0) return [];
+    if (rawMemories.length === 0) return null;
 
     // Stage 3 — graph extraction (non-fatal). Matches Python's
     // `extract_memories` which runs Pass 2 inside the same call.
-    let rawGraph: Awaited<ReturnType<typeof extractGraph>> = [];
     const graphExtractionStart = performance.now();
     const llmTokensBeforeGraph = llm.totalTokens;
-    try {
-      rawGraph = await extractGraph(
-        llm,
-        rawMemories.map((m) => ({ content: m.content })),
-        input.modelOverride,
-      );
-      logger?.info('llm.request_completed', {
-        stage: 'graph_extraction',
-        sequence,
-        model: input.modelOverride ?? llm.defaultModel,
-        duration_ms: durationMs(graphExtractionStart),
-        memory_count: rawMemories.length,
-        token_count: llm.totalTokens - llmTokensBeforeGraph,
-      });
-    } catch (err) {
-      logger?.warn('ingestion.graph_extraction_failed', {
-        stage: 'graph_extraction',
-        sequence,
-        model: input.modelOverride ?? llm.defaultModel,
-        duration_ms: durationMs(graphExtractionStart),
-        token_count: llm.totalTokens - llmTokensBeforeGraph,
-        ...failureFields(err),
-      }, err);
-      rawGraph = [];
-    }
+    const graphPromise = extractGraph(
+      llm,
+      rawMemories.map((m) => ({ content: m.content })),
+      input.modelOverride,
+    ).then(
+      (rawGraph) => {
+        stages.record('graph_extraction', 'ok', durationMs(graphExtractionStart), {
+          sequence,
+          model: input.modelOverride ?? llm.defaultModel,
+          memory_count: rawMemories.length,
+          token_count: llm.totalTokens - llmTokensBeforeGraph,
+        }, { inputCount: rawMemories.length, outputCount: rawGraph.length });
+        return rawGraph;
+      },
+      (err) => {
+        stages.record('graph_extraction', 'failed', durationMs(graphExtractionStart), {
+          sequence,
+          model: input.modelOverride ?? llm.defaultModel,
+          token_count: llm.totalTokens - llmTokensBeforeGraph,
+          ...failureFields(err),
+        }, { inputCount: rawMemories.length }, err);
+        return [] as Awaited<ReturnType<typeof extractGraph>>;
+      },
+    );
 
     // Stage 4 — normalize + dedup. Runs BEFORE temporal fallback so the
     // fallback only sees facts that survived normalization (matches Python's
     // ordering in `app/engine/ingestion/pipeline.py`).
     const drops = new DropCounter();
     const normalizeStart = performance.now();
-    const facts = normalizeFacts(rawMemories, rawGraph, drops, seenFactKeys);
-    logger?.info('ingestion.stage_completed', {
-      stage: 'normalize_facts',
+    const baseFacts = normalizeBaseFacts(rawMemories, drops, seenFactKeys);
+    stages.record('normalize_facts', 'ok', durationMs(normalizeStart), {
       sequence,
-      duration_ms: durationMs(normalizeStart),
-      memory_count: facts.length,
+      memory_count: baseFacts.length,
+    }, {
+      inputCount: rawMemories.length,
+      outputCount: baseFacts.length,
     });
-    if (facts.length === 0) return [];
 
     // Stage 5 — temporal regex fallback for facts the LLM left without an
     // event_time. Mutates `facts` in place, matching Python.
-    for (const f of facts) {
+    for (const { fact } of baseFacts) {
+      const f = fact;
       if (f.eventTime) continue;
       const inferred = inferTemporalDate(f.content, temporalBase);
       if (inferred) {
@@ -559,30 +645,41 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       }
     }
 
-    // Stage 6 — batch embed memory contents (month suffix when event_time set)
-    const embedTexts = facts.map((f) => buildEnrichedEmbeddingText(f));
-    const memoryEmbedStart = performance.now();
-    let vectors: number[][];
-    try {
-      ({ vectors } = await embedder.embedBatch(embedTexts, { mode: 'document' }));
-    } catch (err) {
-      logger?.error('embedding.request_failed', {
-        stage: 'memory_embedding',
-        sequence,
-        embedding_mode: 'document',
-        embedding_count: embedTexts.length,
-        duration_ms: durationMs(memoryEmbedStart),
-        ...failureFields(err),
-      }, err);
-      throw err;
+    // The graph request was already started above. If normalization rejected
+    // every memory, still join it so the provider work and telemetry finish,
+    // then preserve the existing valid-empty result.
+    if (baseFacts.length === 0) {
+      await graphPromise;
+      return null;
     }
-    logger?.info('embedding.request_completed', {
-      stage: 'memory_embedding',
-      sequence,
-      embedding_mode: 'document',
-      embedding_count: embedTexts.length,
-      duration_ms: durationMs(memoryEmbedStart),
-    });
+
+    // Stage 6 — start fact embedding while graph extraction is still in flight.
+    // Graph attachment does not alter embedding text, and relation fallback is
+    // pinned to the pre-regex event time in `BaseNormalizedFact`, preserving the
+    // former output exactly.
+    const embedTexts = baseFacts.map(({ fact }) => buildEnrichedEmbeddingText(fact));
+    const memoryEmbedStart = performance.now();
+    const vectorsPromise = embedder.embedBatch(embedTexts, { mode: 'document' }).then(
+      ({ vectors }) => {
+        stages.record('memory_embedding', 'ok', durationMs(memoryEmbedStart), {
+          sequence,
+          embedding_mode: 'document',
+          embedding_count: embedTexts.length,
+        }, { inputCount: embedTexts.length, outputCount: vectors.length });
+        return vectors;
+      },
+      (err) => {
+        stages.record('memory_embedding', 'failed', durationMs(memoryEmbedStart), {
+          sequence,
+          embedding_mode: 'document',
+          embedding_count: embedTexts.length,
+          ...failureFields(err),
+        }, { inputCount: embedTexts.length }, err);
+        throw err;
+      },
+    );
+    const [rawGraph, vectors] = await Promise.all([graphPromise, vectorsPromise]);
+    const facts = attachGraphToFacts(baseFacts, rawMemories.length, rawGraph, drops);
     if (vectors.length !== facts.length) {
       throw new Error(
         `Embedder returned ${vectors.length} vectors for ${facts.length} facts`,
@@ -600,94 +697,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       }
     }
 
-    // Stage 7 — persist chunk + memories + chunk_memories atomically, THEN
-    // upsert vectors. The three inserts run in one transaction so a memory row
-    // can never exist without its chunk_memories link — that link is what
-    // `purgeSourceArtifacts` walks to find and clean a prior attempt's
-    // memories. Vectors are upserted after commit (Vectorize isn't part of the
-    // PG transaction); if that upsert fails, the next attempt's purge finds the
-    // committed memories via the link and removes them + these vectors before
-    // re-inserting, so a retry never duplicates.
-    const persistStart = performance.now();
-    const memoryRows: Memory[] = await db.transaction(async (tx) => {
-      const [chunkRow] = await tx
-        .insert(chunks)
-        .values({
-          orgId: scope.orgId,
-          spaceId: scope.spaceId,
-          sourceId,
-          sequence,
-          content: chunkContent,
-          tokenCount: 0,
-          chunker,
-        })
-        .returning();
-      if (!chunkRow) throw new Error('Failed to insert chunk');
-
-      const rows: Memory[] = await tx
-        .insert(memoriesTable)
-        .values(
-          facts.map((f, i) => ({
-            orgId: scope.orgId,
-            spaceId: scope.spaceId,
-            ownerUserId,
-            visibility,
-            content: f.content,
-            memoryType: f.memoryType,
-            // Extraction has always produced a speaker role, and the cross-chunk
-            // dedup key has always included it, but persistence used to drop it
-            // — so the signal was computed and discarded on every ingest.
-            // `normalizeFacts` has already validated it to one of user /
-            // assistant / system / tool, or null when unattributed.
-            speakerRole: f.speakerRole,
-            // Vectors are stored in the configured vector store. For the pg
-            // backend that IS this column; for vectorize the column stays null
-            // and the vector is upserted to the index after commit.
-            embedding: vectorStore.persistsInColumn ? vectors[i]! : null,
-            importanceScore: f.importanceScore,
-            eventTime: f.eventTime,
-            recordedAt,
-          })),
-        )
-        .returning();
-      if (rows.length !== facts.length) {
-        throw new Error(
-          `Memory insert returned ${rows.length} rows for ${facts.length} facts`,
-        );
-      }
-
-      await tx.insert(chunkMemories).values(
-        rows.map((m) => ({
-          chunkId: chunkRow.id,
-          memoryId: m.id,
-          extractionTimestamp: recordedAt,
-        })),
-      );
-      return rows;
-    });
-
-    // Upsert vectors to the vector store (no-op for the pg backend, which
-    // already wrote them to the column above). memoryRows[i] ↔ vectors[i] by
-    // insert order.
-    if (!vectorStore.persistsInColumn) {
-      await vectorStore.upsert(
-        'memories',
-        memoryRows.map((m, i) => ({
-          id: m.id,
-          vector: vectors[i]!,
-          orgId: scope.orgId,
-          spaceId: scope.spaceId,
-        })),
-      );
-    }
-    logger?.info('ingestion.stage_completed', {
-      stage: 'persist_memories',
-      sequence,
-      duration_ms: durationMs(persistStart),
-      memory_count: memoryRows.length,
-    });
-
-    return facts.map((f, i) => ({ memoryId: memoryRows[i]!.id, fact: f }));
+    return { chunk, facts, vectors };
   };
 
   // Process THIS batch's chunks with bounded concurrency (issue #1) to cut
@@ -697,7 +707,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // best-effort and tolerates the interleaving. A chunk that throws (retryable
   // infra error) aborts the batch; its partially-written chunks are purged from
   // the checkpoint on the next attempt, so a retry never duplicates.
-  const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
+  const preparedChunks: PreparedChunk[] = [];
   const chunkConcurrency = Math.max(1, input.chunkConcurrency ?? CHUNK_CONCURRENCY);
   for (let i = 0; i < batch.length; i += chunkConcurrency) {
     // Mid-source lease heartbeat (issue #1), once per concurrency window:
@@ -705,8 +715,104 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     // reclaimed and double-processed. Throttled + best-effort in the caller.
     await input.heartbeat?.();
     const window = batch.slice(i, i + chunkConcurrency);
-    const windowResults = await Promise.all(window.map((chunk) => ingestChunk(chunk)));
-    for (const r of windowResults) allIngested.push(...r);
+    const windowResults = await Promise.all(window.map((chunk) => prepareChunk(chunk)));
+    for (const prepared of windowResults) {
+      if (prepared) preparedChunks.push(prepared);
+    }
+  }
+
+  // Stage 7 — one short transaction for this bounded window. No LLM,
+  // embedding, or vector-store call runs inside it. A post-commit Qdrant
+  // failure is recovered exactly as before: the next attempt's partial-batch
+  // purge follows chunk_memories to remove these authoritative rows/vectors.
+  const allIngested: { memoryId: number; fact: NormalizedFact }[] = [];
+  if (preparedChunks.length > 0) {
+    const persistStart = performance.now();
+    const entries = preparedChunks.flatMap((prepared) =>
+      prepared.facts.map((fact, index) => ({
+        uuid: crypto.randomUUID(),
+        sequence: prepared.chunk.sequence,
+        fact,
+        vector: prepared.vectors[index]!,
+      })));
+    const memoryRows: Memory[] = await db.transaction(async (tx) => {
+      const chunkRows = await tx
+        .insert(chunks)
+        .values(preparedChunks.map(({ chunk }) => ({
+          orgId: scope.orgId,
+          spaceId: scope.spaceId,
+          sourceId,
+          sequence: chunk.sequence,
+          content: chunk.content,
+          tokenCount: 0,
+          chunker: chunk.chunker,
+        })))
+        .returning({ id: chunks.id, sequence: chunks.sequence });
+      const chunkIdBySequence = new Map(chunkRows.map((row) => [row.sequence, row.id]));
+      if (chunkRows.length !== preparedChunks.length) {
+        throw new Error(
+          `Chunk insert returned ${chunkRows.length} rows for ${preparedChunks.length} chunks`,
+        );
+      }
+      const rows: Memory[] = await tx
+        .insert(memoriesTable)
+        .values(entries.map(({ uuid, fact, vector }) => ({
+          uuid,
+          orgId: scope.orgId,
+          spaceId: scope.spaceId,
+          ownerUserId,
+          visibility,
+          content: fact.content,
+          memoryType: fact.memoryType,
+          speakerRole: fact.speakerRole,
+          embedding: vectorStore.persistsInColumn ? vector : null,
+          importanceScore: fact.importanceScore,
+          eventTime: fact.eventTime,
+          recordedAt,
+        })))
+        .returning();
+      if (rows.length !== entries.length) {
+        throw new Error(
+          `Memory insert returned ${rows.length} rows for ${entries.length} facts`,
+        );
+      }
+      const rowByUuid = new Map(rows.map((row) => [row.uuid, row]));
+      const orderedRows = entries.map(({ uuid }) => {
+        const row = rowByUuid.get(uuid);
+        if (!row) throw new Error(`Missing persisted memory mapping for ${uuid}`);
+        return row;
+      });
+      await tx.insert(chunkMemories).values(orderedRows.map((memory, index) => {
+        const chunkId = chunkIdBySequence.get(entries[index]!.sequence);
+        if (chunkId === undefined) throw new Error('Missing persisted chunk mapping');
+        return { chunkId, memoryId: memory.id, extractionTimestamp: recordedAt };
+      }));
+      return orderedRows;
+    });
+
+    if (!vectorStore.persistsInColumn) {
+      await vectorStore.upsert('memories', memoryRows.map((memory, index) => ({
+        id: memory.id,
+        vector: entries[index]!.vector,
+        orgId: scope.orgId,
+        spaceId: scope.spaceId,
+      })));
+    }
+    const persistDuration = durationMs(persistStart);
+    stages.record('persist_window', 'ok', persistDuration, {
+      chunk_count: preparedChunks.length,
+      memory_count: memoryRows.length,
+    }, { inputCount: entries.length, outputCount: memoryRows.length });
+    for (const prepared of preparedChunks) {
+      logger?.info('ingestion.chunk_persisted', {
+        sequence: prepared.chunk.sequence,
+        memory_count: prepared.facts.length,
+        duration_ms: persistDuration,
+      });
+    }
+    entries.forEach(({ fact }, index) => {
+      allIngested.push({ memoryId: memoryRows[index]!.id, fact });
+    });
   }
 
   // Stage 8 — entity resolution + memory_entities + edges for THIS batch's facts.
@@ -721,13 +827,19 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     const allFacts = allIngested.map((im) => im.fact);
     const uniqueEntities = collectUniqueEntities(allFacts);
     const entityResolutionStart = performance.now();
-    resolved = await resolveEntities(db, scope, uniqueEntities, embedder, vectorStore, logger);
+    resolved = await resolveEntities(
+      db,
+      scope,
+      uniqueEntities,
+      embedder,
+      vectorStore,
+      logger,
+      stages,
+    );
     const nameToId = buildNameToIdMap(resolved);
-    logger?.info('ingestion.stage_completed', {
-      stage: 'entity_resolution',
-      duration_ms: durationMs(entityResolutionStart),
+    stages.record('entity_resolution', 'ok', durationMs(entityResolutionStart), {
       entity_count: resolved.length,
-    });
+    }, { inputCount: uniqueEntities.length, outputCount: resolved.length });
 
     ingestedMemories = allIngested.map((im) => {
       const ids = new Set<number>();
@@ -744,11 +856,9 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     if (junctionRows.length > 0) {
       const junctionStart = performance.now();
       await db.insert(memoryEntities).values(junctionRows).onConflictDoNothing();
-      logger?.info('ingestion.stage_completed', {
-        stage: 'memory_entity_links',
-        duration_ms: durationMs(junctionStart),
+      stages.record('memory_entity_links', 'ok', durationMs(junctionStart), {
         entity_count: junctionRows.length,
-      });
+      }, { inputCount: junctionRows.length, outputCount: junctionRows.length });
     }
 
     const edgeStart = performance.now();
@@ -761,11 +871,9 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       ownerUserId,
       visibility,
     );
-    logger?.info('ingestion.stage_completed', {
-      stage: 'edge_creation',
-      duration_ms: durationMs(edgeStart),
+    stages.record('edge_creation', 'ok', durationMs(edgeStart), {
       edge_count: ingestedEdges.length,
-    });
+    }, { inputCount: ingestedMemories.length, outputCount: ingestedEdges.length });
   }
 
   // Advance the durable checkpoint (issue #9). This batch's chunks and their

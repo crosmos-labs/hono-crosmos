@@ -273,30 +273,34 @@ export function normalizeFacts(
   drops: DropCounter,
   seen: Set<string> = new Set(),
 ): NormalizedFact[] {
-  const graphByIndex = new Map<number, RawGraphResult>();
-  for (const g of graphResults) {
-    if (
-      !Number.isInteger(g.index) ||
-      g.index < 0 ||
-      g.index >= rawMemories.length
-    ) {
-      drops.bump('invalid_graph_index');
-      continue;
-    }
-    if (graphByIndex.has(g.index)) {
-      drops.bump('duplicate_graph_index');
-      continue;
-    }
-    graphByIndex.set(g.index, g);
-  }
+  const base = normalizeBaseFacts(rawMemories, drops, seen);
+  return attachGraphToFacts(base, rawMemories.length, graphResults, drops);
+}
 
-  const out: NormalizedFact[] = [];
+export interface BaseNormalizedFact {
+  /** Index in the raw memory array; graph results join on this value. */
+  rawIndex: number;
+  /** LLM event time before the pipeline's regex fallback mutates the fact. */
+  relationFallbackEventTime: Date | null;
+  fact: NormalizedFact;
+}
 
+/**
+ * Result-preserving first half of `normalizeFacts`. It validates/deduplicates
+ * memory fields without graph data so document embedding can overlap the graph
+ * provider request. `relationFallbackEventTime` preserves the old rule that a
+ * relation with no `valid_from` inherits only the LLM event time, not the later
+ * regex fallback.
+ */
+export function normalizeBaseFacts(
+  rawMemories: RawExtractedMemory[],
+  drops: DropCounter,
+  seen: Set<string> = new Set(),
+): BaseNormalizedFact[] {
+  const out: BaseNormalizedFact[] = [];
   for (let i = 0; i < rawMemories.length; i++) {
-    const raw = rawMemories[i]!;
-    const norm = normalizeFact(raw, graphByIndex.get(i) ?? null, drops);
+    const norm = normalizeFact(rawMemories[i]!, null, drops);
     if (!norm) continue;
-
     const key = [
       norm.content.toLowerCase(),
       norm.memoryType,
@@ -308,8 +312,53 @@ export function normalizeFacts(
       continue;
     }
     seen.add(key);
-    out.push(norm);
+    out.push({ rawIndex: i, relationFallbackEventTime: norm.eventTime, fact: norm });
+  }
+  return out;
+}
+
+/** Attach graph fields to already-normalized facts without changing order. */
+export function attachGraphToFacts(
+  base: BaseNormalizedFact[],
+  rawMemoryCount: number,
+  graphResults: RawGraphResult[],
+  drops: DropCounter,
+): NormalizedFact[] {
+  const graphByIndex = new Map<number, RawGraphResult>();
+  for (const g of graphResults) {
+    if (
+      !Number.isInteger(g.index) ||
+      g.index < 0 ||
+      g.index >= rawMemoryCount
+    ) {
+      drops.bump('invalid_graph_index');
+      continue;
+    }
+    if (graphByIndex.has(g.index)) {
+      drops.bump('duplicate_graph_index');
+      continue;
+    }
+    graphByIndex.set(g.index, g);
   }
 
-  return out;
+  return base.map(({ rawIndex, relationFallbackEventTime, fact }) => {
+    const graph = graphByIndex.get(rawIndex) ?? null;
+    const entities = normalizeEntities(graph?.entities, drops);
+    const relations: NormalizedRelation[] = [];
+    for (const relation of graph?.relations ?? []) {
+      const normalized = normalizeRelation(relation, relationFallbackEventTime, drops);
+      if (normalized) relations.push(normalized);
+    }
+    const knownNames = new Set(entities.map((entity) => entity.name.toLowerCase()));
+    for (const relation of relations) {
+      for (const name of [relation.subject, relation.object]) {
+        const key = name.toLowerCase();
+        if (knownNames.has(key) || wordCount(name) > ENTITY_NAME_MAX_WORDS) continue;
+        entities.push({ name, entityType: DEFAULT_ENTITY_TYPE });
+        knownNames.add(key);
+        drops.bump('entity_added_from_relation');
+      }
+    }
+    return { ...fact, entities, relations };
+  });
 }

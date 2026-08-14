@@ -51,6 +51,12 @@ export interface QueryOptions {
   signal?: AbortSignal;
 }
 
+export interface NearestQuery {
+  vector: number[];
+  scope: VectorScope;
+  opts: QueryOptions;
+}
+
 export interface UpsertItem {
   id: number;
   vector: number[];
@@ -97,6 +103,17 @@ export interface VectorStore {
     vectors: number[][],
     scope: VectorScope,
     opts: QueryOptions,
+  ): Promise<VectorMatch[][]>;
+
+  /**
+   * Optional heterogeneous batch. Unlike `queryNearestBatch`, each search can
+   * have its own scope, limit, threshold, and cancellation signal. This is the
+   * result-preserving primitive used to combine retrieval searches that happen
+   * to target one collection without weakening either search's semantics.
+   */
+  queryNearestMany?(
+    collection: VectorCollection,
+    searches: NearestQuery[],
   ): Promise<VectorMatch[][]>;
 
   /**
