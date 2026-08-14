@@ -151,9 +151,8 @@ This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
 - **6 complete** (`[x]`);
-- **24 partial or awaiting a verification gate** (`[~]`);
-- **2 not started** (`[ ]`), including the new request-waterfall work and the
-  guarded experiment queue;
+- **25 partial or awaiting a verification gate** (`[~]`);
+- **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
 The immediate next engineering item is **O-7**. P-1 through P-6, the remaining
@@ -166,6 +165,7 @@ new evidence explicitly reactivates them.
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-14 | Deployed O-4/O-7 private timing and span coverage to staging after the full workspace test/typecheck suite and both Worker dry-run bundles passed. Live smoke verified the security endpoint, opaque request ID, absence of public timing headers/OpenAPI fields, and a version-tagged private `request_total` Analytics Engine row. Persisted-log/custom-trace and hosted Grafana checks remain because the available Wrangler OAuth token lacks Workers Observability query permission and no authenticated browser was connected. | `5c23c3e4-e95c-42d7-b0fe-457cafcca6dd` | `4d103e8a-b44a-4476-a075-c74c5335cbb1` | — |
 | 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
 | 2026-08-14 | Created the private R2 archive bucket with a verified 90-day lifecycle; deployed the admin Worker behind the Access application; configured its issuer/AUD/four-email allowlist; verified the unauthenticated redirect, issuer JWKS, a successful allowlisted `/admin/whoami` browser session, and production totals from `/admin/overview`. | — | — | `78889c96-00b8-4cef-81ca-d7853366fb38` |
@@ -489,7 +489,7 @@ reported.
 
 Documentation and a script; no runtime effect.
 
-### [ ] O-7. Close the full request timing budget and add per-request waterfalls
+### [~] O-7. Close the full request timing budget and add per-request waterfalls
 
 _In progress 2026-08-14. The outermost private `request_total` metric/log/custom
 span and its boundary documentation are implemented locally. The shared stage
@@ -504,7 +504,13 @@ the shared metric/log/span recorder. Authentication now records `auth_total`,
 API-key hashing/cache/DB resolution, JWT verification/revocation/user loading,
 principal resolution, and management limiting through the same recorder.
 Complete timing coverage, hosted panel verification, Grafana trace/log export,
-deployment, and an operator-tested single-request workflow remain. The outer
+production deployment, and an operator-tested single-request workflow remain.
+The staging API (`4d103e8a`) and ingestion (`5c23c3e4`) deployments passed their
+public-surface smoke on 2026-08-14, and `request_total` landed privately in
+`crosmos_api_staging` with the deployed API version. Persisted-log/custom-trace
+inspection remains unverified because the available Wrangler OAuth credential
+cannot query Workers Observability and no authenticated browser was connected.
+The outer
 request clock classifies every 4xx/5xx response as `failed`; a regression test
 pins both metric and span behavior for a 404. Search now has a parent
 `search_total` span/metric around admission and retrieval, plus explicit
