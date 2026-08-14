@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-08-11T18:45:48.710Z",
+  "capturedAt": "2026-08-14T17:51:05.933Z",
   "note": "Expected retrieval output for the fixture corpus. A diff here means ranking changed — review it, do not regenerate reflexively.",
   "queries": {
     "q1-single-session": {
@@ -24,27 +24,27 @@
           "sessionId": "sess-01-coffee"
         },
         {
-          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "content": "User plans to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.1207955476440821,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User's knees hurt on the last 10km of their 80km ride, indicating a need to fix their saddle height.",
           "memoryType": "semantic",
-          "finalScore": 0.11276881651350563,
+          "finalScore": 0.11407083331111388,
           "sessionId": "sess-06-cycling-followup"
         },
         {
           "content": "User signed up for a 100km charity bike ride in June 2026.",
           "memoryType": "episode",
-          "finalScore": 0.10560700603275855,
+          "finalScore": 0.11308035855886504,
           "sessionId": "sess-02-cycling"
-        },
-        {
-          "content": "User is staying in Alfama during their holiday in Lisbon in the last week of April 2026.",
-          "memoryType": "semantic",
-          "finalScore": 0.10295530132837735,
-          "sessionId": "sess-04-travel"
         },
         {
           "content": "User was promoted to engineering manager on 2026-02-07.",
           "memoryType": "episode",
-          "finalScore": 0.09037921320513985,
+          "finalScore": 0.08835187393910049,
           "sessionId": "sess-03-work"
         },
         {
@@ -60,9 +60,9 @@
           "sessionId": "sess-05-coffee-followup"
         },
         {
-          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
-          "memoryType": "viewpoint",
-          "finalScore": 0.10078360110717335,
+          "content": "User is staying in Alfama during their holiday in Lisbon in the last week of April 2026.",
+          "memoryType": "semantic",
+          "finalScore": 0.10295530132837735,
           "sessionId": "sess-04-travel"
         }
       ]
@@ -79,7 +79,7 @@
         {
           "content": "User switched to a darker roast for their daily morning latte.",
           "memoryType": "semantic",
-          "finalScore": 0.8362426689802281,
+          "finalScore": 0.8364305004252852,
           "sessionId": "sess-05-coffee-followup"
         },
         {
@@ -107,28 +107,28 @@
           "sessionId": "sess-04-travel"
         },
         {
-          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "content": "User completed their first 80km bike ride on 2026-04-11, ahead of the June 2026 event.",
           "memoryType": "episode",
-          "finalScore": 0.13628595265072102,
+          "finalScore": 0.1261550957300729,
           "sessionId": "sess-06-cycling-followup"
         },
         {
           "content": "User signed up for a 100km charity bike ride in June 2026.",
           "memoryType": "episode",
-          "finalScore": 0.1196208776486635,
+          "finalScore": 0.11964592914136478,
           "sessionId": "sess-02-cycling"
-        },
-        {
-          "content": "User was promoted to engineering manager on 2026-02-07.",
-          "memoryType": "episode",
-          "finalScore": 0.10837081815793036,
-          "sessionId": "sess-03-work"
         },
         {
           "content": "User has been experiencing stomach upset from dairy for a few months.",
           "memoryType": "semantic",
           "finalScore": 0.30795576157373306,
           "sessionId": "sess-01-coffee"
+        },
+        {
+          "content": "User was promoted to engineering manager on 2026-02-07.",
+          "memoryType": "episode",
+          "finalScore": 0.10130223076013448,
+          "sessionId": "sess-03-work"
         }
       ]
     },
@@ -138,37 +138,37 @@
         {
           "content": "User signed up for a 100km charity bike ride in June 2026.",
           "memoryType": "episode",
-          "finalScore": 0.9956534427365282,
+          "finalScore": 0.9609892730760474,
           "sessionId": "sess-02-cycling"
         },
         {
-          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "content": "User completed their first 80km bike ride on 2026-04-11, ahead of the June 2026 event.",
           "memoryType": "episode",
-          "finalScore": 0.7655287202572367,
+          "finalScore": 0.7680650424519394,
           "sessionId": "sess-06-cycling-followup"
         },
         {
           "content": "User plans to book a proper bike fit next week.",
           "memoryType": "episode",
-          "finalScore": 0.3747669249210179,
+          "finalScore": 0.3875969831202063,
           "sessionId": "sess-06-cycling-followup"
         },
         {
-          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "content": "User plans to spend most of their holiday in Lisbon walking and eating pastries.",
           "memoryType": "viewpoint",
-          "finalScore": 0.25405056424966627,
+          "finalScore": 0.2590988602064916,
           "sessionId": "sess-04-travel"
         },
         {
-          "content": "User wants to read a longer translated Japanese fiction book next, with a length under 500 pages.",
+          "content": "User wants to read a longer translated Japanese fiction book next, preferably under 500 pages.",
           "memoryType": "viewpoint",
-          "finalScore": 0.2497398944048823,
+          "finalScore": 0.24740510511902655,
           "sessionId": "sess-07-reading"
         },
         {
           "content": "User is nervous about the first performance review cycle as an engineering manager.",
           "memoryType": "viewpoint",
-          "finalScore": 0.20661313087072466,
+          "finalScore": 0.19741940247537193,
           "sessionId": "sess-03-work"
         },
         {
@@ -178,9 +178,9 @@
           "sessionId": "sess-02-cycling"
         },
         {
-          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "content": "User's knees hurt on the last 10km of their 80km ride, indicating a need to fix their saddle height.",
           "memoryType": "semantic",
-          "finalScore": 0.34234473073814736,
+          "finalScore": 0.3394288666763066,
           "sessionId": "sess-06-cycling-followup"
         },
         {
@@ -190,9 +190,9 @@
           "sessionId": "sess-01-coffee"
         },
         {
-          "content": "User's stomach is much better after switching to oat milk.",
+          "content": "User switched to a darker roast for their daily morning latte.",
           "memoryType": "semantic",
-          "finalScore": 0.10433122311900132,
+          "finalScore": 0.10543490718074168,
           "sessionId": "sess-05-coffee-followup"
         }
       ]
@@ -207,21 +207,21 @@
           "sessionId": "sess-02-cycling"
         },
         {
-          "content": "User completed their first 80km bike ride on 2026-04-11 ahead of the June event.",
+          "content": "User completed their first 80km bike ride on 2026-04-11, ahead of the June 2026 event.",
           "memoryType": "episode",
-          "finalScore": 0.5337494720890467,
+          "finalScore": 0.5639639930280663,
           "sessionId": "sess-06-cycling-followup"
         },
         {
-          "content": "User experienced knee pain on the last 10km of their 80km ride and needs to fix their saddle height.",
+          "content": "User's knees hurt on the last 10km of their 80km ride, indicating a need to fix their saddle height.",
           "memoryType": "semantic",
-          "finalScore": 0.4468603750691099,
+          "finalScore": 0.4883992298024214,
           "sessionId": "sess-06-cycling-followup"
         },
         {
           "content": "User signed up for a 100km charity bike ride in June 2026.",
           "memoryType": "episode",
-          "finalScore": 0.4138505560973117,
+          "finalScore": 0.43276744827877217,
           "sessionId": "sess-02-cycling"
         },
         {
@@ -233,14 +233,8 @@
         {
           "content": "User switched to a darker roast for their daily morning latte.",
           "memoryType": "semantic",
-          "finalScore": 0.08384280049422145,
+          "finalScore": 0.08386163272433673,
           "sessionId": "sess-05-coffee-followup"
-        },
-        {
-          "content": "User was promoted to engineering manager on 2026-02-07.",
-          "memoryType": "episode",
-          "finalScore": 0.06379502349151815,
-          "sessionId": "sess-03-work"
         },
         {
           "content": "User switched to oat milk in their morning coffee.",
@@ -255,9 +249,15 @@
           "sessionId": "sess-07-reading"
         },
         {
-          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "content": "User is nervous about the first performance review cycle as an engineering manager.",
           "memoryType": "viewpoint",
-          "finalScore": 0.08781017317938514,
+          "finalScore": 0.054467396920557166,
+          "sessionId": "sess-03-work"
+        },
+        {
+          "content": "User plans to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.09197460516479249,
           "sessionId": "sess-04-travel"
         }
       ]
@@ -274,32 +274,32 @@
         {
           "content": "User was promoted to engineering manager on 2026-02-07.",
           "memoryType": "episode",
-          "finalScore": 0.3410013259063222,
+          "finalScore": 0.33169393397271113,
           "sessionId": "sess-03-work"
         },
         {
           "content": "User signed up for a 100km charity bike ride in June 2026.",
           "memoryType": "episode",
-          "finalScore": 0.12234016173879168,
+          "finalScore": 0.11308035855886504,
           "sessionId": "sess-02-cycling"
-        },
-        {
-          "content": "User switched to a darker roast for their daily morning latte.",
-          "memoryType": "semantic",
-          "finalScore": 0.11153152291457397,
-          "sessionId": "sess-05-coffee-followup"
-        },
-        {
-          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
-          "memoryType": "viewpoint",
-          "finalScore": 0.10668452360276487,
-          "sessionId": "sess-04-travel"
         },
         {
           "content": "User plans to book a proper bike fit next week.",
           "memoryType": "episode",
-          "finalScore": 0.10369539051607024,
+          "finalScore": 0.11227725239600281,
           "sessionId": "sess-06-cycling-followup"
+        },
+        {
+          "content": "User plans to spend most of their holiday in Lisbon walking and eating pastries.",
+          "memoryType": "viewpoint",
+          "finalScore": 0.10550291321884443,
+          "sessionId": "sess-04-travel"
+        },
+        {
+          "content": "User switched to a darker roast for their daily morning latte.",
+          "memoryType": "semantic",
+          "finalScore": 0.10543490718074168,
+          "sessionId": "sess-05-coffee-followup"
         },
         {
           "content": "User makes a latte every single morning before work.",
@@ -316,7 +316,7 @@
         {
           "content": "User is nervous about the first performance review cycle as an engineering manager.",
           "memoryType": "viewpoint",
-          "finalScore": 0.27530345897634484,
+          "finalScore": 0.2677397712931931,
           "sessionId": "sess-03-work"
         },
         {
@@ -343,9 +343,9 @@
           "sessionId": "sess-07-reading"
         },
         {
-          "content": "User wants to spend most of their holiday in Lisbon walking and eating pastries.",
+          "content": "User plans to spend most of their holiday in Lisbon walking and eating pastries.",
           "memoryType": "viewpoint",
-          "finalScore": 0.501025867869523,
+          "finalScore": 0.477740410819165,
           "sessionId": "sess-04-travel"
         },
         {

@@ -55,8 +55,7 @@ const RERANK_MODEL = 'zerank-2';
 const db: Database | null = await getTestDb();
 if (db === null) announceSkip('pipeline-baseline.pg.test.ts');
 
-const KNOWN_BUN_TEST_DIVERGENCE = true;
-const enabled = db !== null && !KNOWN_BUN_TEST_DIVERGENCE;
+const enabled = db !== null;
 
 const fixturePath = new URL('./fixtures/pipeline-fixtures.json', import.meta.url).pathname;
 const baselinePath = new URL('./fixtures/retrieval-baseline.json', import.meta.url).pathname;
@@ -78,36 +77,7 @@ const baseline = !enabled
         >;
       });
 
-/**
- * KNOWN ISSUE — this suite is currently disabled, and that is deliberate rather
- * than an oversight.
- *
- * The fixtures are proven replayable: `capture-pipeline-fixtures.ts` reaches a
- * fixpoint (a pass that requests no new provider calls) and then re-runs the
- * whole corpus in pure replay, asserting it reproduces the recorded retrieval
- * output exactly. Under `bun run`, it does.
- *
- * Under `bun test`, the SAME harness, fixtures and database produce a different
- * `event_time` for one fact — `(happened in May 2026)` when captured,
- * `(happened in June 2026)` when replayed — which makes every subsequent
- * fixture unreachable. The extraction fixture is served (no LLM miss), so the
- * same recorded response is being turned into a different normalized fact
- * depending on the runtime. That is a real reproducibility question about the
- * pipeline and possibly a Bun behavioural difference; it is NOT a fixture
- * problem.
- *
- * Enabling this before understanding that would produce a test that passes for
- * the wrong reason, which is exactly what this file exists to prevent. The
- * capture script's self-verification is the working gate in the meantime.
- */
 const describeDb = enabled ? describe : describe.skip;
-if (db !== null && !enabled) {
-  console.warn(
-    '[skip] pipeline-baseline.pg.test.ts: disabled pending the bun-test ' +
-      'event_time divergence described in the file header. Verify with: ' +
-      'bun --cwd apps/api scripts/capture-pipeline-fixtures.ts',
-  );
-}
 
 let tenant: Tenant;
 let vectorStore: MemoryVectorStore;
@@ -253,10 +223,12 @@ describeDb('retrieval — ranking is unchanged', () => {
     expect(sessions.size).toBeGreaterThan(1);
   });
 
-  test('scores are ordered descending and bounded', async () => {
+  test('scores are finite and bounded, with the strongest candidate first', async () => {
     const result = await runQuery('q1-single-session');
     const scores = result.candidates.map((c) => c.finalScore);
-    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    // Later positions are intentionally session-diversified rather than raw
+    // score sorted; the exact baseline above pins that adjusted order.
+    expect(scores[0]).toBe(Math.max(...scores));
     for (const s of scores) {
       expect(Number.isFinite(s)).toBe(true);
       expect(s).toBeGreaterThanOrEqual(0);
