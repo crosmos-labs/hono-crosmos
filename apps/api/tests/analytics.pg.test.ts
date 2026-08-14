@@ -75,8 +75,10 @@ beforeEach(async () => {
   ]);
   await db.execute(sql`
     insert into daily_usage
-      (uuid, org_id, user_id, space_id, date, sources_ingested, memories_created)
-    values (gen_random_uuid(), ${tenant.orgId}, ${tenant.userId}, ${tenant.spaceId}, current_date, 2, 7)`);
+      (uuid, org_id, user_id, space_id, date, tokens_ingested, search_queries,
+       sources_ingested, memories_created)
+    values (gen_random_uuid(), ${tenant.orgId}, ${tenant.userId}, ${tenant.spaceId},
+      current_date, 123, 5, 2, 7)`);
   const cross = await db.execute<{ uuid: string }>(sql`
     with u as (
       insert into users (uuid, email, name, is_active)
@@ -105,6 +107,25 @@ describeDb('analytics HTTP routes', () => {
     expect(response.status).toBe(200);
     expect((await response.json() as { totals: { sources_ingested: number } }).totals.sources_ingested).toBe(2);
     expect((await request(`/api/v1/spaces/${crossOrgSpaceUuid}/analytics`, orgKey)).status).toBe(404);
+  });
+
+  test('analytics and usage report the same token and search rollups', async () => {
+    const analyticsResponse = await request('/api/v1/analytics/summary', orgKey);
+    const usageResponse = await request('/api/v1/usage', orgKey);
+    expect(analyticsResponse.status).toBe(200);
+    expect(usageResponse.status).toBe(200);
+
+    const analytics = await analyticsResponse.json() as {
+      totals: { tokens_ingested: number; search_queries: number };
+    };
+    const usage = await usageResponse.json() as {
+      tokens: { used: number };
+      queries: { used: number };
+    };
+    expect(analytics.totals.tokens_ingested).toBe(123);
+    expect(analytics.totals.search_queries).toBe(5);
+    expect(usage.tokens.used).toBe(analytics.totals.tokens_ingested);
+    expect(usage.queries.used).toBe(analytics.totals.search_queries);
   });
 
   test('space-scoped key sees only its own space', async () => {
