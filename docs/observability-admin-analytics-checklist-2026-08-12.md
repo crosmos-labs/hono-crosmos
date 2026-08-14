@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **8 complete** (`[x]`);
-- **23 partial or awaiting a verification gate** (`[~]`);
+- **9 complete** (`[x]`);
+- **22 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1504,10 +1504,12 @@ Generated migration `0004_tense_speed`, additive:
 Additive columns and one new table. Drop in reverse order; nothing reads them
 until U-3 ships.
 
-### [~] U-2. Define what each counter means, in the response
+### [x] U-2. Define what each counter means, in the response
 
-_The canonical wording is embedded in the OpenAPI response schema. Generated
-document verification remains._
+_Implemented and verified 2026-08-14. The deployed generated OpenAPI document
+contains the canonical descriptions for all five analytics counters. A migrated
+Postgres HTTP regression test also proves that analytics and `GET /api/v1/usage`
+return the same token and search rollups for the same current-month fixture._
 
 **Why**
 
