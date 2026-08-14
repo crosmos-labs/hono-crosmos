@@ -144,13 +144,15 @@ bunx wrangler r2 bucket lifecycle list crosmos-worker-logs
 
 Cloudflare's automatic R2 setup was used after the manual destination form
 stalled in the dashboard. It created account job `1838803`, its destination,
-and the writer credential. Narrowing that generated credential from its original
-Admin Read & Write permission to Object Read & Write caused the job Health view
-to stall and produced no uploads; restoring the generated permission restored
-delivery. Do not edit this Cloudflare-managed writer independently of its job.
-Use a separate Object Read-only token for queries. The account-level job should
-cover these deployed scripts; verify each from landed records before treating
-that as fact:
+and the writer credential. While that credential was narrowed from its original
+Admin Read & Write permission to Object Read & Write, the job Health view
+stalled; it loaded after the original permission was restored. Landed-object
+timestamps show delivery had already begun before restoration, so this does not
+prove the scope change interrupted uploads. Leave this Cloudflare-managed writer
+at its generated settings rather than editing it independently of its job. Use a
+separate Object Read-only token for queries. The account-level job should cover
+these deployed scripts; verify each from landed records before treating that as
+fact:
 
 - `crosmos-api-production`
 - `crosmos-api-staging`
