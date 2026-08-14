@@ -245,7 +245,10 @@
         "label": "Cloudflare account id",
         "type": "textbox",
         "query": "",
-        "current": { "text": "set-me", "value": "set-me" }
+        "current": {
+          "text": "17ebc9e30a1d9007b3b215b83492a487",
+          "value": "17ebc9e30a1d9007b3b215b83492a487"
+        }
       }
     ]
   },
