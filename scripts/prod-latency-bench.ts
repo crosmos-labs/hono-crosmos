@@ -19,6 +19,15 @@ const KEY = process.env.CROSMOS_API_KEY!;
 if (!KEY) throw new Error('set CROSMOS_API_KEY');
 const H = { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const positiveIntEnv = (name: string, fallback: number) => {
+  const raw = process.env[name];
+  if (raw == null) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+};
 const pct = (xs: number[], p: number) => {
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
@@ -280,7 +289,7 @@ async function createSpace(): Promise<string> {
 }
 
 // ── Phase A: ingest ─────────────────────────────────────────────────────────
-async function ingest(spaceId: string) {
+async function ingest(spaceId: string, selectedConversations: Conv[]) {
   const wall0 = performance.now();
   const submitMs: number[] = [];
   const jobs: { jobId: string; sid: string; cat: string }[] = [];
@@ -288,8 +297,8 @@ async function ingest(spaceId: string) {
   const POOL = 6;
   let idx = 0;
   async function worker() {
-    while (idx < conversations.length) {
-      const c = conversations[idx++];
+    while (idx < selectedConversations.length) {
+      const c = selectedConversations[idx++];
       const t0 = performance.now();
       const r = await fetch(`${BASE}/api/v1/conversations`, {
         method: 'POST', headers: H,
@@ -304,7 +313,7 @@ async function ingest(spaceId: string) {
     }
   }
   await Promise.all(Array.from({ length: POOL }, worker));
-  console.log(`submitted ${jobs.length}/${conversations.length} jobs`);
+  console.log(`submitted ${jobs.length}/${selectedConversations.length} jobs`);
 
   // poll all jobs to terminal
   const terminal = new Set(['completed', 'partial', 'failed', 'cancelled']);
@@ -366,12 +375,12 @@ const queries: Q[] = [
   { q: 'Tell me about my cat.', kind: 'adversarial', note: 'has a dog, not a cat' },
 ];
 
-async function retrieve(spaceId: string) {
+async function retrieve(spaceId: string, selectedQueries: Q[], repeats: number) {
   const rows: any[] = [];
-  for (const item of queries) {
+  for (const item of selectedQueries) {
     const samples: { total: number; took: number }[] = [];
     let lastBody: any = null;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < repeats; i++) {
       const t0 = performance.now();
       const r = await fetch(`${BASE}/api/v1/search`, {
         method: 'POST', headers: H,
@@ -403,47 +412,73 @@ async function retrieve(spaceId: string) {
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
+const conversationLimit = Math.min(
+  positiveIntEnv('BENCH_CONVERSATION_LIMIT', conversations.length),
+  conversations.length,
+);
+const queryLimit = Math.min(
+  positiveIntEnv('BENCH_QUERY_LIMIT', queries.length),
+  queries.length,
+);
+const repeats = positiveIntEnv('BENCH_QUERY_REPEATS', 3);
+const selectedConversations = conversations.slice(0, conversationLimit);
+const selectedQueries = queries.slice(0, queryLimit);
 const spaceId = await createSpace();
 console.log(`space: ${spaceId}`);
-const ing = await ingest(spaceId);
-console.log('\n===== INGESTION =====');
-console.log(`jobs polled to terminal: ${ing.polled}/${ing.total}  (ok=${ing.ok} failed=${ing.failed})`);
-console.log(`memories created: ${ing.memTotal}`);
-console.log(`submit latency ms  p50=${Math.round(pct(ing.submitMs,50))} p95=${Math.round(pct(ing.submitMs,95))}`);
-console.log(`server ingest ms   p50=${Math.round(pct(ing.serverMs,50))} p95=${Math.round(pct(ing.serverMs,95))} mean=${Math.round(mean(ing.serverMs))} max=${Math.max(...ing.serverMs)}`);
-console.log(`total wall-clock for ${ing.total}: ${(ing.wallMs/1000).toFixed(1)}s`);
+try {
+  const ing = await ingest(spaceId, selectedConversations);
+  console.log('\n===== INGESTION =====');
+  console.log(`jobs polled to terminal: ${ing.polled}/${ing.total}  (ok=${ing.ok} failed=${ing.failed})`);
+  console.log(`memories created: ${ing.memTotal}`);
+  console.log(`submit latency ms  p50=${Math.round(pct(ing.submitMs,50))} p95=${Math.round(pct(ing.submitMs,95))}`);
+  console.log(`server ingest ms   p50=${Math.round(pct(ing.serverMs,50))} p95=${Math.round(pct(ing.serverMs,95))} mean=${Math.round(mean(ing.serverMs))} max=${Math.max(...ing.serverMs)}`);
+  console.log(`total wall-clock for ${ing.total}: ${(ing.wallMs/1000).toFixed(1)}s`);
 
-const ret = await retrieve(spaceId);
-const allTook = ret.map((r) => r.took_med);
-const allTotal = ret.map((r) => r.total_med);
-console.log('\n===== RETRIEVAL LATENCY (India vantage) =====');
-console.log(`server took_ms     p50=${Math.round(pct(allTook,50))} p95=${Math.round(pct(allTook,95))}`);
-console.log(`client total ms    p50=${Math.round(pct(allTotal,50))} p95=${Math.round(pct(allTotal,95))}`);
-const overheads = ret.map((r) => r.total_med - r.took_med).filter((x) => x > 0);
-console.log(`india net overhead p50=${Math.round(pct(overheads,50))} p95=${Math.round(pct(overheads,95))} (client_total - server_took)`);
+  const ret = await retrieve(spaceId, selectedQueries, repeats);
+  const allTook = ret.map((r) => r.took_med);
+  const allTotal = ret.map((r) => r.total_med);
+  console.log('\n===== RETRIEVAL LATENCY (India vantage) =====');
+  console.log(`server took_ms     p50=${Math.round(pct(allTook,50))} p95=${Math.round(pct(allTook,95))}`);
+  console.log(`client total ms    p50=${Math.round(pct(allTotal,50))} p95=${Math.round(pct(allTotal,95))}`);
+  const overheads = ret.map((r) => r.total_med - r.took_med).filter((x) => x > 0);
+  console.log(`india net overhead p50=${Math.round(pct(overheads,50))} p95=${Math.round(pct(overheads,95))} (client_total - server_took)`);
 
-console.log('\n===== RETRIEVAL QUALITY =====');
-for (const r of ret) {
-  console.log(`\n[${r.kind}] ${r.q}`);
-  if (r.note) console.log(`  (probe: ${r.note})`);
-  console.log(`  took=${r.took_med}ms total=${r.total_med}ms  results=${r.n} distinctSessions=${r.uniqSessions}`);
-  for (const t of r.top) console.log(`   - (${t.score}) [${t.session}] ${t.content}`);
+  console.log('\n===== RETRIEVAL QUALITY =====');
+  for (const r of ret) {
+    console.log(`\n[${r.kind}] ${r.q}`);
+    if (r.note) console.log(`  (probe: ${r.note})`);
+    console.log(`  took=${r.took_med}ms total=${r.total_med}ms  results=${r.n} distinctSessions=${r.uniqSessions}`);
+    for (const t of r.top) console.log(`   - (${t.score}) [${t.session}] ${t.content}`);
+  }
+
+  // Machine-readable dump. Keep provenance alongside the measurements so a
+  // checked-in result cannot be mistaken for an undated current baseline.
+  await Bun.write(
+    `scripts/prod-latency-result.json`,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        baseUrl: BASE,
+        parameters: { conversationLimit, queryLimit, repeats },
+        spaceId,
+        ing: { ...ing, submitMs: undefined },
+        ret,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log('\nwrote scripts/prod-latency-result.json');
+} finally {
+  if (process.env.KEEP_BENCH_SPACE !== '1') {
+    const cleanup = await fetch(`${BASE}/api/v1/spaces/${spaceId}`, {
+      method: 'DELETE',
+      headers: H,
+    });
+    if (!cleanup.ok && cleanup.status !== 404) {
+      console.error(`benchmark space cleanup ${cleanup.status}: ${await cleanup.text()}`);
+    } else {
+      console.log(`soft-deleted benchmark space ${spaceId}`);
+    }
+  }
 }
-
-// Machine-readable dump. Keep provenance alongside the measurements so a
-// checked-in result cannot be mistaken for an undated current baseline.
-await Bun.write(
-  `scripts/prod-latency-result.json`,
-  JSON.stringify(
-    {
-      generatedAt: new Date().toISOString(),
-      baseUrl: BASE,
-      spaceId,
-      ing: { ...ing, submitMs: undefined },
-      ret,
-    },
-    null,
-    2,
-  ),
-);
-console.log('\nwrote scripts/prod-latency-result.json');
