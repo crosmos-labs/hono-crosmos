@@ -33,6 +33,7 @@ import {
   durationMs,
   type Logger,
   type Metrics,
+  type StageRecorder,
   type TraceProvider,
 } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
@@ -222,6 +223,89 @@ function failureFields(err: unknown): {
     return { error_category: 'external_service', dependency: 'llm' };
   }
   return { error_category: 'internal', dependency: 'pipeline' };
+}
+
+export async function prepareExistingMemoryHints(input: {
+  db: Database;
+  scope: TenantScope;
+  chunks: SourceChunk[];
+  embedder: Embedder;
+  vectorStore: VectorStore;
+  stages: StageRecorder;
+  logger?: Logger;
+}): Promise<Map<number, string[]>> {
+  const prepare = async (
+    chunksToPrepare: SourceChunk[],
+    maySplit: boolean,
+  ): Promise<Map<number, string[]>> => {
+    try {
+      const { vectors } = await input.stages.time(
+        'existing_memory_embedding_batch',
+        {},
+        () => input.embedder.embedBatch(
+          chunksToPrepare.map((chunk) => chunk.content),
+          { mode: 'search' },
+        ),
+        (result) => ({
+          inputCount: chunksToPrepare.length,
+          outputCount: result.vectors.length,
+        }),
+      );
+      const scopeArg = { orgId: input.scope.orgId, spaceId: input.scope.spaceId };
+      const queryOptions = { topK: EXISTING_MEMORY_LOOKUP_LIMIT };
+      const matchLists = await input.stages.time(
+        'existing_memory_ann_batch',
+        {},
+        () => input.vectorStore.queryNearestBatch
+          ? input.vectorStore.queryNearestBatch('memories', vectors, scopeArg, queryOptions)
+          : Promise.all(vectors.map((vector) =>
+              input.vectorStore.queryNearest('memories', vector, scopeArg, queryOptions))),
+        (results) => ({
+          inputCount: vectors.length,
+          outputCount: results.reduce((sum, matches) => sum + matches.length, 0),
+          transferBytes: vectors.length * input.embedder.dimensions * 4,
+        }),
+      );
+      const ids = [...new Set(matchLists.flatMap((matches) => matches.map((match) => match.id)))];
+      const rows = await input.stages.time(
+        'existing_memory_hydration_batch',
+        {},
+        () => ids.length === 0
+          ? Promise.resolve([] as Array<{ id: number; content: string }>)
+          : input.db
+              .select({ id: memoriesTable.id, content: memoriesTable.content })
+              .from(memoriesTable)
+              .where(and(
+                inArray(memoriesTable.id, ids),
+                sql`${memoriesTable.forgottenAt} IS NULL`,
+              )),
+        (hydrated) => ({ inputCount: ids.length, outputCount: hydrated.length }),
+      );
+      const contentById = new Map(rows.map((row) => [row.id, row.content]));
+      return new Map(chunksToPrepare.map((chunk, index) => [
+        chunk.sequence,
+        (matchLists[index] ?? [])
+          .map((match) => contentById.get(match.id))
+          .filter((content): content is string => content !== undefined),
+      ]));
+    } catch (err) {
+      if (maySplit && chunksToPrepare.length > 1) {
+        const middle = Math.ceil(chunksToPrepare.length / 2);
+        const halves = await Promise.all([
+          prepare(chunksToPrepare.slice(0, middle), false),
+          prepare(chunksToPrepare.slice(middle), false),
+        ]);
+        return new Map(halves.flatMap((half) => [...half]));
+      }
+      input.logger?.warn('ingestion.existing_memory_lookup_failed', {
+        chunk_count: chunksToPrepare.length,
+        ...failureFields(err),
+      }, err);
+      return new Map(chunksToPrepare.map((chunk) => [chunk.sequence, []]));
+    }
+  };
+
+  return prepare(input.chunks, true);
 }
 
 /**
@@ -417,79 +501,16 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // request, one Qdrant batch request, and one hydration query. Each chunk's
   // hint list is rebuilt in its own ANN order, so extraction sees the exact
   // same input shape as the former per-chunk path.
-  const prepareExistingMemoryHints = async (
-    chunksToPrepare: SourceChunk[],
-    maySplit: boolean,
-  ): Promise<Map<number, string[]>> => {
-    try {
-      const { vectors } = await stages.time(
-        'existing_memory_embedding_batch',
-        {},
-        () => embedder.embedBatch(
-          chunksToPrepare.map((chunk) => chunk.content),
-          { mode: 'search' },
-        ),
-        (result) => ({
-          inputCount: chunksToPrepare.length,
-          outputCount: result.vectors.length,
-        }),
-      );
-      const scopeArg = { orgId: scope.orgId, spaceId: scope.spaceId };
-      const queryOptions = { topK: EXISTING_MEMORY_LOOKUP_LIMIT };
-      const matchLists = await stages.time(
-        'existing_memory_ann_batch',
-        {},
-        () => vectorStore.queryNearestBatch
-          ? vectorStore.queryNearestBatch('memories', vectors, scopeArg, queryOptions)
-          : Promise.all(vectors.map((vector) =>
-              vectorStore.queryNearest('memories', vector, scopeArg, queryOptions))),
-        (results) => ({
-          inputCount: vectors.length,
-          outputCount: results.reduce((sum, matches) => sum + matches.length, 0),
-          transferBytes: vectors.length * embedder.dimensions * 4,
-        }),
-      );
-      const ids = [...new Set(matchLists.flatMap((matches) => matches.map((match) => match.id)))];
-      const rows = await stages.time(
-        'existing_memory_hydration_batch',
-        {},
-        () => ids.length === 0
-          ? Promise.resolve([] as Array<{ id: number; content: string }>)
-          : db
-              .select({ id: memoriesTable.id, content: memoriesTable.content })
-              .from(memoriesTable)
-              .where(and(
-                inArray(memoriesTable.id, ids),
-                sql`${memoriesTable.forgottenAt} IS NULL`,
-              )),
-        (hydrated) => ({ inputCount: ids.length, outputCount: hydrated.length }),
-      );
-      const contentById = new Map(rows.map((row) => [row.id, row.content]));
-      return new Map(chunksToPrepare.map((chunk, index) => [
-        chunk.sequence,
-        (matchLists[index] ?? [])
-          .map((match) => contentById.get(match.id))
-          .filter((content): content is string => content !== undefined),
-      ]));
-    } catch (err) {
-      if (maySplit && chunksToPrepare.length > 1) {
-        const middle = Math.ceil(chunksToPrepare.length / 2);
-        const halves = await Promise.all([
-          prepareExistingMemoryHints(chunksToPrepare.slice(0, middle), false),
-          prepareExistingMemoryHints(chunksToPrepare.slice(middle), false),
-        ]);
-        return new Map(halves.flatMap((half) => [...half]));
-      }
-      logger?.warn('ingestion.existing_memory_lookup_failed', {
-        chunk_count: chunksToPrepare.length,
-        ...failureFields(err),
-      }, err);
-      return new Map(chunksToPrepare.map((chunk) => [chunk.sequence, []]));
-    }
-  };
-
   const batchedExistingMemories = input.existingMemories === undefined
-    ? await prepareExistingMemoryHints(batch, true)
+    ? await prepareExistingMemoryHints({
+        db,
+        scope,
+        chunks: batch,
+        embedder,
+        vectorStore,
+        stages,
+        logger,
+      })
     : null;
 
   // Stages 1–7 for a single chunk: dedup hint → extract → graph → normalize →
