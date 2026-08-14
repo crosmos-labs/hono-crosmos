@@ -942,9 +942,13 @@ space.
 ### [~] P-5. Reduce graph retrieval to fewer database conversations
 
 _The result-preserving source/target `UNION ALL`, row deduplication, global
-ordering, and per-hop cap are implemented locally. Production-shaped `EXPLAIN`,
-graph differential tests, and the evidence-gated index/recursive-CTE decision
-remain._
+ordering, and per-hop cap are implemented locally. Twelve real-Postgres
+legacy-vs-current edge differentials cover confidence/null handling, global
+ordering, temporal cutoff, hub caps, both endpoints, tenant boundaries, and
+per-user visibility; a separate seed-visibility test excludes entities linked
+only to another user's private memory. Production-shaped `EXPLAIN`, a full
+multi-hop traversal differential, and the evidence-gated index/recursive-CTE
+decision remain._
 
 **Why**
 
