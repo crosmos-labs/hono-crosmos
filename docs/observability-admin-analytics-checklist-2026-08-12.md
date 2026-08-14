@@ -896,8 +896,11 @@ post-checkpoint tail discoverable and that retry removes only that tail while
 preserving committed chunks, memories, and citations. Full continuation
 artifact equivalence now runs through the active deterministic corpus,
 including exact facts, citations, external vectors, entities, and edges. A
-continuation-split end-to-end comparison, broader phase injection, and deployed
-latency/lock gates remain._
+real-Postgres/provider-replay differential additionally proves that a two-call
+checkpoint continuation is exactly equal to a single invocation across
+memories and temporal fields, citations, entities, edges, external vectors,
+and final source metadata with no residual checkpoint. Broader phase injection
+and deployed latency/lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
 `persist_window` samples (p50 `65 ms`, p95 `233 ms`). This is not credited as a
@@ -2238,10 +2241,11 @@ Recommended sequence:
 5. **O-2, O-3, O-5, O-6, and L-1/L-4.** The aggregate measurement and dashboard
    foundation is now deployed; finish the remaining log-volume and archive
    operability gates rather than rebuilding it.
-6. **O-7 next.** Close the total server timing boundary, add the missing
-   auth/enqueue/orchestration phases, wrap them as custom spans, and export
-   traces/logs to Grafana so one slow request has a real waterfall.
-7. **P-1 through P-6, one attributable change at a time.** Start with the
+6. **Finish O-7's external workflow.** Repository timing and span coverage is
+   complete. Once persisted Workers Observability access and the hosted
+   Grafana session are available, inspect one search and one ingestion
+   waterfall and reconcile them with the private metrics and logs.
+7. **Continue P-1 through P-6, one attributable change at a time.** Start with the
    result-preserving round-trip reductions (P-1/P-2/P-3), then the higher-risk
    ingestion/graph refactors (P-4/P-5), and tune stores only from P-6's evidence.
    P-7 is an experiment queue after these establish the remaining latency
