@@ -12,6 +12,7 @@
 import type { Database } from '@crosmos/db';
 import {
   createMetrics,
+  createStageRecorder,
   durationMs,
   type Logger,
   type TraceProvider,
@@ -220,6 +221,13 @@ async function processIngestionRun(
     environment: deps.environment,
     version: deps.version,
   });
+  const stages = createStageRecorder({
+    logger,
+    metrics,
+    tracing: deps.tracing,
+    event: 'ingestion.orchestration_stage_completed',
+    metric: 'ingestion_stage',
+  });
   const jobStart = performance.now();
   const scope: TenantScope = {
     orgId: msg.org_id,
@@ -232,7 +240,11 @@ async function processIngestionRun(
   // (redelivery / the other trigger already finished) AND jobs another trigger
   // is actively running (live lease), while still recovering jobs abandoned
   // mid-run (expired lease). Only a `claimed` result means we may proceed.
-  const claim = await claimJob(db, msg.job_id, JOB_LEASE_MS);
+  const claim = await stages.time(
+    'ingestion_job_claim',
+    { dependency: 'database' },
+    () => claimJob(db, msg.job_id, JOB_LEASE_MS),
+  );
   if (claim !== 'claimed') {
     logger.info('ingestion.job_claim_skipped', { reason: claim });
     if (claim === 'not_found') return { outcome: 'skipped_not_found', chunksProcessed: 0 };
@@ -275,9 +287,15 @@ async function processIngestionRun(
    */
   const shouldStop = async (): Promise<'cancelled' | 'space_deleted' | null> => {
     try {
-      if (await isJobCancelled(db, msg.job_id)) return 'cancelled';
-      if (!(await isSpaceActive(db, msg.space_id))) return 'space_deleted';
-      return null;
+      return await stages.time(
+        'ingestion_stop_check',
+        { dependency: 'database' },
+        async () => {
+          if (await isJobCancelled(db, msg.job_id)) return 'cancelled';
+          if (!(await isSpaceActive(db, msg.space_id))) return 'space_deleted';
+          return null;
+        },
+      );
     } catch (err) {
       logger.warn('ingestion.stop_check_failed', {}, err);
       return null;
@@ -307,11 +325,13 @@ async function processIngestionRun(
       const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
       if (results.length > 0) {
         try {
-          await recordIngestionUsage(db, scope, {
+          await stages.time('ingestion_usage_rollup', {
+            dependency: 'database',
+          }, () => recordIngestionUsage(db, scope, {
             tokens: inputTokens,
             completedSourceIds: results.map((result) => result.sourceId),
             failedSourceIds: newlyFailedSourceIds,
-          });
+          }));
         } catch (err) {
           logger.warn('ingestion.record_tokens_failed', {}, err);
         }
@@ -325,11 +345,16 @@ async function processIngestionRun(
       // terminal state (`failed`) plus a reason in `meta`.
       if (remaining.length > 0) {
         try {
-          await markUnprocessedSourcesCancelled(
-            db,
-            scope,
-            remaining,
-            'Ingestion job cancelled before this source was processed',
+          await stages.time(
+            'ingestion_source_status_cancelled',
+            { dependency: 'database' },
+            () => markUnprocessedSourcesCancelled(
+              db,
+              scope,
+              remaining,
+              'Ingestion job cancelled before this source was processed',
+            ),
+            { inputCount: remaining.length },
           );
         } catch (err) {
           logger.warn('ingestion.cancel_mark_sources_failed', {}, err);
@@ -370,7 +395,11 @@ async function processIngestionRun(
     // lease guarantees only one live run owns this job, and the LLM/embedder
     // timeouts make a wedged prior run resolve well before the lease expires, so
     // we aren't racing a concurrent processor.
-    const sourceStatus = await getSourceExtractionStatus(db, sourceId);
+    const sourceStatus = await stages.time(
+      'ingestion_source_status_read',
+      { dependency: 'database' },
+      () => getSourceExtractionStatus(db, sourceId),
+    );
     if (sourceStatus !== 'pending' && sourceStatus !== 'processing') {
       logger.info('ingestion.source_already_processed', {
         source_id: sourceId,
@@ -384,10 +413,17 @@ async function processIngestionRun(
     // re-stamps `started_at`, keeping the queue backstop from reclaiming a job
     // that's still making progress. Keep it inside the loop. See `claimJob` and
     // the load-bearing note in `updateJobStatus`.
-    await updateJobStatus(db, msg.job_id, 'processing', {
-      stage: `source ${i + 1}/${msg.source_ids.length}`,
-    });
-    await markSourcesStatus(db, scope, [sourceId], 'processing');
+    await stages.time(
+      'ingestion_source_status_processing',
+      { dependency: 'database' },
+      async () => {
+        await updateJobStatus(db, msg.job_id, 'processing', {
+          stage: `source ${i + 1}/${msg.source_ids.length}`,
+        });
+        await markSourcesStatus(db, scope, [sourceId], 'processing');
+      },
+      { inputCount: 1 },
+    );
     const sourceLogger = logger.child({ source_id: sourceId });
     const sourceStart = performance.now();
     sourceLogger.info('ingestion.source_started', {
@@ -411,9 +447,13 @@ async function processIngestionRun(
         // adding a query: previously the only checks were between sources, so a
         // single large source could run to completion inside a space the user
         // had already deleted.
-        const applied = await updateJobStatus(db, msg.job_id, 'processing', {
-          stage: `source ${i + 1}/${msg.source_ids.length} (in progress)`,
-        });
+        const applied = await stages.time(
+          'ingestion_checkpoint_write',
+          { dependency: 'database' },
+          () => updateJobStatus(db, msg.job_id, 'processing', {
+            stage: `source ${i + 1}/${msg.source_ids.length} (in progress)`,
+          }),
+        );
         if (!applied) {
           sourceLogger.info('ingestion.source_cancelled_mid_chunk', {
             source_id: sourceId,
@@ -501,7 +541,12 @@ async function processIngestionRun(
         break;
       }
       results.push(result);
-      await markSourcesStatus(db, scope, [sourceId], 'completed');
+      await stages.time(
+        'ingestion_source_status_completed',
+        { dependency: 'database' },
+        () => markSourcesStatus(db, scope, [sourceId], 'completed'),
+        { inputCount: 1, outputCount: 1 },
+      );
       sourceLogger.info('ingestion.source_completed', {
         duration_ms: durationMs(sourceStart),
         memory_count: result.memories.length,
@@ -559,7 +604,12 @@ async function processIngestionRun(
         transientFailedIds.push(sourceId);
       } else {
         sourceErrors[String(sourceId)] = message;
-        await markSourcesFailed(db, scope, [sourceId], message);
+        await stages.time(
+          'ingestion_source_status_failed',
+          { dependency: 'database' },
+          () => markSourcesFailed(db, scope, [sourceId], message),
+          { inputCount: 1, outputCount: 1 },
+        );
         failedSourceIds.push(sourceId);
         newlyFailedSourceIds.push(sourceId);
       }
@@ -575,7 +625,11 @@ async function processIngestionRun(
   // attempt is intentionally not recorded here to avoid double-counting against
   // the successful re-run.
   if (transientFailedIds.length > 0) {
-    const reset = await resetJobForRetry(db, msg.job_id);
+    const reset = await stages.time(
+      'ingestion_job_reset',
+      { dependency: 'database' },
+      () => resetJobForRetry(db, msg.job_id),
+    );
     logger.warn('ingestion.job_retry_transient', {
       duration_ms: durationMs(jobStart),
       transient_source_count: transientFailedIds.length,
@@ -609,16 +663,22 @@ async function processIngestionRun(
     const budgetTokens = results.reduce((n, r) => n + r.tokenCount, 0);
     if (results.length > 0 || newlyFailedSourceIds.length > 0) {
       try {
-        await recordIngestionUsage(db, scope, {
+        await stages.time('ingestion_usage_rollup', {
+          dependency: 'database',
+        }, () => recordIngestionUsage(db, scope, {
           tokens: budgetTokens,
           completedSourceIds: results.map((result) => result.sourceId),
           failedSourceIds: newlyFailedSourceIds,
-        });
+        }));
       } catch (err) {
         logger.warn('ingestion.record_tokens_failed', {}, err);
       }
     }
-    const reset = await resetJobForRetry(db, msg.job_id);
+    const reset = await stages.time(
+      'ingestion_job_reset',
+      { dependency: 'database' },
+      () => resetJobForRetry(db, msg.job_id),
+    );
     logger.info('ingestion.job_requeue_incomplete', {
       duration_ms: durationMs(jobStart),
       chunks_processed: chunksProcessed,
@@ -670,11 +730,13 @@ async function processIngestionRun(
   // wraps this in try/except too).
   if (results.length > 0 || newlyFailedSourceIds.length > 0) {
     try {
-      await recordIngestionUsage(db, scope, {
+      await stages.time('ingestion_usage_rollup', {
+        dependency: 'database',
+      }, () => recordIngestionUsage(db, scope, {
         tokens: inputTokens,
         completedSourceIds: results.map((result) => result.sourceId),
         failedSourceIds: newlyFailedSourceIds,
-      });
+      }));
     } catch (err) {
       logger.warn('ingestion.record_tokens_failed', {}, err);
     }
@@ -694,7 +756,11 @@ async function processIngestionRun(
   if (Object.keys(sourceErrors).length > 0) resultBody.source_errors = sourceErrors;
   if (rolledUpError) resultBody.error_message = rolledUpError;
 
-  await updateJobStatus(db, msg.job_id, finalStatus, { result: resultBody });
+  await stages.time(
+    'ingestion_terminal_status_write',
+    { dependency: 'database' },
+    () => updateJobStatus(db, msg.job_id, finalStatus, { result: resultBody }),
+  );
   logger.info('ingestion.job_completed', {
     duration_ms: durationMs(jobStart),
     final_status: finalStatus,
