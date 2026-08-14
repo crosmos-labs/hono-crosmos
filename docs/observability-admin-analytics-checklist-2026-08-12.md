@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **12 complete** (`[x]`);
-- **19 partial or awaiting a verification gate** (`[~]`);
+- **13 complete** (`[x]`);
+- **18 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1638,12 +1638,16 @@ broken feature rather than a new one.
 Delete rows written by the backfill within its date range. Record the exact
 range in the deployment log.
 
-### [~] U-5. The analytics endpoints
+### [x] U-5. The analytics endpoints
 
 _Org and active-space 30/60/90-day endpoints were deployed and smoke-tested in
 production on 2026-08-14 with previous-window totals, zero-filled series,
-content types, and active per-space breakdown. Full HTTP isolation and
-historical direct-count reconciliation remain._
+content types, and active per-space breakdown. Migrated HTTP tests now cover all
+windows, invalid input, org/cross-org/space-key isolation, direct current-window
+source and memory reconciliation, and tombstone history. A seeded tombstoned
+space with 2,000 memories remained absent from the breakdown and direct route
+while its rollups stayed in org totals; the bounded response completed in
+`128 ms` in the verification run._
 
 **Why**
 
