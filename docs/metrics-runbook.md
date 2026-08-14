@@ -112,6 +112,37 @@ Rows emitted before O-1 used `blob4` for the first caller tag and therefore do
 not have a deploy-version dimension. Do not mix those legacy rows into a
 version comparison.
 
+### API request clocks
+
+The API deliberately retains separate private clocks because their boundaries
+answer different questions:
+
+| Metric | Boundary | Layout |
+|---|---|---|
+| `request_total` | First application middleware entry until Hono has produced the `Response` object | `blob5=method`, `blob6=path`, `blob7=status`, `blob8=outcome`; `double1=duration_ms` |
+| `http_request` | Access-log middleware entry until its downstream response is ready; excludes earlier CORS, request-id, security, and body-limit work | `blob5=method`, `blob6=path`, `blob7=status`; `double1=duration_ms` |
+| `search` | Retrieval core after the admission gates through result construction | `blob5=outcome`; `double1=duration_ms`, `double2=result_count` on success |
+
+All three are server-side and private. `request_total` stops at response
+readiness: Workers cannot observe when the caller receives the final byte.
+Client elapsed time is a separate RTT-inclusive benchmark value. Never add a
+public timing header to make these easier to query; use Analytics Engine for
+aggregates and the opaque `X-Request-Id` to find exact structured logs/traces.
+
+```sql
+SELECT
+  blob6 AS path,
+  sum(_sample_interval) AS requests,
+  quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
+  quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms
+FROM crosmos_api
+WHERE blob3 = 'request_total'
+  AND timestamp > NOW() - INTERVAL '1' HOUR
+GROUP BY path
+ORDER BY p95_ms DESC
+```
+
 ### Stage latency
 
 `api_stage` and `ingestion_stage` share one fixed layout:
