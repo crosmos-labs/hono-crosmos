@@ -4,6 +4,7 @@ export type {
   VectorMatch,
   VectorScope,
   QueryOptions,
+  NearestQuery,
   UpsertItem,
 } from './port';
 export { VectorStoreError } from './port';

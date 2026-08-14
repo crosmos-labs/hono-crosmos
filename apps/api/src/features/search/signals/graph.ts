@@ -16,9 +16,9 @@
  * visibility gate.
  */
 import { type Database, edges } from '@crosmos/db';
-import type { VectorStore } from '@crosmos/vector';
+import type { VectorMatch, VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { graphEdgeVisibilityClause } from '../../../lib/scope';
 import {
   getEntitiesByNameTokens,
@@ -83,40 +83,67 @@ export async function getEdgesForEntities(
   if (entityIds.length === 0) return [];
   const effectiveTime = sql`coalesce(${edges.validFrom}, ${edges.recordedAt})`;
 
-  const conditions = [
+  const commonConditions = [
     isNull(edges.forgottenAt),
-    or(
-      inArray(edges.sourceEntityId, entityIds),
-      inArray(edges.targetEntityId, entityIds),
-    )!,
   ];
-  conditions.push(eq(edges.orgId, scope.orgId), eq(edges.spaceId, scope.spaceId));
+  commonConditions.push(eq(edges.orgId, scope.orgId), eq(edges.spaceId, scope.spaceId));
   const edgeVisibility = graphEdgeVisibilityClause(scope);
-  if (edgeVisibility !== undefined) conditions.push(edgeVisibility);
+  if (edgeVisibility !== undefined) commonConditions.push(edgeVisibility);
   // A NULL confidence means "unspecified", which the traversal has always read
   // as full confidence — keep that reading here rather than letting the NULL
   // comparison silently drop the row.
-  conditions.push(
+  commonConditions.push(
     sql`coalesce(${edges.confidence}, 1.0) >= ${GRAPH_MIN_CONFIDENCE}::double precision`,
   );
   // ISO string + cast, not a raw Date: a Date in a raw `sql` template is sent
   // untyped and the postgres.js driver rejects it ("must be string"). Only bites
   // when asOf is set (temporal + graph queries), so it was a latent bug.
-  if (asOf !== null) conditions.push(sql`${effectiveTime} <= ${asOf.toISOString()}::timestamptz`);
+  if (asOf !== null) {
+    commonConditions.push(sql`${effectiveTime} <= ${asOf.toISOString()}::timestamptz`);
+  }
 
-  return db
-    .select({
-      id: edges.id,
-      sourceEntityId: edges.sourceEntityId,
-      targetEntityId: edges.targetEntityId,
-      memoryId: edges.memoryId,
-      confidence: edges.confidence,
-      validFrom: edges.validFrom,
-      recordedAt: edges.recordedAt,
-    })
+  const selection = {
+    id: edges.id,
+    sourceEntityId: edges.sourceEntityId,
+    targetEntityId: edges.targetEntityId,
+    memoryId: edges.memoryId,
+    confidence: edges.confidence,
+    validFrom: edges.validFrom,
+    recordedAt: edges.recordedAt,
+  };
+  const sourceBranch = db
+    .select(selection)
     .from(edges)
-    .where(and(...conditions))
-    .orderBy(sql`${effectiveTime} desc`, desc(edges.id))
+    .where(and(...commonConditions, inArray(edges.sourceEntityId, entityIds)));
+  const targetBranch = db
+    .select(selection)
+    .from(edges)
+    .where(and(...commonConditions, inArray(edges.targetEntityId, entityIds)));
+  const candidates = db.$with('edge_candidates').as(sourceBranch.unionAll(targetBranch));
+  // An edge whose two endpoints are both in the frontier appears in both
+  // branches. Dedup the identical row before applying the one global ordering
+  // and per-hop limit, preserving the former OR-query result exactly.
+  const deduped = db.$with('deduped_edges').as(
+    db.with(candidates)
+      .selectDistinct({
+        id: candidates.id,
+        sourceEntityId: candidates.sourceEntityId,
+        targetEntityId: candidates.targetEntityId,
+        memoryId: candidates.memoryId,
+        confidence: candidates.confidence,
+        validFrom: candidates.validFrom,
+        recordedAt: candidates.recordedAt,
+      })
+      .from(candidates),
+  );
+  return db
+    .with(candidates, deduped)
+    .select()
+    .from(deduped)
+    .orderBy(
+      sql`coalesce(${deduped.validFrom}, ${deduped.recordedAt}) desc`,
+      desc(deduped.id),
+    )
     .limit(GRAPH_MAX_EDGES_PER_HOP);
 }
 
@@ -147,12 +174,14 @@ async function seedByMemory(
   queryEmbedding: number[],
   scope: TenantScope,
   signal?: AbortSignal,
+  matchesOverride?: VectorMatch[],
 ): Promise<Map<number, number>> {
-  const matches = await vectorStore.queryNearest('memories', queryEmbedding, scope, {
-    topK: GRAPH_SEED_LIMIT,
-    minScore: GRAPH_SEED_THRESHOLD,
-    signal,
-  });
+  const matches = matchesOverride ?? await vectorStore.queryNearest(
+    'memories',
+    queryEmbedding,
+    scope,
+    { topK: GRAPH_SEED_LIMIT, minScore: GRAPH_SEED_THRESHOLD, signal },
+  );
   if (matches.length === 0) return new Map();
   const links = await getEntitiesForMemories(db, scope, matches.map((m) => m.id));
   const entityScores = new Map<number, number>();
@@ -203,6 +232,8 @@ export interface GraphSearchOptions {
   onSeedFanout?(stats: { seedEntityCount: number; memoryCount: number }): void;
   /** Request deadline, forwarded to the vector store's remote calls. */
   signal?: AbortSignal;
+  /** Precomputed memory ANN seed from the heterogeneous Qdrant batch. */
+  memorySeedMatches?: VectorMatch[];
 }
 
 export async function graphSearchWithStore(
@@ -232,7 +263,14 @@ export async function graphSearchWithStore(
       minScore: GRAPH_SEED_THRESHOLD,
       signal: options?.signal,
     }),
-    seedByMemory(db, vectorStore, queryEmbedding, scope, options?.signal),
+    seedByMemory(
+      db,
+      vectorStore,
+      queryEmbedding,
+      scope,
+      options?.signal,
+      options?.memorySeedMatches,
+    ),
   ]);
 
   // Visibility gate for the entity seeds: when per-user visibility is active,

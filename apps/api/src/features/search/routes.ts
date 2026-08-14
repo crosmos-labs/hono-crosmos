@@ -2,7 +2,12 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
-import { createLogger, createMetrics, durationMs } from '@crosmos/observability';
+import {
+  createLogger,
+  createMetrics,
+  createStageRecorder,
+  durationMs,
+} from '@crosmos/observability';
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -25,7 +30,7 @@ import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cach
 import { getBackgroundTasks } from '../../lib/runtime';
 import { recordSearchQueries } from '../usage/service';
 import { resolveReadVisibility } from '../visibility/service';
-import { touchMemories } from './candidates';
+import { attachSourceContent, touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
@@ -177,6 +182,12 @@ searchRoutes.openapi(
     responses: {
       200: {
         description: 'Ranked memory candidates',
+        headers: {
+          'X-Crosmos-Took-Ms': {
+            description: 'Server-side retrieval duration in milliseconds',
+            schema: { type: 'number' },
+          },
+        },
         content: { 'application/json': { schema: SearchResponseSchema } },
       },
       401: { description: 'Unauthorized', content: { 'application/json': { schema: ErrorBody } } },
@@ -190,6 +201,7 @@ searchRoutes.openapi(
     },
   }),
   async (c) => {
+    const requestStarted = performance.now();
     const body = c.req.valid('json');
     const db = getDb(c);
     const limits = getOperationalLimits(c.env);
@@ -219,7 +231,28 @@ searchRoutes.openapi(
     const metrics = createMetrics(c.env.ANALYTICS, {
       service: 'api',
       environment: c.env.ENVIRONMENT,
+      version: c.env.CF_VERSION_METADATA?.id,
     });
+    const stages = createStageRecorder({
+      logger,
+      metrics,
+      event: 'retrieval.stage_completed',
+      metric: 'api_stage',
+    });
+    const recordThrottle = (
+      reason: 'concurrency' | 'plan_rate_limit' | 'monthly_quota' | 'global_ai',
+      observedCount = -1,
+      configuredLimit = -1,
+    ) => {
+      metrics.count('search_throttled', {
+        // blob5: reason. doubles: request duration at rejection, observed
+        // count/depth, configured limit. -1 means the limiter does not expose
+        // that value (currently the concurrency lease).
+        tags: [reason],
+        values: [durationMs(requestStarted), observedCount, configuredLimit],
+        index: 'search',
+      });
+    };
 
     // KV writes commit cross-region (~350ms from this Smart-Placed worker), so
     // the rate-limit + concurrency counters push their writes here instead of
@@ -249,9 +282,9 @@ searchRoutes.openapi(
     const deadline = new AbortController();
     const concurrency = getConcurrencyLimiter(c.env, defer);
     const userKey = String(userId);
-    const lease = await logger.time(
-      'retrieval.stage_completed',
-      { stage: 'concurrency_acquire' },
+    const lease = await stages.time(
+      'concurrency_acquire',
+      {},
       () =>
         concurrency.acquire(
           userKey,
@@ -271,7 +304,11 @@ searchRoutes.openapi(
         stage: 'concurrency_acquire',
         status_code: 429,
       });
-      metrics.count('search_throttled', { tags: ['concurrency'] });
+      recordThrottle(
+        'concurrency',
+        -1,
+        limits.retrievalMaxConcurrentPerUser,
+      );
       // `Retry-After` (never sent before this fix) is what stops the SDK from
       // retrying INSTANTLY. A concurrency 429 means this user's own in-flight
       // work has not drained yet, so an immediate retry is guaranteed to find
@@ -311,9 +348,9 @@ searchRoutes.openapi(
       // they have side effects (counter increments) whose sequencing is
       // semantically meaningful.
       const [entitlements, space] = await Promise.all([
-        logger.time('retrieval.stage_completed', { stage: 'entitlements' },
+        stages.time('entitlements', {},
           () => getCachedEntitlements(c, orgId)),
-        logger.time('retrieval.stage_completed', { stage: 'space_access' },
+        stages.time('space_access', {},
           () => getCachedSpaceByUuid(c, body.space_id)),
       ]);
       // Authoritative org is the SPACE's org. 404 on missing or cross-tenant (no
@@ -342,45 +379,48 @@ searchRoutes.openapi(
       // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
       // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
       // global-AI throttle below is what actually bounds aggregate AI cost.
-      if (!c.var.planRateLimitEnforced) {
-        const limiter = getRateLimiter(c.env, defer);
-        try {
-          await logger.time('retrieval.stage_completed', {
-            stage: 'plan_rate_limit',
-          }, () => enforcePlanRateLimit(db, limiter, orgId, entitlements));
-          c.set('planRateLimitEnforced', true);
-        } catch (err) {
-          if (err instanceof RateLimitError) {
-            logger.warn('retrieval.request_rejected', {
-              stage: 'plan_rate_limit',
-              status_code: 429,
-            });
-            metrics.count('search_throttled', { tags: ['plan_rate_limit'] });
-            throw new HTTPException(429, {
-              res: jsonError(
-                { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
-                429,
-                { 'Retry-After': String(err.retryAfterSeconds) },
-              ),
-            });
-          }
-          throw err;
-        }
-      }
+      const shouldEnforcePlan = !c.var.planRateLimitEnforced;
+      const planCheck = shouldEnforcePlan
+        ? stages.time('plan_rate_limit', {}, () =>
+            enforcePlanRateLimit(db, getRateLimiter(c.env, defer), orgId, entitlements))
+        : Promise.resolve();
+      // Monthly quota is independent of the plan limiter. Start both reads
+      // together, but inspect the settled plan result first so the outward
+      // error precedence and counter-consumption contract remain unchanged.
+      // No embedder/provider work starts until both have fulfilled.
+      const quotaCheck = stages.time('monthly_quota', {
+        space_id: space.id,
+      }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
+      const [planResult, quotaResult] = await Promise.allSettled([planCheck, quotaCheck]);
 
-      // 4. Monthly search-query quota (optimistic +1, enforce-only).
-      try {
-        await logger.time('retrieval.stage_completed', {
-          stage: 'monthly_quota',
-          space_id: space.id,
-        }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
-      } catch (err) {
+      if (planResult.status === 'rejected') {
+        const err = planResult.reason;
+        if (err instanceof RateLimitError) {
+          logger.warn('retrieval.request_rejected', {
+            stage: 'plan_rate_limit',
+            status_code: 429,
+          });
+          recordThrottle('plan_rate_limit', err.count, err.limit);
+          throw new HTTPException(429, {
+            res: jsonError(
+              { error: 'rate_limited', scope: err.scope, limit: err.limit, count: err.count },
+              429,
+              { 'Retry-After': String(err.retryAfterSeconds) },
+            ),
+          });
+        }
+        throw err;
+      }
+      if (shouldEnforcePlan) c.set('planRateLimitEnforced', true);
+
+      if (quotaResult.status === 'rejected') {
+        const err = quotaResult.reason;
         if (err instanceof QuotaExceededError) {
           logger.warn('retrieval.request_rejected', {
             stage: 'monthly_quota',
             status_code: 429,
           });
-          metrics.count('search_throttled', { tags: ['monthly_quota'] });
+          recordThrottle('monthly_quota', err.used, err.limit);
           // A monthly quota does not clear on a timescale any retry can wait
           // out, so tell the client not to retry at all rather than letting the
           // Stainless default ("429 ⇒ retry") burn the caller's attempt budget
@@ -403,8 +443,7 @@ searchRoutes.openapi(
       // reranker fan-out. The Workers AI quota is account-global, so this is the
       // only gate that sees aggregate load and protects tenants from each other
       // (the plan limit + concurrency cap are per-org/per-user). Fail-open.
-      const globalAi = await logger.time('retrieval.stage_completed', {
-        stage: 'global_ai_throttle',
+      const globalAi = await stages.time('global_ai_throttle', {
         space_id: space.id,
       }, () => checkGlobalAiThrottle(c.env, {
         limit: limits.globalAiRpmCeiling,
@@ -417,7 +456,11 @@ searchRoutes.openapi(
           status_code: 429,
           count: globalAi.count,
         });
-        metrics.count('search_throttled', { tags: ['global_ai'] });
+        recordThrottle(
+          'global_ai',
+          globalAi.count,
+          limits.globalAiRpmCeiling,
+        );
         throw new HTTPException(429, {
           res: jsonError(
             {
@@ -444,10 +487,10 @@ searchRoutes.openapi(
       // isn't reported as an unhandled rejection.
       embedPromise.catch(() => {});
 
-      const visibleUserIds = await logger.time('retrieval.stage_completed', {
-        stage: 'visibility_scope',
+      const visibleUserIds = await stages.time('visibility_scope', {
         space_id: space.id,
-      }, () => resolveReadVisibility(db, { orgId: space.orgId, userId }));
+      }, () => resolveReadVisibility(db, { orgId: space.orgId, userId }),
+      (ids) => ({ outputCount: ids.length }));
       const scope: TenantScope = {
         orgId: space.orgId,
         spaceId: space.id,
@@ -486,6 +529,7 @@ searchRoutes.openapi(
           deps,
           entitlements,
           embedPromise,
+          deferSourceContent: true,
           signal: deadline.signal,
           metrics,
           logger: logger.child({ space_id: space.id }),
@@ -504,13 +548,32 @@ searchRoutes.openapi(
             .filter((id): id is number => id != null),
         ),
       ];
-      const ownerRows =
-        ownerIdSet.length > 0
-          ? await db
+      // Both reads depend only on the fixed top-K and are independent. Source
+      // content remains fail-soft; owner names retain their prior fail-closed
+      // behavior. When include_source=false no source query is started.
+      const ownerRowsPromise = stages.time(
+        'owner_name_load',
+        {},
+        () => ownerIdSet.length > 0
+          ? db
               .select({ id: users.id, name: users.name })
               .from(users)
               .where(inArray(users.id, ownerIdSet))
-          : [];
+          : Promise.resolve([]),
+        (rows) => ({ inputCount: ownerIdSet.length, outputCount: rows.length }),
+      );
+      const sourceContentPromise = body.include_source && result.candidates.length > 0
+        ? stages.time(
+            'source_content_load',
+            {},
+            () => attachSourceContent(db, scope, result.candidates),
+            () => ({
+              inputCount: result.candidates.length,
+              outputCount: result.candidates.length,
+            }),
+          ).catch(() => undefined)
+        : Promise.resolve();
+      const [ownerRows] = await Promise.all([ownerRowsPromise, sourceContentPromise]);
       const ownerById = new Map(
         ownerRows.map((owner) => [owner.id, owner.name]),
       );
@@ -520,15 +583,16 @@ searchRoutes.openapi(
         result,
         body.include_source,
       );
+      const tookMs = durationMs(t0);
       logger.info('retrieval.request_completed', {
         space_id: space.id,
-        duration_ms: durationMs(t0),
+        duration_ms: tookMs,
         result_count: response.candidates.length,
         top_k: body.limit,
       });
       metrics.count('search', {
         tags: ['ok'],
-        values: [durationMs(t0), response.candidates.length],
+        values: [tookMs, response.candidates.length],
         index: 'search',
       });
 
@@ -552,6 +616,7 @@ searchRoutes.openapi(
         }),
       );
 
+      c.header('X-Crosmos-Took-Ms', String(tookMs));
       return c.json(response, 200);
     } catch (err) {
       if (err instanceof TimeoutError) {
