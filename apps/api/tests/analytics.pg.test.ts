@@ -6,7 +6,14 @@ import {
   sources,
   type Database,
 } from '@crosmos/db';
-import { announceSkip, getTestDb, resetTestData, seedTenant, type Tenant } from '@crosmos/test-support';
+import {
+  announceSkip,
+  getTestDb,
+  resetTestData,
+  seedMemory,
+  seedTenant,
+  type Tenant,
+} from '@crosmos/test-support';
 import { sql } from 'drizzle-orm';
 import type { HonoEnv } from '../src/bindings';
 import { hashApiKey } from '../src/features/auth/key-format';
@@ -79,6 +86,25 @@ beforeEach(async () => {
        sources_ingested, memories_created)
     values (gen_random_uuid(), ${tenant.orgId}, ${tenant.userId}, ${tenant.spaceId},
       current_date, 123, 5, 2, 7)`);
+  await db.insert(sources).values([
+    {
+      orgId: tenant.orgId,
+      spaceId: tenant.spaceId,
+      ownerUserId: tenant.userId,
+      content: 'completed analytics source one',
+      extractionStatus: 'completed',
+    },
+    {
+      orgId: tenant.orgId,
+      spaceId: tenant.spaceId,
+      ownerUserId: tenant.userId,
+      content: 'completed analytics source two',
+      extractionStatus: 'completed',
+    },
+  ]);
+  for (let index = 0; index < 7; index += 1) {
+    await seedMemory(db, tenant, { content: `analytics memory ${index}` });
+  }
   const cross = await db.execute<{ uuid: string }>(sql`
     with u as (
       insert into users (uuid, email, name, is_active)
@@ -126,6 +152,57 @@ describeDb('analytics HTTP routes', () => {
     expect(analytics.totals.search_queries).toBe(5);
     expect(usage.tokens.used).toBe(analytics.totals.tokens_ingested);
     expect(usage.queries.used).toBe(analytics.totals.search_queries);
+  });
+
+  test('rollup totals reconcile with authoritative current-window rows', async () => {
+    const response = await request('/api/v1/analytics/summary', orgKey);
+    expect(response.status).toBe(200);
+    const analytics = await response.json() as {
+      totals: { sources_ingested: number; memories_created: number };
+    };
+    const [counts] = await db!.execute<{ source_count: number; memory_count: number }>(sql`
+      select
+        (select count(*)::int from sources
+          where org_id = ${tenant.orgId}
+            and extraction_status = 'completed'
+            and created_at::date = current_date) as source_count,
+        (select count(*)::int from memories
+          where org_id = ${tenant.orgId}
+            and created_at::date = current_date) as memory_count`);
+    expect(analytics.totals.sources_ingested).toBe(counts!.source_count);
+    expect(analytics.totals.memories_created).toBe(counts!.memory_count);
+  });
+
+  test('tombstoned large spaces keep history in org totals but leave the breakdown', async () => {
+    const [{ id: otherSpaceId }] = await db!.execute<{ id: number }>(sql`
+      select id from memory_spaces where uuid = ${otherSpaceUuid}`);
+    await db!.execute(sql`
+      insert into daily_usage
+        (uuid, org_id, user_id, space_id, date, sources_ingested, memories_created)
+      values
+        (gen_random_uuid(), ${tenant.orgId}, ${tenant.userId}, ${otherSpaceId},
+         current_date, 3, 4)`);
+    await db!.execute(sql`
+      insert into memories
+        (uuid, org_id, space_id, owner_user_id, content, memory_type)
+      select gen_random_uuid(), ${tenant.orgId}, ${otherSpaceId}, ${tenant.userId},
+        'large-corpus-' || value, 'semantic'
+      from generate_series(1, 2000) value`);
+    await db!.execute(sql`
+      update memory_spaces set deleted_at = now() where id = ${otherSpaceId}`);
+
+    const started = performance.now();
+    const response = await request('/api/v1/analytics/summary', orgKey);
+    const elapsedMs = performance.now() - started;
+    expect(response.status).toBe(200);
+    const analytics = await response.json() as {
+      totals: { sources_ingested: number; memories_created: number };
+      spaces: Array<{ space_id: string }>;
+    };
+    expect(analytics.totals).toMatchObject({ sources_ingested: 5, memories_created: 11 });
+    expect(analytics.spaces.map((space) => space.space_id)).toEqual([ownSpaceUuid]);
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect((await request(`/api/v1/spaces/${otherSpaceUuid}/analytics`, orgKey)).status).toBe(404);
   });
 
   test('space-scoped key sees only its own space', async () => {
