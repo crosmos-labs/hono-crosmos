@@ -1,97 +1,16 @@
 import { dailyUsage } from '@crosmos/db';
-import type { Database, Organization } from '@crosmos/db';
+import type { Database } from '@crosmos/db';
+import {
+  PLAN_DEFAULTS,
+  activeGrantedPlan,
+  resolveEntitlements,
+  type Entitlements,
+} from '@crosmos/runtime';
 import { and, eq, gte, sql, sum } from 'drizzle-orm';
 import { getOrganizationByIdOrThrow } from './service';
 
-// Mirrors app/services/entitlements/plans.py and schema.py exactly.
-// -1 means "unlimited".
-export type Entitlements = Record<string, number | boolean | string>;
-
-const COMMON_FEATURES: Entitlements = {
-  graph_retrieval: true,
-  cross_encoder_reranking: true,
-  custom_embeddings: true,
-  audit_log: true,
-  sso: true,
-  lazy_rerank: false,
-  prompt_caching: true,
-  max_graph_depth: 3,
-  retention_days: -1,
-  max_members: -1,
-  // Space count is unlimited on every plan (no space-based restriction).
-  max_memory_spaces: -1,
-  max_sources_per_space: -1,
-  api_keys_per_user: -1,
-  zeroentropy_rerank_candidates: 15,
-};
-
-// `rate_limit_rpm` / `rate_limit_per_day` gate the EXPENSIVE AI paths only
-// (search + ingestion); they're enforced in those routes' own gates.
-// `mgmt_rate_limit_rpm` / `mgmt_rate_limit_per_day` are a separate, much looser
-// guard applied default-on to every authenticated route (CRUD, dashboard, etc.)
-// so a normal dashboard load — which fans out several calls — isn't choked by
-// the tight AI budget, while abuse is still bounded. See `requireAuth`.
-const FREE: Entitlements = {
-  ...COMMON_FEATURES,
-  monthly_tokens_ingested: 500_000,
-  monthly_search_queries: 5_000,
-  rate_limit_rpm: 10,
-  rate_limit_per_day: 1_000,
-  mgmt_rate_limit_rpm: 300,
-  mgmt_rate_limit_per_day: 30_000,
-};
-
-const DEVELOPER: Entitlements = {
-  ...COMMON_FEATURES,
-  monthly_tokens_ingested: 3_000_000,
-  monthly_search_queries: 30_000,
-  rate_limit_rpm: 60,
-  rate_limit_per_day: 10_000,
-  mgmt_rate_limit_rpm: 1_200,
-  mgmt_rate_limit_per_day: 150_000,
-};
-
-const PRO: Entitlements = {
-  ...COMMON_FEATURES,
-  monthly_tokens_ingested: 40_000_000,
-  monthly_search_queries: 200_000,
-  rate_limit_rpm: 300,
-  rate_limit_per_day: 50_000,
-  mgmt_rate_limit_rpm: 3_000,
-  mgmt_rate_limit_per_day: 500_000,
-};
-
-const ENTERPRISE: Entitlements = {
-  ...COMMON_FEATURES,
-  monthly_tokens_ingested: -1,
-  monthly_search_queries: -1,
-  rate_limit_rpm: -1,
-  rate_limit_per_day: -1,
-  mgmt_rate_limit_rpm: -1,
-  mgmt_rate_limit_per_day: -1,
-};
-
-export const PLAN_DEFAULTS: Record<string, Entitlements> = {
-  free: FREE,
-  developer: DEVELOPER,
-  pro: PRO,
-  enterprise: ENTERPRISE,
-};
-
-export function activeGrantedPlan(
-  org: Organization,
-  now = new Date(),
-): string | null {
-  if (!org.grantedPlan || !org.grantedPlanExpiresAt) return null;
-  return org.grantedPlanExpiresAt.getTime() > now.getTime() ? org.grantedPlan : null;
-}
-
-export function resolveEntitlements(org: Organization, now = new Date()): Entitlements {
-  const basePlan = activeGrantedPlan(org, now) ?? org.plan;
-  const base = PLAN_DEFAULTS[basePlan] ?? FREE;
-  const overrides = (org.entitlements as Entitlements | null) ?? {};
-  return { ...base, ...overrides };
-}
+export { PLAN_DEFAULTS, activeGrantedPlan, resolveEntitlements };
+export type { Entitlements };
 
 export async function getEntitlements(
   db: Database,

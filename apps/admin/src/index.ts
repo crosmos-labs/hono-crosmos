@@ -2,16 +2,23 @@ import {
   adminAuditLog,
   apiKeys,
   createDb,
+  dailyUsage,
   ingestionJobs,
   memories,
   memorySpaces,
+  organizationMembers,
   organizations,
   sources,
   users,
 } from '@crosmos/db';
 import { createLogger } from '@crosmos/observability';
-import { invalidateApiKeyCacheHash, invalidateEntitlementCache } from '@crosmos/runtime';
-import { and, count, desc, eq, gte, isNotNull, lt, sql } from 'drizzle-orm';
+import {
+  activeGrantedPlan,
+  invalidateApiKeyCacheHash,
+  invalidateEntitlementCache,
+  resolveEntitlements,
+} from '@crosmos/runtime';
+import { and, count, desc, eq, gte, isNotNull, lt, sql, sum } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
@@ -38,6 +45,10 @@ function positiveInt(value: string | undefined, fallback: number, max: number) {
   const parsed = Number(value ?? fallback);
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback;
 }
+function nonNegativeInt(value: string | undefined, fallback = 0) {
+  const parsed = Number(value ?? fallback);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
 
 app.get('/admin/overview', async (c) => {
   const database = db(c);
@@ -57,6 +68,104 @@ app.get('/admin/overview', async (c) => {
     active_spaces: spaceTotal[0]?.count ?? 0, sources: sourceTotal[0]?.count ?? 0,
     memories: memoryTotal[0]?.count ?? 0,
   }, new: { users: newUsers[0]?.count ?? 0, organizations: newOrgs[0]?.count ?? 0 } });
+});
+
+app.get('/admin/orgs/:uuid', async (c) => {
+  const database = db(c);
+  const limit = positiveInt(c.req.query('limit'), 25, 100);
+  const offset = nonNegativeInt(c.req.query('offset'));
+  const [organization] = await database.select().from(organizations)
+    .where(eq(organizations.uuid, c.req.param('uuid'))).limit(1);
+  if (!organization) return c.json({ detail: 'Organization not found' }, 404);
+
+  const [members, spaces, keys, jobs, usageRows] = await Promise.all([
+    database.select({
+      id: organizationMembers.id,
+      user_id: users.uuid,
+      email: users.email,
+      name: users.name,
+      role: organizationMembers.role,
+      joined_at: organizationMembers.joinedAt,
+    }).from(organizationMembers)
+      .innerJoin(users, eq(users.id, organizationMembers.userId))
+      .where(eq(organizationMembers.orgId, organization.id))
+      .orderBy(organizationMembers.id).limit(limit + 1).offset(offset),
+    database.select({
+      id: memorySpaces.id,
+      space_id: memorySpaces.uuid,
+      name: memorySpaces.name,
+      deleted_at: memorySpaces.deletedAt,
+      created_at: memorySpaces.createdAt,
+    }).from(memorySpaces).where(eq(memorySpaces.orgId, organization.id))
+      .orderBy(memorySpaces.id).limit(limit + 1).offset(offset),
+    database.select({
+      id: apiKeys.id,
+      api_key_id: apiKeys.uuid,
+      name: apiKeys.name,
+      space_id: apiKeys.spaceId,
+      active: apiKeys.isActive,
+      expires_at: apiKeys.expiresAt,
+      last_used_at: apiKeys.lastUsedAt,
+      created_at: apiKeys.createdAt,
+    }).from(apiKeys).where(eq(apiKeys.orgId, organization.id))
+      .orderBy(apiKeys.id).limit(limit + 1).offset(offset),
+    database.select({
+      id: ingestionJobs.id,
+      space_id: ingestionJobs.spaceId,
+      status: ingestionJobs.status,
+      current_stage: ingestionJobs.currentStage,
+      created_at: ingestionJobs.createdAt,
+      started_at: ingestionJobs.startedAt,
+      completed_at: ingestionJobs.completedAt,
+    }).from(ingestionJobs).where(eq(ingestionJobs.orgId, organization.id))
+      .orderBy(desc(ingestionJobs.createdAt)).limit(limit + 1).offset(offset),
+    database.select({
+      tokens: sum(dailyUsage.tokensIngested),
+      queries: sum(dailyUsage.searchQueries),
+      sources: sum(dailyUsage.sourcesIngested),
+      failed_sources: sum(dailyUsage.sourcesFailed),
+      memories: sum(dailyUsage.memoriesCreated),
+    }).from(dailyUsage).where(and(
+      eq(dailyUsage.orgId, organization.id),
+      gte(dailyUsage.date, sql`date_trunc('month', current_date)`),
+    )),
+  ]);
+  const entitlements = resolveEntitlements(organization);
+  const tokenLimit = Number(entitlements.monthly_tokens_ingested ?? -1);
+  const queryLimit = Number(entitlements.monthly_search_queries ?? -1);
+  const usage = usageRows[0];
+  const page = <T>(rows: T[]) => ({
+    items: rows.slice(0, limit),
+    next_offset: rows.length > limit ? offset + limit : null,
+  });
+
+  return c.json({
+    organization: {
+      id: organization.uuid,
+      name: organization.name,
+      slug: organization.slug,
+      billing_plan: organization.plan,
+      effective_plan: activeGrantedPlan(organization) ?? organization.plan,
+      subscription_status: organization.subscriptionStatus,
+      grant: organization.grantedPlan ? {
+        plan: organization.grantedPlan,
+        expires_at: organization.grantedPlanExpiresAt,
+      } : null,
+      entitlements,
+    },
+    month_to_date: {
+      tokens: { used: Number(usage?.tokens ?? 0), limit: tokenLimit },
+      queries: { used: Number(usage?.queries ?? 0), limit: queryLimit },
+      sources_ingested: Number(usage?.sources ?? 0),
+      sources_failed: Number(usage?.failed_sources ?? 0),
+      memories_created: Number(usage?.memories ?? 0),
+    },
+    members: page(members),
+    spaces: page(spaces),
+    api_keys: page(keys),
+    recent_ingestion_jobs: page(jobs),
+    pagination: { limit, offset },
+  });
 });
 
 app.get('/admin/ingestion-health', async (c) => {

@@ -2,7 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import {
   adminAuditLog,
   apiKeys,
+  dailyUsage,
+  ingestionJobs,
   memorySpaces,
+  organizationMembers,
   organizations,
   sources,
   type Database,
@@ -119,6 +122,139 @@ beforeEach(async () => {
 });
 
 describeDb('admin audited operations', () => {
+  test('overview, lookup, and ingestion health reconcile without returning content', async () => {
+    const [overviewResponse, userResponse] = await Promise.all([
+      request('/admin/overview'),
+      request('/admin/users?email=owner@test.local'),
+    ]);
+    expect(overviewResponse.status).toBe(200);
+    expect(await overviewResponse.json()).toMatchObject({
+      totals: {
+        users: 2,
+        organizations: 1,
+        active_spaces: 1,
+        sources: 1,
+        memories: 0,
+      },
+    });
+    expect(userResponse.status).toBe(200);
+    expect(await userResponse.json()).toMatchObject({
+      users: [{ email: 'owner@test.local', name: 'Owner', active: true }],
+    });
+
+    await database!.insert(ingestionJobs).values([
+      {
+        orgId: tenant.orgId,
+        spaceId: tenant.spaceId,
+        userId: tenant.userId,
+        sourceIds: [],
+        status: 'failed',
+        completedAt: new Date(),
+      },
+      {
+        orgId: tenant.orgId,
+        spaceId: tenant.spaceId,
+        userId: tenant.userId,
+        sourceIds: [],
+        status: 'processing',
+        startedAt: new Date(Date.now() - 20 * 60_000),
+      },
+    ]);
+    await database!.update(memorySpaces).set({ deletedAt: new Date() })
+      .where(eq(memorySpaces.id, tenant.spaceId));
+    const healthResponse = await request('/admin/ingestion-health?limit=500');
+    expect(healthResponse.status).toBe(200);
+    const health = await healthResponse.json() as {
+      failed: unknown[];
+      stuck: unknown[];
+      tombstoned_spaces: number;
+      pending_deletions: unknown[];
+      limit: number;
+    };
+    expect(health).toMatchObject({ tombstoned_spaces: 1, limit: 100 });
+    expect(health.failed).toHaveLength(1);
+    expect(health.stuck).toHaveLength(1);
+    expect(health.pending_deletions).toHaveLength(1);
+    expect(JSON.stringify(health)).not.toContain('admin redrive fixture');
+  });
+
+  test('org detail is bounded, enriched, and omits customer content and credentials', async () => {
+    await database!.insert(organizationMembers).values({
+      orgId: tenant.orgId,
+      userId: tenant.userId,
+      role: 'owner',
+    });
+    await database!.insert(dailyUsage).values({
+      orgId: tenant.orgId,
+      userId: tenant.userId,
+      spaceId: tenant.spaceId,
+      date: sql`current_date`,
+      tokensIngested: 321,
+      searchQueries: 12,
+      sourcesIngested: 3,
+      sourcesFailed: 1,
+      memoriesCreated: 9,
+    });
+    await database!.insert(ingestionJobs).values({
+      orgId: tenant.orgId,
+      spaceId: tenant.spaceId,
+      userId: tenant.userId,
+      sourceIds: [],
+      status: 'processing',
+      currentStage: 'embedding',
+    });
+    await database!.update(organizations).set({
+      grantedPlan: 'pro',
+      grantedPlanExpiresAt: new Date(Date.now() + 86_400_000),
+    }).where(eq(organizations.id, tenant.orgId));
+    await database!.execute(sql`
+      insert into memory_spaces (uuid, org_id, name, user_id)
+      select gen_random_uuid(), ${tenant.orgId}, 'bounded-space-' || value, ${tenant.userId}
+      from generate_series(1, 101) value`);
+
+    const response = await request(`/admin/orgs/${orgUuid}?limit=500`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      organization: {
+        effective_plan: string;
+        entitlements: Record<string, number>;
+      };
+      month_to_date: {
+        tokens: { used: number; limit: number };
+        queries: { used: number; limit: number };
+        sources_ingested: number;
+        sources_failed: number;
+        memories_created: number;
+      };
+      members: { items: unknown[]; next_offset: number | null };
+      spaces: { items: unknown[]; next_offset: number | null };
+      api_keys: { items: unknown[]; next_offset: number | null };
+      recent_ingestion_jobs: { items: unknown[]; next_offset: number | null };
+      pagination: { limit: number; offset: number };
+    };
+    expect(body.organization.effective_plan).toBe('pro');
+    expect(body.organization.entitlements.monthly_tokens_ingested).toBe(40_000_000);
+    expect(body.month_to_date).toEqual({
+      tokens: { used: 321, limit: 40_000_000 },
+      queries: { used: 12, limit: 200_000 },
+      sources_ingested: 3,
+      sources_failed: 1,
+      memories_created: 9,
+    });
+    expect(body.pagination).toEqual({ limit: 100, offset: 0 });
+    expect(body.members.items).toHaveLength(1);
+    expect(body.spaces.items).toHaveLength(100);
+    expect(body.spaces.next_offset).toBe(100);
+    expect(body.api_keys.items).toHaveLength(1);
+    expect(body.recent_ingestion_jobs.items).toHaveLength(1);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('admin redrive fixture');
+    expect(serialized).not.toContain('keyHash');
+    expect(serialized).not.toContain('key_hash');
+    expect(serialized).not.toContain('sourceIds');
+    expect(serialized).not.toContain('source_ids');
+  });
+
   test('grant and revoke preserve billing fields and audit every mutation', async () => {
     const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
     expect((await request(`/admin/orgs/${orgUuid}/grant`, 'PUT', {

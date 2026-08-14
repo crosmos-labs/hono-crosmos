@@ -1,5 +1,6 @@
 export * from './deadline';
 export * from './api-key-cache';
+export * from './entitlements';
 
 export interface BackgroundTasks {
   waitUntil(task: Promise<unknown>): void;
