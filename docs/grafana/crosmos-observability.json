@@ -1,0 +1,243 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Endpoint latency (weighted)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "method", "text": "method", "type": "string" },
+            { "selector": "path", "text": "path", "type": "string" },
+            { "selector": "requests", "text": "requests", "type": "number" },
+            { "selector": "p50_ms", "text": "p50_ms", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" },
+            { "selector": "p99_ms", "text": "p99_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "data": "SELECT blob5 AS method, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY method, path ORDER BY p95_ms DESC"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 2,
+      "title": "HTTP error rate and 429/503 split",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "requests", "text": "requests", "type": "number" },
+            { "selector": "errors", "text": "errors", "type": "number" },
+            { "selector": "error_rate_pct", "text": "error_rate_pct", "type": "number" },
+            { "selector": "status_429", "text": "status_429", "type": "number" },
+            { "selector": "status_503", "text": "status_503", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT sum(_sample_interval) AS requests, sumIf(_sample_interval, toInt32OrZero(blob7) >= 400) AS errors, 100 * errors / requests AS error_rate_pct, sumIf(_sample_interval, blob7 = '429') AS status_429, sumIf(_sample_interval, blob7 = '503') AS status_503 FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}')"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 3,
+      "title": "Search throttle share and rejection latency",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "reason", "text": "reason", "type": "string" },
+            { "selector": "rejections", "text": "rejections", "type": "number" },
+            { "selector": "throttle_share_pct", "text": "throttle_share_pct", "type": "number" },
+            { "selector": "p95_reject_ms", "text": "p95_reject_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob5 AS reason, sum(_sample_interval) AS rejections, 100 * rejections / (SELECT sum(_sample_interval) FROM crosmos_api WHERE blob3 IN ('search', 'search_throttled') AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}')) AS throttle_share_pct, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_reject_ms FROM crosmos_api WHERE blob3 = 'search_throttled' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY reason ORDER BY rejections DESC"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 4,
+      "title": "Retrieval stages by outcome (weighted p95)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "stage", "text": "stage", "type": "string" },
+            { "selector": "outcome", "text": "outcome", "type": "string" },
+            { "selector": "executions", "text": "executions", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_api WHERE blob3 = 'api_stage' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 5,
+      "title": "Ingestion outcome mix",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "outcome", "text": "outcome", "type": "string" },
+            { "selector": "category", "text": "category", "type": "string" },
+            { "selector": "jobs", "text": "jobs", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob5 AS outcome, blob6 AS category, sum(_sample_interval) AS jobs, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_outcome' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY outcome, category ORDER BY jobs DESC"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 6,
+      "title": "Ingestion stages by outcome (weighted p95)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "stage", "text": "stage", "type": "string" },
+            { "selector": "outcome", "text": "outcome", "type": "string" },
+            { "selector": "executions", "text": "executions", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_stage' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 7,
+      "title": "API latency by deployed version",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "version", "text": "version", "type": "string" },
+            { "selector": "path", "text": "path", "type": "string" },
+            { "selector": "requests", "text": "requests", "type": "number" },
+            { "selector": "p50_ms", "text": "p50_ms", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" },
+            { "selector": "p99_ms", "text": "p99_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob4 AS version, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY version, path ORDER BY path, version"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 41,
+  "tags": ["crosmos", "cloudflare", "analytics-engine"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_INFINITY",
+        "label": "Infinity datasource",
+        "type": "datasource",
+        "query": "yesoreyeram-infinity-datasource",
+        "current": {}
+      },
+      {
+        "name": "cf_account_id",
+        "label": "Cloudflare account id",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "set-me", "value": "set-me" }
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": { "refresh_intervals": ["1m", "5m", "15m", "1h"] },
+  "timezone": "utc",
+  "title": "Crosmos production observability",
+  "uid": "crosmos-observability",
+  "version": 1
+}

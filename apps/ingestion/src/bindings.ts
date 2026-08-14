@@ -2,6 +2,7 @@ import type { IngestionJobMessage } from '@crosmos/types';
 
 export interface Env {
   // Bindings
+  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
   HYPERDRIVE: Hyperdrive;
   /**
    * Producer binding onto the SAME queue this worker consumes. Used only to

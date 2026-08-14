@@ -5,12 +5,15 @@
  * Phase A — ingest 100 dated conversations for ONE persona (Alex Rivera) spread
  *   across categories so multi-session aggregation is real. Measures per-job
  *   server time (completed_at - created_at) and end-to-end wall-clock.
- * Phase B — retrieval. For each query measures server took_ms and client total
+ * Phase B — retrieval. For each query measures the server duration from
+ *   X-Crosmos-Took-Ms and client total
  *   latency (this box = India vantage). US-user latency is ESTIMATED by
  *   decomposing the India network tax out of the client total.
  * Phase C — quality probe: aggregation / single-session / preference /
  *   adversarial queries to eyeball the session-diversity penalty's effect.
  */
+import { readServerTookMs } from './latency-response';
+
 const BASE = process.env.BASE_URL ?? 'https://api.crosmos.dev';
 const KEY = process.env.CROSMOS_API_KEY!;
 if (!KEY) throw new Error('set CROSMOS_API_KEY');
@@ -377,7 +380,7 @@ async function retrieve(spaceId: string) {
       const total = performance.now() - t0;
       const body = await r.json();
       if (!r.ok) { console.error(`search "${item.q}" -> ${r.status}: ${JSON.stringify(body)}`); break; }
-      samples.push({ total, took: body.took_ms });
+      samples.push({ total, took: readServerTookMs(r.headers) });
       lastBody = body;
       await sleep(150);
     }

@@ -13,6 +13,7 @@ export interface IngestionRpc {
 
 export interface Env {
   // Bindings
+  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
   HYPERDRIVE: Hyperdrive;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
@@ -62,6 +63,9 @@ export interface Env {
   BILLING_SUCCESS_URL?: string;
   BILLING_CANCEL_URL?: string;
   BILLING_METADATA_SECRET?: string;
+  // HMAC key used only to pseudonymize IP addresses in durable logs. Rotating
+  // it changes log correlation but never the raw-IP Durable Object limiter key.
+  LOG_IP_HASH_SALT?: string;
   BILLING_GRACE_PERIOD_DAYS?: string;
   // Retrieval (read path) — embedder + cross-encoder reranker.
   // Code-fallback defaults if the var is unset: workers-ai / workers-ai / vectorize.
@@ -88,8 +92,6 @@ export interface Env {
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it
   // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
   RETRIEVAL_RERANKER_ENABLED?: string;
-  // Gates the temporary /api/v1/_admin/reembed ops tool (off unless "true").
-  ADMIN_TOOLS?: string;
   /**
    * Kill switch for the tombstoned-space finalizer (P1-A). Physical deletion
    * runs ONLY when this is exactly `"true"`.

@@ -10,6 +10,7 @@ import { errorEnvelope } from '../../lib/errors';
 import { getCachedEntitlements } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { createLogger, createMetrics } from '@crosmos/observability';
+import { apiKeyCacheKey, invalidateApiKeyCacheHash } from '@crosmos/runtime';
 import {
   enforceMgmtRateLimit,
   getRateLimiter,
@@ -53,6 +54,7 @@ function failAuth(
   createMetrics(c.env.ANALYTICS, {
     service: 'api',
     environment: c.env.ENVIRONMENT,
+    version: c.env.CF_VERSION_METADATA?.id,
   }).count('auth_failure', { tags: [reason, authMethod], index: 'auth_failure' });
   throw new HTTPException(401, { message });
 }
@@ -70,10 +72,6 @@ interface CachedApiKey {
   expiresAt: number | null;
 }
 
-function cacheKey(hash: string): string {
-  return `apikey:${hash}`;
-}
-
 async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void> {
   const hash = await hashApiKey(rawKey);
   const cache = getCacheStore(c.env);
@@ -83,7 +81,7 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
     environment: c.env.ENVIRONMENT,
   });
 
-  let cached = await cache.getJson<CachedApiKey>(cacheKey(hash));
+  let cached = await cache.getJson<CachedApiKey>(apiKeyCacheKey(hash));
 
   if (cached && cached.expiresAt != null && cached.expiresAt < now) {
     cached = null;
@@ -91,7 +89,7 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
       c,
       logger,
       'auth.api_key_cache_delete_failed',
-      cache.delete(cacheKey(hash)),
+      cache.delete(apiKeyCacheKey(hash)),
       { stage: 'api_key_cache_delete' },
     );
   }
@@ -121,7 +119,7 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
       c,
       logger,
       'auth.api_key_cache_write_failed',
-      cache.putJson(cacheKey(hash), cached, {
+      cache.putJson(apiKeyCacheKey(hash), cached, {
         expirationTtlSeconds: API_KEY_CACHE_TTL_SECONDS,
       }),
       { stage: 'api_key_cache_write' },
@@ -254,6 +252,7 @@ async function enforceOrgMgmtRateLimit(c: AuthContext): Promise<void> {
       createMetrics(c.env.ANALYTICS, {
         service: 'api',
         environment: c.env.ENVIRONMENT,
+        version: c.env.CF_VERSION_METADATA?.id,
       }).count('mgmt_rate_limited', { tags: [err.scope], index: 'mgmt_rate_limited' });
       const requestId = c.var.requestId;
       const body = new Response(
@@ -388,12 +387,12 @@ export async function invalidateApiKeyCache(
   rawKey: string,
 ): Promise<void> {
   const hash = await hashApiKey(rawKey);
-  await getCacheStore(c.env).delete(cacheKey(hash));
+  await invalidateApiKeyCacheHash(getCacheStore(c.env), hash);
 }
 
 export async function invalidateApiKeyCacheByHash(
   env: Pick<HonoEnv['Bindings'], 'API_KEY_CACHE'>,
   hash: string,
 ): Promise<void> {
-  await getCacheStore(env).delete(cacheKey(hash));
+  await invalidateApiKeyCacheHash(getCacheStore(env), hash);
 }

@@ -51,16 +51,23 @@ those rows came back with `_sample_interval = 2`.
 This matters more than it first looks. Sampling gets *more* aggressive as volume
 rises, so `count()` understates worst exactly when you are investigating an
 incident — the moment you are most likely to conclude "the error rate isn't that
-high". Averages are unaffected (`avg(double1)` is fine); **any count, rate or
-sum of occurrences must be weighted.**
+high". Counts, sums, averages, and percentiles must all use
+`_sample_interval` weighting.
 
 ```sql
 -- WRONG: undercounts, and undercounts worse under load
-SELECT blob4 AS reason, count() FROM crosmos_api WHERE blob3 = 'search_throttled' GROUP BY reason
+SELECT blob5 AS reason, count() FROM crosmos_api WHERE blob3 = 'search_throttled' GROUP BY reason
 
 -- RIGHT
-SELECT blob4 AS reason, sum(_sample_interval) AS events
+SELECT blob5 AS reason, sum(_sample_interval) AS events
 FROM crosmos_api WHERE blob3 = 'search_throttled' GROUP BY reason
+
+-- Weighted average and percentile
+SELECT
+  sum(_sample_interval * double1) / sum(_sample_interval) AS mean_ms,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
+FROM crosmos_api
+WHERE blob3 = 'http_request'
 ```
 
 ### Column convention
@@ -73,7 +80,8 @@ Every metric this repo emits uses the same layout, set by
 | `blob1` | service (`api` / `ingestion`) |
 | `blob2` | environment |
 | `blob3` | metric name |
-| `blob4…` | the call site's `tags`, in the order documented there |
+| `blob4` | first 8 characters of the Cloudflare Worker version id (`unknown` only in unbound local/tests) |
+| `blob5…` | the call site's `tags`, in the order documented there |
 | `double1…` | the call site's `values`, in order |
 | `index1` | sampling key — the metric name |
 
@@ -82,25 +90,91 @@ and recall IDs go in structured logs only, never in a tag: Analytics Engine
 samples by index and a high-cardinality dimension both distorts sampling and
 explodes storage. If you need to trace one request, use the logs.
 
+Compare one endpoint across deployed versions:
+
+```sql
+SELECT
+  blob4 AS version,
+  sum(_sample_interval) AS requests,
+  quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
+  quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms
+FROM crosmos_api
+WHERE blob3 = 'http_request'
+  AND blob5 = 'POST'
+  AND blob6 = '/api/v1/search'
+  AND timestamp > NOW() - INTERVAL '7' DAY
+GROUP BY version
+ORDER BY version
+```
+
+Rows emitted before O-1 used `blob4` for the first caller tag and therefore do
+not have a deploy-version dimension. Do not mix those legacy rows into a
+version comparison.
+
+### Stage latency
+
+`api_stage` and `ingestion_stage` share one fixed layout:
+
+| Column | Meaning |
+|---|---|
+| `blob5` | bounded stage name |
+| `blob6` | `ok` or `failed` |
+| `double1` | duration in milliseconds |
+| `double2` | input count |
+| `double3` | output count |
+| `double4` | transferred bytes |
+
+`-1` means the measurement is unavailable. Zero is emitted only for a real
+observed zero, so exclude negative values when aggregating counts or bytes.
+
+```sql
+SELECT
+  blob4 AS version,
+  blob5 AS stage,
+  blob6 AS outcome,
+  sum(_sample_interval) AS executions,
+  quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
+  quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms
+FROM crosmos_api
+WHERE blob3 = 'api_stage'
+  AND timestamp > NOW() - INTERVAL '24' HOUR
+GROUP BY version, stage, outcome
+ORDER BY p95_ms DESC
+```
+
+Do not add all stage durations to reconstruct wall time. Search deliberately
+overlaps entitlements with space access, four retrieval signals with each
+other, and provenance loading with reranking; ingestion runs bounded chunk
+windows concurrently. Compare the critical path (or the maximum duration in
+each parallel group) with `http_request`. A systematic remainder is unmeasured
+serialization or orchestration work and should be named before optimizing it.
+
 ## Signals worth alerting on
 
 ### Overload
 
 | Metric | Read it as |
 |---|---|
-| `search_throttled` tag=`concurrency` | Per-user shedding. Some is healthy; a sustained rise means clients are retrying rather than waiting. |
-| `search_throttled` tag=`global_ai` | The shared AI throttle is the binding constraint, not any one user. |
-| `http_request` where blob6=`429` | Total shed rate. |
+| `search_throttled` blob5=`concurrency` | Per-user shedding. Some is healthy; a sustained rise means clients are retrying rather than waiting. |
+| `search_throttled` blob5=`global_ai` | The shared AI throttle is the binding constraint, not any one user. |
+| `http_request` where blob7=`429` | Total shed rate. |
 | `retrieval_deadline` tag=`rerank`,`skipped` | Requests running out of the 6s budget *before* reranking. Rising = upstream stages are getting slower. |
 
 During the incident, concurrency rejections were **52.98%** of all search
 invocations. Treat a sustained double-digit share as the same failure shape.
 
+All `search_throttled` points use `index1='search'`, `blob5=reason`, and
+`double1=request duration at rejection`, `double2=observed count/depth`,
+`double3=configured limit`. A `-1` value means that limiter does not expose the
+observation; it does not mean zero.
+
 ### Dependency failure
 
 | Metric | Read it as |
 |---|---|
-| `http_request` where blob6=`503` | Classified dependency failure. Cross-check the logs' `code`: `database_capacity_unavailable` is deterministic (provider budget exhausted until a stated time) and no retry will help; `database_temporarily_unavailable` is transient. |
+| `http_request` where blob7=`503` | Classified dependency failure. Cross-check the logs' `code`: `database_capacity_unavailable` is deterministic (provider budget exhausted until a stated time) and no retry will help; `database_temporarily_unavailable` is transient. |
 | `ingestion_ai_error` | LLM/embedder errors, tagged with dependency + status + retryable. |
 | `cron_sweep` tag=`failed`,`retry_budget_exhausted` | A sweep retried a transient DB error three times and still failed. |
 | `cron_sweep` tag=`failed`,`not_retryable` | Deterministic failure — a real bug, or provider capacity. Investigate, do not retry. |
@@ -163,10 +237,22 @@ alert on a *change in rate* for a signal, not on any single zero. Semantic
 sitting exactly at 50 means it is saturating `CANDIDATE_POOL`, which is the
 expected shape and also why a semantic drop would be conspicuous.
 
+## Dashboards
+
+The reviewable dashboard model lives at
+`docs/grafana/crosmos-observability.json`; import and datasource instructions
+are in `docs/grafana/README.md`. It covers weighted endpoint percentiles, HTTP
+error rate and the 429/503 split, search throttle share, retrieval and ingestion
+stage p95, ingestion outcomes, and deploy-version comparisons.
+
+Grafana provisioning is external to this repository. Until the dashboard has
+been imported and checked against one raw SQL query for the same time window,
+do not treat a rendered number as verified. The committed queries use a backend
+parser so they are eligible for Grafana Alerting after that parity check.
+
 ## What this runbook does NOT cover
 
 - **Alert configuration.** Thresholds and routing live in the Cloudflare
   dashboard / provider tooling, outside this repository.
-- **Dashboards.** Same — build them from the queries above.
 - **Recall quality.** No metric here measures whether results are *good*. That
   needs the gold-set evaluation described in checklist item P0-A.
