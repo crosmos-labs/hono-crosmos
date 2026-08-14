@@ -515,17 +515,23 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
       const lookupStart = performance.now();
       try {
         const embedStart = performance.now();
-        const { vector } = await embedder.embed(chunkContent, { mode: 'search' });
+        const { vector } = await stages.span(
+          'existing_memory_embedding',
+          () => embedder.embed(chunkContent, { mode: 'search' }),
+        );
         stages.record('existing_memory_embedding', 'ok', durationMs(embedStart), {
           sequence,
           embedding_mode: 'search',
           embedding_count: 1,
         }, { inputCount: 1, outputCount: vector.length });
-        const matches = await vectorStore.queryNearest(
-          'memories',
-          vector,
-          { orgId: scope.orgId, spaceId: scope.spaceId },
-          { topK: EXISTING_MEMORY_LOOKUP_LIMIT },
+        const matches = await stages.span(
+          'existing_memory_lookup',
+          () => vectorStore.queryNearest(
+            'memories',
+            vector,
+            { orgId: scope.orgId, spaceId: scope.spaceId },
+            { topK: EXISTING_MEMORY_LOOKUP_LIMIT },
+          ),
         );
         const ids = matches.map((m) => m.id);
         if (ids.length === 0) {
@@ -534,15 +540,18 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
           // Load content for the ANN hits, dropping any that were forgotten
           // since indexing (the vector store may still return them). Preserve
           // similarity order from the ANN result.
-          const rows = await db
-            .select({ id: memoriesTable.id, content: memoriesTable.content })
-            .from(memoriesTable)
-            .where(
-              and(
-                inArray(memoriesTable.id, ids),
-                sql`${memoriesTable.forgottenAt} IS NULL`,
+          const rows = await stages.span(
+            'existing_memory_hydration',
+            () => db
+              .select({ id: memoriesTable.id, content: memoriesTable.content })
+              .from(memoriesTable)
+              .where(
+                and(
+                  inArray(memoriesTable.id, ids),
+                  sql`${memoriesTable.forgottenAt} IS NULL`,
+                ),
               ),
-            );
+          );
           const contentById = new Map(rows.map((r) => [r.id, r.content]));
           existingMemories = ids
             .map((id) => contentById.get(id))
@@ -566,12 +575,15 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     const llmTokensBeforeMemory = llm.totalTokens;
     let rawMemories: Awaited<ReturnType<typeof extractMemories>>;
     try {
-      rawMemories = await extractMemories(llm, {
-        content: chunkContent,
-        referenceTime,
-        context: chunkContext,
-        existingMemories,
-      }, input.modelOverride);
+      rawMemories = await stages.span(
+        'memory_extraction',
+        () => extractMemories(llm, {
+          content: chunkContent,
+          referenceTime,
+          context: chunkContext,
+          existingMemories,
+        }, input.modelOverride),
+      );
     } catch (err) {
       stages.record('memory_extraction', 'failed', durationMs(memoryExtractionStart), {
         sequence,
@@ -597,10 +609,13 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     // `extract_memories` which runs Pass 2 inside the same call.
     const graphExtractionStart = performance.now();
     const llmTokensBeforeGraph = llm.totalTokens;
-    const graphPromise = extractGraph(
-      llm,
-      rawMemories.map((m) => ({ content: m.content })),
-      input.modelOverride,
+    const graphPromise = stages.span(
+      'graph_extraction',
+      () => extractGraph(
+        llm,
+        rawMemories.map((m) => ({ content: m.content })),
+        input.modelOverride,
+      ),
     ).then(
       (rawGraph) => {
         stages.record('graph_extraction', 'ok', durationMs(graphExtractionStart), {
@@ -662,7 +677,10 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     // former output exactly.
     const embedTexts = baseFacts.map(({ fact }) => buildEnrichedEmbeddingText(fact));
     const memoryEmbedStart = performance.now();
-    const vectorsPromise = embedder.embedBatch(embedTexts, { mode: 'document' }).then(
+    const vectorsPromise = stages.span(
+      'memory_embedding',
+      () => embedder.embedBatch(embedTexts, { mode: 'document' }),
+    ).then(
       ({ vectors }) => {
         stages.record('memory_embedding', 'ok', durationMs(memoryEmbedStart), {
           sequence,
@@ -738,69 +756,71 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
         fact,
         vector: prepared.vectors[index]!,
       })));
-    const memoryRows: Memory[] = await db.transaction(async (tx) => {
-      const chunkRows = await tx
-        .insert(chunks)
-        .values(preparedChunks.map(({ chunk }) => ({
-          orgId: scope.orgId,
-          spaceId: scope.spaceId,
-          sourceId,
-          sequence: chunk.sequence,
-          content: chunk.content,
-          tokenCount: 0,
-          chunker: chunk.chunker,
-        })))
-        .returning({ id: chunks.id, sequence: chunks.sequence });
-      const chunkIdBySequence = new Map(chunkRows.map((row) => [row.sequence, row.id]));
-      if (chunkRows.length !== preparedChunks.length) {
-        throw new Error(
-          `Chunk insert returned ${chunkRows.length} rows for ${preparedChunks.length} chunks`,
-        );
-      }
-      const rows: Memory[] = await tx
-        .insert(memoriesTable)
-        .values(entries.map(({ uuid, fact, vector }) => ({
-          uuid,
-          orgId: scope.orgId,
-          spaceId: scope.spaceId,
-          ownerUserId,
-          visibility,
-          content: fact.content,
-          memoryType: fact.memoryType,
-          speakerRole: fact.speakerRole,
-          embedding: vectorStore.persistsInColumn ? vector : null,
-          importanceScore: fact.importanceScore,
-          eventTime: fact.eventTime,
-          recordedAt,
-        })))
-        .returning();
-      if (rows.length !== entries.length) {
-        throw new Error(
-          `Memory insert returned ${rows.length} rows for ${entries.length} facts`,
-        );
-      }
-      const rowByUuid = new Map(rows.map((row) => [row.uuid, row]));
-      const orderedRows = entries.map(({ uuid }) => {
-        const row = rowByUuid.get(uuid);
-        if (!row) throw new Error(`Missing persisted memory mapping for ${uuid}`);
-        return row;
+    const memoryRows: Memory[] = await stages.span('persist_window', async () => {
+      const rows = await db.transaction(async (tx) => {
+        const chunkRows = await tx
+          .insert(chunks)
+          .values(preparedChunks.map(({ chunk }) => ({
+            orgId: scope.orgId,
+            spaceId: scope.spaceId,
+            sourceId,
+            sequence: chunk.sequence,
+            content: chunk.content,
+            tokenCount: 0,
+            chunker: chunk.chunker,
+          })))
+          .returning({ id: chunks.id, sequence: chunks.sequence });
+        const chunkIdBySequence = new Map(chunkRows.map((row) => [row.sequence, row.id]));
+        if (chunkRows.length !== preparedChunks.length) {
+          throw new Error(
+            `Chunk insert returned ${chunkRows.length} rows for ${preparedChunks.length} chunks`,
+          );
+        }
+        const rows: Memory[] = await tx
+          .insert(memoriesTable)
+          .values(entries.map(({ uuid, fact, vector }) => ({
+            uuid,
+            orgId: scope.orgId,
+            spaceId: scope.spaceId,
+            ownerUserId,
+            visibility,
+            content: fact.content,
+            memoryType: fact.memoryType,
+            speakerRole: fact.speakerRole,
+            embedding: vectorStore.persistsInColumn ? vector : null,
+            importanceScore: fact.importanceScore,
+            eventTime: fact.eventTime,
+            recordedAt,
+          })))
+          .returning();
+        if (rows.length !== entries.length) {
+          throw new Error(
+            `Memory insert returned ${rows.length} rows for ${entries.length} facts`,
+          );
+        }
+        const rowByUuid = new Map(rows.map((row) => [row.uuid, row]));
+        const orderedRows = entries.map(({ uuid }) => {
+          const row = rowByUuid.get(uuid);
+          if (!row) throw new Error(`Missing persisted memory mapping for ${uuid}`);
+          return row;
+        });
+        await tx.insert(chunkMemories).values(orderedRows.map((memory, index) => {
+          const chunkId = chunkIdBySequence.get(entries[index]!.sequence);
+          if (chunkId === undefined) throw new Error('Missing persisted chunk mapping');
+          return { chunkId, memoryId: memory.id, extractionTimestamp: recordedAt };
+        }));
+        return orderedRows;
       });
-      await tx.insert(chunkMemories).values(orderedRows.map((memory, index) => {
-        const chunkId = chunkIdBySequence.get(entries[index]!.sequence);
-        if (chunkId === undefined) throw new Error('Missing persisted chunk mapping');
-        return { chunkId, memoryId: memory.id, extractionTimestamp: recordedAt };
-      }));
-      return orderedRows;
+      if (!vectorStore.persistsInColumn) {
+        await vectorStore.upsert('memories', rows.map((memory, index) => ({
+          id: memory.id,
+          vector: entries[index]!.vector,
+          orgId: scope.orgId,
+          spaceId: scope.spaceId,
+        })));
+      }
+      return rows;
     });
-
-    if (!vectorStore.persistsInColumn) {
-      await vectorStore.upsert('memories', memoryRows.map((memory, index) => ({
-        id: memory.id,
-        vector: entries[index]!.vector,
-        orgId: scope.orgId,
-        spaceId: scope.spaceId,
-      })));
-    }
     const persistDuration = durationMs(persistStart);
     stages.record('persist_window', 'ok', persistDuration, {
       chunk_count: preparedChunks.length,
@@ -830,14 +850,17 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     const allFacts = allIngested.map((im) => im.fact);
     const uniqueEntities = collectUniqueEntities(allFacts);
     const entityResolutionStart = performance.now();
-    resolved = await resolveEntities(
-      db,
-      scope,
-      uniqueEntities,
-      embedder,
-      vectorStore,
-      logger,
-      stages,
+    resolved = await stages.span(
+      'entity_resolution',
+      () => resolveEntities(
+        db,
+        scope,
+        uniqueEntities,
+        embedder,
+        vectorStore,
+        logger,
+        stages,
+      ),
     );
     const nameToId = buildNameToIdMap(resolved);
     stages.record('entity_resolution', 'ok', durationMs(entityResolutionStart), {
@@ -858,21 +881,27 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     );
     if (junctionRows.length > 0) {
       const junctionStart = performance.now();
-      await db.insert(memoryEntities).values(junctionRows).onConflictDoNothing();
+      await stages.span(
+        'memory_entity_links',
+        () => db.insert(memoryEntities).values(junctionRows).onConflictDoNothing(),
+      );
       stages.record('memory_entity_links', 'ok', durationMs(junctionStart), {
         entity_count: junctionRows.length,
       }, { inputCount: junctionRows.length, outputCount: junctionRows.length });
     }
 
     const edgeStart = performance.now();
-    ingestedEdges = await createEdgesFromFacts(
-      db,
-      scope,
-      ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
-      nameToId,
-      recordedAt,
-      ownerUserId,
-      visibility,
+    ingestedEdges = await stages.span(
+      'edge_creation',
+      () => createEdgesFromFacts(
+        db,
+        scope,
+        ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
+        nameToId,
+        recordedAt,
+        ownerUserId,
+        visibility,
+      ),
     );
     stages.record('edge_creation', 'ok', durationMs(edgeStart), {
       edge_count: ingestedEdges.length,
