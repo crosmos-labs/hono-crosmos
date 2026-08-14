@@ -153,11 +153,12 @@ addition of O-7 below, the top-level items are:
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
-The immediate next engineering item is **O-7**. P-1 through P-6, the remaining
-admin/user-analytics fault gates, destructive deleted-space finalization, and
-archive-operability checks remain real work; their individual sections state
-the exact gate still missing. Deferred entries do not prevent completion unless
-new evidence explicitly reactivates them.
+O-7 repository instrumentation is complete; its remaining work is the external
+trace/log/Grafana workflow. The next repository work is the remaining P-1
+through P-6 differential/fault coverage. Admin/user-analytics live gates,
+destructive deleted-space finalization, and archive-operability checks remain;
+their individual sections state the exact gate still missing. Deferred entries
+do not prevent completion unless new evidence explicitly reactivates them.
 
 ## Deployment log
 
@@ -783,8 +784,10 @@ orchestration to the two calls; no data migration is involved.
 ### [~] P-2. Overlap independent retrieval work
 
 _Plan/quota checks and final source/owner enrichment are overlapped locally.
-MMR prefetch remains evidence-gated; route differential and deployed latency
-gates remain._
+The now-active real-Postgres/provider-replay corpus pins exact ingestion
+artifacts, reranker-backed response order/scores, gold-session recall, and
+session diversity across six queries. MMR prefetch remains evidence-gated;
+route-level admission/error differential and deployed latency gates remain._
 
 **Why**
 
@@ -831,7 +834,12 @@ A real-Postgres race test proves simultaneous resolvers receive the same
 authoritative IDs without duplicate normalized names. A fault-injected batch
 test proves the hint phase splits once, preserves the healthy half's ordered
 hydrated hints, and gives only the failed half empty hints. Full old/new fixture
-parity and deployed latency/error gates remain._
+comparison exposed a semantic regression: batching hints and persistence across
+concurrency-window boundaries hid earlier-window memories from later extraction
+prompts. The pipeline now batches within each concurrency window and persists
+before advancing, reproducing the reviewed provider fixture with zero new calls.
+The activated 16-test corpus pins exact facts/artifacts and retrieval output.
+Deployed latency/error gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 72
 `existing_memory_ann_batch` samples (p50 `38 ms`, p95 `505 ms`) and 43
@@ -885,7 +893,10 @@ transaction, explicit chunk/fact/memory mapping, and one post-commit vector
 upsert. A real-Postgres fault test proves a vector-store failure leaves the
 post-checkpoint tail discoverable and that retry removes only that tail while
 preserving committed chunks, memories, and citations. Full continuation
-equivalence, broader phase injection, and deployed latency/lock gates remain._
+artifact equivalence now runs through the active deterministic corpus,
+including exact facts, citations, external vectors, entities, and edges. A
+continuation-split end-to-end comparison, broader phase injection, and deployed
+latency/lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
 `persist_window` samples (p50 `65 ms`, p95 `233 ms`). This is not credited as a
@@ -947,8 +958,9 @@ legacy-vs-current edge differentials cover confidence/null handling, global
 ordering, temporal cutoff, hub caps, both endpoints, tenant boundaries, and
 per-user visibility; a separate seed-visibility test excludes entities linked
 only to another user's private memory. Production-shaped `EXPLAIN`, a full
-multi-hop traversal differential, and the evidence-gated index/recursive-CTE
-decision remain._
+legacy-vs-current multi-hop traversal differential, and the evidence-gated
+index/recursive-CTE decision remain. The active end-to-end corpus additionally
+pins the current graph contribution inside exact final rankings and gold recall._
 
 **Why**
 
