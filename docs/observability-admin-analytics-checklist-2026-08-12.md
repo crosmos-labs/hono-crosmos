@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **6 complete** (`[x]`);
-- **25 partial or awaiting a verification gate** (`[~]`);
+- **7 complete** (`[x]`);
+- **24 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -179,10 +179,14 @@ new evidence explicitly reactivates them.
 
 ## O — Developer observability: make a change provable
 
-### [~] O-1. Tag every metric with the deploy version
+### [x] O-1. Tag every metric with the deploy version
 
-_Deployed to production 2026-08-14; current API version `4d746005` and ingestion
-version `4e3aaa96`. Cross-version SQL verification remains._
+_Implemented, deployed, and live-verified 2026-08-14. One weighted SQL query
+grouped API request latency across four deployed version tags (`561a810c`,
+`a81117b3`, `4d746005`, and `6c547aa3`), while ingestion stage rows separated
+three deployed tags (`511f7532`, `3bfcc097`, and `4e3aaa96`). Current API rows
+retain the documented caller tags at `blob5+`; regression tests pin the fixed
+version/tag positions and the no-binding no-op._
 
 **Why**
 
