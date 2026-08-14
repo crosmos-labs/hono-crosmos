@@ -85,10 +85,11 @@ So the real gaps are narrower than they feel:
   regressions are visible in Grafana; a single-request waterfall is not yet
   available there.
 - **Complete timing coverage.** `http_request` is a broad application metric and
-  `X-Crosmos-Took-Ms` measures retrieval after several admission gates. Neither
-  is explicitly defined as earliest Worker entry through response readiness,
-  and authentication, request validation, response construction, API-side
-  ingestion enqueue, and ingestion orchestration still have gaps.
+  the private `search` metric measures retrieval after several admission gates.
+  Neither is explicitly defined as earliest Worker entry through response
+  readiness, and authentication, request validation, response construction,
+  API-side ingestion enqueue, and ingestion orchestration still have gaps. The
+  public `X-Crosmos-Took-Ms` header is now marked for removal in O-4/O-7.
 - **An admin plane.** A separate Access-gated worker now exists locally; the
   former public-worker `POST /api/v1/_admin/reembed` surface has been removed.
 - **Two rollup counters** that user-facing analytics needs and nothing tracks.
@@ -149,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **7 complete** (`[x]`);
-- **23 partial or awaiting a verification gate** (`[~]`);
+- **6 complete** (`[x]`);
+- **24 partial or awaiting a verification gate** (`[~]`);
 - **2 not started** (`[ ]`), including the new request-waterfall work and the
   guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
@@ -327,54 +328,63 @@ family indexes on `'search'`.
 
 Additive; revert the call sites.
 
-### [x] O-4. Restore an end-to-end retrieval latency number the harness can read
+### [~] O-4. Keep retrieval latency private and benchmarkable
 
-_Header, strict reader, tests, and production deployment completed 2026-08-14.
-A bounded production run regenerated `scripts/prod-latency-result.json` with
-real values and cleanup provenance. Its header-derived p50/p95 (`678/1,030 ms`)
-and the same window's HTTP metric (`662/1,053 ms`) differed by only `16/23 ms`.
-The reader still fails loudly when the header is absent. The harness now also
-retains every attempt for correct whole-run percentiles on subsequent runs._
+_The public `X-Crosmos-Took-Ms` header restored the broken benchmark and enabled
+the bounded 2026-08-14 verification, but the operator subsequently decided that
+server timing is developer telemetry, not part of the public `/search`
+contract. The private `search` Analytics Engine metric and
+`retrieval.request_completed` structured log already retain the same duration.
+Header removal and a private request-id-based benchmark reader remain._
 
 **Why**
 
-`took_ms` was removed from the `/search` response in `968e2e7` as part of a
-response trim. `scripts/prod-latency-bench.ts:380` still reads `body.took_ms`
-unguarded and feeds `undefined` into a percentile, so its `took_med` column has
-been `NaN` ever since — and that is the script behind the numbers in
-`scripts/prod-latency-result.json` and the `[env.production.placement]` comment
-in `apps/api/wrangler.toml`, both of which quote values captured *before* the
-removal. This is a measurement tool that broke silently, which is a small
-version of the whole problem this checklist addresses.
+The first response trim removed `body.took_ms` and silently broke the production
+benchmark. Restoring it as a header proved the measurement path and produced a
+valid bounded baseline, but it solved an internal tooling problem by exposing a
+server implementation detail to every API caller. Public clients do not need
+retrieval-core duration, admission timing, stage names, or infrastructure
+topology. They need response data, documented errors, and the opaque
+`X-Request-Id` they can quote to support.
 
-Two other readers are not broken and need no change:
-`apps/api/scripts/benchmark-compare.ts:464` guards with a `typeof` check and
-degrades to `null`, and `scripts/search-snapshot.ts` computes its own
-client-side timing.
+The duration itself must not be discarded. `metrics.count('search')` already
+writes it privately to Analytics Engine, and the structured completion log
+contains the exact request id and duration. Aggregate benchmarks can query the
+weighted metric for their bounded window; exact per-request benchmarks can
+resolve the returned `X-Request-Id` through the private Workers Logs/trace API.
+Client elapsed time remains useful as a separate RTT-inclusive measurement but
+is never relabelled as server time.
 
 **Repository change**
 
-- Return server-measured retrieval duration as an `X-Crosmos-Took-Ms` response
-  header rather than restoring the body field. This keeps `SearchResponseSchema`
-  (`apps/api/src/features/search/schemas.ts:73`) trimmed and the public contract
-  unchanged, while restoring the measurement.
-- Update `scripts/prod-latency-bench.ts` to read the header, and fail loudly
-  rather than silently producing `NaN` when it is absent.
-- Regenerate `scripts/prod-latency-result.json`, and correct or delete the stale
-  latency claim in the `wrangler.toml` placement comment.
+- Remove `X-Crosmos-Took-Ms` from the response, OpenAPI declaration, CORS exposed
+  headers, benchmark reader, and response tests. Do not replace it with another
+  public timing header or body field.
+- Preserve retrieval-core duration in the private `search` metric and
+  `retrieval.request_completed` log.
+- Change `scripts/prod-latency-bench.ts` to retain every public
+  `X-Request-Id`, then query the private observability API for those completion
+  records. It must distinguish "telemetry not available yet" from a zero or
+  successful timing and allow for normal telemetry delivery delay.
+- Keep the Analytics Engine window query as the aggregate parity check and the
+  client timer as the RTT-inclusive comparison. Never require public users to
+  send a debug header or secret query parameter.
 
 **Acceptance gate**
 
-- `scripts/prod-latency-bench.ts` prints real percentiles.
-- The header value and the request's `http_request` duration agree within the
-  cost of response serialisation.
-- Running the script against a server that omits the header errors out instead
-  of reporting `NaN`.
+- `/search` responses and OpenAPI expose no server/stage timing other than the
+  opaque `X-Request-Id`.
+- The benchmark resolves each request id privately and prints real
+  retrieval-core percentiles; missing/delayed telemetry fails explicitly rather
+  than producing `NaN`.
+- Private per-request values reconcile with the weighted `search` metric for the
+  same bounded window and remain separate from client RTT.
 
 **Rollback**
 
-Remove the header; the script's loud failure then correctly reports that the
-measurement is unavailable.
+Removing the public header is the intended change. If the private reader is
+unreliable, fall back to aggregate Analytics Engine windows; do not restore
+public timing output.
 
 ### [x] O-5. Stand up Grafana Cloud over the Analytics Engine SQL API
 
@@ -486,22 +496,23 @@ and an operator-tested single-request workflow are not implemented._
 
 **Why**
 
-The three useful latency clocks answer different questions and must not be
-conflated:
+The developer needs three private latency clocks. They answer different
+questions and must not be conflated:
 
 | Clock | Current meaning | Gap |
 |---|---|---|
-| Client timer | Request start through body received by the client | Includes network RTT and client location; not server-only. |
-| `X-Crosmos-Took-Ms` | Search retrieval from after entitlements/space/plan/quota gates through result construction | Intentionally excludes auth and early admission work. Keep it as the retrieval-core clock. |
-| `http_request` | Access-middleware entry through the downstream Hono response being constructed | Includes route auth and handler work, but starts after CORS/request-id/security/body-limit middleware and is aggregate-only in Analytics Engine. |
+| Retrieval core (`search` `double1`) | Search retrieval from after entitlements/space/plan/quota gates through result construction | Already private in Analytics Engine/logs. Remove its public `X-Crosmos-Took-Ms` copy under O-4. |
+| `http_request` | Access-middleware entry through the downstream Hono response being constructed | Includes route auth and handler work, but starts after CORS/request-id/security/body-limit middleware. Keep it as a private comparison clock. |
+| Full application request (`request_total`, new) | Earliest application entry until the Worker has produced the response | Not implemented; this is the private request-to-response-ready clock the bird's-eye view needs. |
 
-What the operator requested is a fourth, precisely named clock:
-**earliest application entry until the Worker has produced the response**. It is
-server-side and excludes Internet RTT. Worker code cannot observe when the last
-response byte physically reaches the client, so neither the field nor its docs
+The full application clock is server-side and excludes Internet RTT. Worker
+code cannot observe when the last
+response byte physically reaches the client, so neither the metric nor its docs
 may claim that. Cloudflare's root-span / `WallTimeMs` is also not a substitute:
 `waitUntil()` work can continue after the response and inflate it, while the
 runtime can close the JavaScript context before every response byte is sent.
+Client elapsed time remains useful only in developer benchmarks as a separate,
+RTT-inclusive measurement.
 
 Analytics Engine must remain aggregate-only. Adding `request_id` as a metric
 dimension would create unbounded cardinality and would still not guarantee an
@@ -522,14 +533,14 @@ logs. R2 remains the 90-day archive and is not replaced.
 
 - Start an outermost API timer before CORS and the other application
   middleware, and stop it after the downstream `Response` object is ready.
-- Emit that value as the existing `http_request` metric/log, and return it as
-  `X-Crosmos-Server-Ms` plus the standard `Server-Timing: app;dur=...` entry.
-  Keep `X-Crosmos-Took-Ms` unchanged so core retrieval and total application
-  time remain separately comparable.
-- Document the boundary exactly. Expected relationship for a normal successful
-  search is usually `client elapsed >= X-Crosmos-Server-Ms >=
-  X-Crosmos-Took-Ms`; do not turn that expectation into a correctness rule for
-  aborted/streaming requests.
+- Emit it privately as `request_total` in Analytics Engine, the structured log,
+  and the request's root/custom span. Do **not** return `Server-Timing`,
+  `X-Crosmos-Server-Ms`, `X-Crosmos-Took-Ms`, or any other timing/debug field to
+  public callers.
+- Keep the private retrieval-core `search` metric and the existing
+  `http_request` clock so Grafana can show all three on one chart. Name their
+  boundaries in the panel description rather than making the developer remember
+  them.
 - Record response construction/serialization separately where it is material.
   The timer ends when Hono/Workers has a `Response`, not when the client receives
   its final byte.
@@ -547,6 +558,13 @@ so nobody adds overlapping durations:
   limiter, monthly quota, global throttle, visibility, retrieval-signal,
   fusion/rerank, owner/source, and selection stages; add request validation,
   response build, response serialization, and a `search_total` parent span.
+- Database calls on retrieval and ingestion paths: wrap each stable query family
+  in a custom span such as `db.space_access`, `db.candidate_lookup`,
+  `db.graph_hop`, `db.source_persist`, or `db.checkpoint_write`. Record duration,
+  operation, outcome, and bounded row counts, but never raw SQL, bind values, or
+  customer data. These spans answer "which query boundary is slow?"; use P-6's
+  `pg_stat_statements`/production-shaped `EXPLAIN` gate to determine *why* the
+  database executed that query slowly.
 - API-side ingestion: move the existing logs for preflight, source insert, job
   creation, queue dispatch, and enqueue total through the shared stage recorder
   so they become metrics, logs, and spans consistently.
@@ -580,20 +598,29 @@ than pretending it is one distributed trace.
   `Explore -> Logs` can filter the same invocation's structured logs. Add a
   dashboard data link from aggregate latency panels into trace search for the
   selected service/version/time window.
-- Add aggregate one-hour p50/p95/p99 charts for total request time, retrieval
-  core, auth, queue wait, ingestion job total, and the slowest stages. Export the
-  working hosted dashboard and commit it to `docs/grafana/`; operators should
-  not repeatedly overwrite JSON just to receive new data, only when dashboard
-  configuration changes.
+- Make the default developer dashboard a two-level investigation surface:
+  - **Bird's-eye row:** one-hour p50/p95/p99 for private retrieval-core,
+    `http_request`, and full `request_total`; request/error/throttle volume;
+    ingestion queue wait/job total; and deploy-version annotations.
+  - **Bottleneck row:** slowest API/ingestion stages, slowest stable DB query
+    families, dependency errors, timeout rate, and latency/error anomalies.
+  - **Drill-down:** click a slow interval/endpoint to open Tempo traces; open one
+    request waterfall, then jump to its correlated Loki logs. A slow API should
+    identify its slow phase; a slow DB phase should identify the stable query
+    family to investigate with P-6.
+- Export the working hosted dashboard and commit it to `docs/grafana/`;
+  operators should not repeatedly overwrite JSON just to receive new data, only
+  when dashboard layout/query configuration changes.
 - Measure projected Cloudflare and Grafana event volume before leaving 100%
   trace/log export enabled. Sampling policy and retention for Tempo/Loki must be
   written next to the existing Workers Logs, Analytics Engine, and R2 policy.
 
 **Acceptance gate**
 
-- A controlled search returns client elapsed, `X-Crosmos-Server-Ms`, and
-  `X-Crosmos-Took-Ms`; their boundaries match the definitions above and the
-  total metric/log agrees with the response header within rounding overhead.
+- A controlled search exposes no timing/debug data publicly. Its private
+  retrieval-core, `http_request`, and `request_total` values appear in the
+  correct Grafana aggregate panels and reconcile with its structured
+  logs/trace. Developer-only client elapsed remains a separate RTT comparison.
 - Injected delay in auth, one search dependency, response serialization, queue
   wait, and one ingestion persistence stage appears in the correct parent span
   and aggregate metric without being double-counted.
@@ -606,6 +633,9 @@ than pretending it is one distributed trace.
 - The Grafana aggregate query still matches weighted Analytics Engine SQL for
   the same window. Tempo/Loki delivery delay, retention, sampling, and first-day
   volume/cost are recorded here.
+- A deliberately slowed stable DB query family becomes the longest child span
+  in that request and the slow-query aggregate panel identifies the same family,
+  without raw SQL or bind values leaving the service.
 - A bounded benchmark shows no material latency regression from the added
   instrumentation. Trace/log export remains non-blocking.
 
@@ -615,6 +645,24 @@ Remove the OTLP destination names to stop export without changing request
 behavior. Custom spans are diagnostic-only and can be reverted independently.
 Keep the full server clock and aggregate metrics unless measurement itself is
 shown to regress the request path.
+
+**Document ownership**
+
+There is no separate "request waterfall checklist" to maintain. **This file is
+the canonical execution/status checklist**, and O-7 is the waterfall item. The
+supporting documents are implementation artifacts, not competing checklists:
+
+- `docs/metrics-runbook.md` — metric/field meanings, private queries, incident
+  workflow, and how to interpret sampling;
+- `docs/grafana/crosmos-observability.json` plus `docs/grafana/README.md` — the
+  restorable dashboard model and import/configuration instructions;
+- `docs/measuring-a-change.md` — the repeatable benchmark and before/after
+  procedure;
+- `docs/latency-optimization-opportunity-audit-2026-08-11.md` — detailed source
+  analysis and hypotheses only; Track P in this checklist owns their status.
+
+When O-7 is implemented, update this checklist **and** whichever supporting
+artifact actually changed. Do not copy O-7 into a second checklist.
 
 ---
 
@@ -2015,7 +2063,7 @@ the active production vector space in place.
 flowchart TD
   O1[O-1 version tag] --> O2[O-2 stage metrics]
   O1 --> O5[O-5 Grafana]
-  O4[O-4 restore took_ms] --> O6[O-6 compare procedure]
+  O4[O-4 private retrieval timing] --> O6[O-6 compare procedure]
   O2 --> O5
   O3[O-3 throttle detail] --> O5
   O5 --> O6
@@ -2069,8 +2117,10 @@ Recommended sequence:
    deadline: every day Logpush is off is a day of logs lost permanently.
    Everything else in this document can be built later over data already
    captured. L-2 ships first so the archive never contains a raw IP.
-3. **O-1 and O-4.** Both are small, and everything after them becomes
-   measurable. O-4 also fixes a tool that is currently reporting `NaN`.
+3. **O-1 and O-4.** Version tagging and private retrieval timing are the
+   measurement foundation. O-4 is reopened only to remove the public timing
+   header and switch the already-working benchmark to private request-id
+   telemetry; do that before adding another public or ad-hoc timing field.
 4. **Track U.** Highest user-visible value, isolated blast radius, and it
    produces the counters A-4 will want to display.
 5. **O-2, O-3, O-5, O-6, and L-1/L-4.** The aggregate measurement and dashboard
@@ -2099,10 +2149,10 @@ the cost of deferring is that deleted spaces accumulate under no stated policy.
 | O-1 | Deploy twice; one query returns two distinct `blob4` values with separate p95s. Every runbook query still parses. |
 | O-2 | Weighted stage cohorts render in Grafana and match raw SQL; parallel branches are treated as critical-path groups rather than summed. |
 | O-3 | A synthetic burst yields `search_throttled` rows with sensible weighted counts and durations. |
-| O-4 | `scripts/prod-latency-bench.ts` prints real percentiles; absent header errors loudly. |
+| O-4 | `/search` exposes no timing detail; the benchmark resolves `X-Request-Id` through private telemetry, prints real percentiles, and fails explicitly on missing/delayed records. |
 | O-5 | A panel and the runbook `curl` agree for the same window; dashboard JSON imports into an empty Grafana. |
 | O-6 | `scripts/compare-versions.ts` reproduces a known delta and refuses to report below its minimum sample count. |
-| O-7 | Full server and retrieval-core headers match their metric/log boundaries; injected delays land in the right custom spans; one search and one ingestion can be inspected in Cloudflare and Grafana without high-cardinality metric dimensions. |
+| O-7 | The private retrieval-core, `http_request`, and full application clocks reconcile with logs/traces; injected delays land in the right custom/DB spans; one search and one ingestion can be inspected in Cloudflare and Grafana without public timing fields or high-cardinality metric dimensions. |
 | P-1 | Frozen-snapshot batch and two-call ANN results match exactly; call count drops to one; measured retrieval latency does not regress. |
 | P-2 | Gate/enrichment/MMR differential tests match; no provider work precedes admission; each scheduling delta is separately attributable. |
 | P-3 | Per-chunk hints and entity IDs match; batch failure remains fail-soft; simultaneous entity creation does not duplicate rows. |
