@@ -740,7 +740,11 @@ latency.
 _Implemented locally 2026-08-14 with per-search Qdrant batch options. Adapter
 tests prove one transport request, positional result handling, and exact
 IDs/order/scores against the legacy two-call path on a frozen response snapshot.
-The deployed latency gate remains._
+Production version `6c547aa3` has 113 successful `memory_ann_batch` samples
+(p50 `20 ms`, p95 `105 ms`, p99 `268 ms`). This is a valid post-change cohort,
+but not an attributable delta: the batch commit first shipped inside the
+multi-change `a81117b3` rollout and no comparable pre-batch stage cohort exists.
+An isolated canary/deployed latency gate remains._
 
 **Why**
 
@@ -829,6 +833,12 @@ test proves the hint phase splits once, preserves the healthy half's ordered
 hydrated hints, and gives only the failed half empty hints. Full old/new fixture
 parity and deployed latency/error gates remain._
 
+_Live post-change evidence: production version `4e3aaa96` recorded 72
+`existing_memory_ann_batch` samples (p50 `38 ms`, p95 `505 ms`) and 43
+`entity_upsert` samples (p50 `43 ms`, p95 `59 ms`). Those cohorts establish the
+measurement path, but the batching commit shipped with other changes, so they
+are not claimed as an attributable before/after._
+
 **Why**
 
 For a bounded chunk window, dedup hints currently repeat embedding, ANN, and
@@ -876,6 +886,11 @@ upsert. A real-Postgres fault test proves a vector-store failure leaves the
 post-checkpoint tail discoverable and that retry removes only that tail while
 preserving committed chunks, memories, and citations. Full continuation
 equivalence, broader phase injection, and deployed latency/lock gates remain._
+
+_Live post-change evidence: production version `4e3aaa96` recorded 54
+`persist_window` samples (p50 `65 ms`, p95 `233 ms`). This is not credited as a
+delta because the bounded persistence change did not ship in an isolated
+version._
 
 **Why**
 
