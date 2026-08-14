@@ -824,8 +824,10 @@ Revert each scheduling change independently. None changes persisted data.
 _Implemented locally 2026-08-14: bounded-window embedding/ANN/hydration with a
 single split fail-soft fallback, plus bulk conflict-safe entity resolution.
 A real-Postgres race test proves simultaneous resolvers receive the same
-authoritative IDs without duplicate normalized names. Provider hint
-fault-equivalence and deployed latency gates remain._
+authoritative IDs without duplicate normalized names. A fault-injected batch
+test proves the hint phase splits once, preserves the healthy half's ordered
+hydrated hints, and gives only the failed half empty hints. Full old/new fixture
+parity and deployed latency/error gates remain._
 
 **Why**
 
