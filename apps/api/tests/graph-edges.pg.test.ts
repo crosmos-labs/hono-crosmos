@@ -23,7 +23,10 @@ import {
   GRAPH_MAX_EDGES_PER_HOP,
   GRAPH_MIN_CONFIDENCE,
 } from '../src/features/search/constants';
-import { getEdgesForEntities } from '../src/features/search/signals/graph';
+import {
+  getEdgesForEntities,
+  graphSearchWithStore,
+} from '../src/features/search/signals/graph';
 import {
   announceSkip,
   getTestDb,
@@ -33,6 +36,7 @@ import {
   seedEntity,
   seedMemory,
   seedTenant,
+  MemoryVectorStore,
   type Tenant,
 } from '@crosmos/test-support';
 
@@ -64,7 +68,7 @@ async function legacyEdgesForEntities(
   entityIds: number[],
   asOf: Date | null,
   scope: TenantScope,
-): Promise<{ id: number }[]> {
+): ReturnType<typeof getEdgesForEntities> {
   if (entityIds.length === 0) return [];
   const effectiveTime = sql`coalesce(${edges.validFrom}, ${edges.recordedAt})`;
 
@@ -86,19 +90,24 @@ async function legacyEdgesForEntities(
   const rows = await database
     .select({
       id: edges.id,
+      sourceEntityId: edges.sourceEntityId,
+      targetEntityId: edges.targetEntityId,
+      memoryId: edges.memoryId,
       confidence: edges.confidence,
+      validFrom: edges.validFrom,
+      recordedAt: edges.recordedAt,
     })
     .from(edges)
     .where(and(...conditions))
     .orderBy(sql`${effectiveTime} desc`, desc(edges.id));
 
   const seen = new Set<number>();
-  let filtered: { id: number }[] = [];
+  let filtered = [] as typeof rows;
   for (const edge of rows) {
     if (seen.has(edge.id)) continue;
     seen.add(edge.id);
     const confidence = edge.confidence ?? 1.0;
-    if (confidence >= GRAPH_MIN_CONFIDENCE) filtered.push({ id: edge.id });
+    if (confidence >= GRAPH_MIN_CONFIDENCE) filtered.push(edge);
   }
   if (filtered.length > GRAPH_MAX_EDGES_PER_HOP) {
     filtered = filtered.slice(0, GRAPH_MAX_EDGES_PER_HOP);
@@ -332,5 +341,97 @@ describeDb('getEdgesForEntities — SQL bounds match the old JS pipeline', () =>
 
   test('an empty seed set short-circuits', async () => {
     expect(await getEdgesForEntities(db!, [], null, orgScope(tenant))).toEqual([]);
+  });
+
+  test('complete multi-hop traversal matches the legacy edge path', async () => {
+    const alpha = await seedEntity(db!, tenant, 'alpha project');
+    const beta = await seedEntity(db!, tenant, 'beta service');
+    const gamma = await seedEntity(db!, tenant, 'gamma database');
+    const delta = await seedEntity(db!, tenant, 'delta archive');
+    const seed = await seedMemory(db!, tenant, { content: 'alpha seed memory' });
+    const hopOne = await seedMemory(db!, tenant, { content: 'alpha to beta' });
+    const hopTwo = await seedMemory(db!, tenant, { content: 'beta to gamma' });
+    const cycle = await seedMemory(db!, tenant, { content: 'gamma to alpha cycle' });
+    const future = await seedMemory(db!, tenant, { content: 'future edge' });
+    const hidden = await seedMemory(db!, tenant, {
+      content: 'other user private edge',
+      visibility: 'private',
+      ownerUserId: tenant.otherUserId,
+    });
+    await db!.execute(sql`
+      insert into memory_entities (memory_id, entity_id)
+      values (${seed}, ${alpha})`);
+
+    await seedEdge(db!, tenant, {
+      sourceEntityId: alpha,
+      targetEntityId: beta,
+      memoryId: hopOne,
+      confidence: null,
+      recordedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    await seedEdge(db!, tenant, {
+      sourceEntityId: beta,
+      targetEntityId: gamma,
+      memoryId: hopTwo,
+      confidence: 0.8,
+      recordedAt: new Date('2026-02-01T00:00:00Z'),
+    });
+    await seedEdge(db!, tenant, {
+      sourceEntityId: gamma,
+      targetEntityId: alpha,
+      memoryId: cycle,
+      confidence: 0.7,
+      recordedAt: new Date('2026-03-01T00:00:00Z'),
+    });
+    await seedEdge(db!, tenant, {
+      sourceEntityId: gamma,
+      targetEntityId: delta,
+      memoryId: future,
+      confidence: 0.9,
+      recordedAt: new Date('2027-01-01T00:00:00Z'),
+    });
+    await seedEdge(db!, tenant, {
+      sourceEntityId: beta,
+      targetEntityId: delta,
+      memoryId: hidden,
+      confidence: 0.95,
+      visibility: 'private',
+      ownerUserId: tenant.otherUserId,
+      recordedAt: new Date('2026-04-01T00:00:00Z'),
+    });
+
+    const scope: TenantScope = {
+      ...orgScope(tenant),
+      visibleUserIds: [tenant.userId],
+    };
+    const vectorStore = new MemoryVectorStore();
+    const runTraversal = (
+      options?: Parameters<typeof graphSearchWithStore>[8],
+    ) => graphSearchWithStore(
+      db!,
+      vectorStore,
+      'alpha',
+      [1, 0],
+      scope,
+      20,
+      new Date('2026-12-31T23:59:59Z'),
+      3,
+      options,
+    );
+    const legacy = await runTraversal({
+      edgeLoader: legacyEdgesForEntities,
+    });
+    const current = await runTraversal();
+
+    expect(current.map((candidate) => candidate.memoryId)).toEqual(
+      legacy.map((candidate) => candidate.memoryId),
+    );
+    expect(current.map((candidate) => candidate.memoryId)).toContain(hopTwo);
+    expect(current.map((candidate) => candidate.memoryId)).not.toContain(future);
+    expect(current.map((candidate) => candidate.memoryId)).not.toContain(hidden);
+    expect(current).toHaveLength(legacy.length);
+    for (let index = 0; index < current.length; index += 1) {
+      expect(current[index]!.score).toBeCloseTo(legacy[index]!.score, 8);
+    }
   });
 });
