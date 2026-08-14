@@ -59,4 +59,36 @@ describe('stage recorder', () => {
     expect(points[0]?.doubles?.slice(1)).toEqual([2, -1, -1]);
     expect(records[0]?.level).toBe('error');
   });
+
+  test('wraps timed work in a bounded custom span with numeric shape only', async () => {
+    const spans: Array<{ name: string; attributes: Record<string, unknown> }> = [];
+    const recorder = createStageRecorder({
+      event: 'retrieval.stage_completed',
+      metric: 'api_stage',
+      tracing: {
+        enterSpan<T>(name: string, callback: (span: { setAttribute(key: string, value?: boolean | number | string): void }) => T): T {
+          const attributes: Record<string, unknown> = {};
+          spans.push({ name, attributes });
+          return callback({ setAttribute(key, value) { attributes[key] = value; } });
+        },
+      },
+    });
+
+    await expect(recorder.time(
+      'candidate_lookup',
+      { space_id: 999 },
+      async () => ['one', 'two'],
+      (rows) => ({ inputCount: 5, outputCount: rows.length }),
+    )).resolves.toEqual(['one', 'two']);
+
+    expect(spans).toEqual([{
+      name: 'api_stage.candidate_lookup',
+      attributes: {
+        'crosmos.stage': 'candidate_lookup',
+        'crosmos.outcome': 'ok',
+        'crosmos.input_count': 5,
+        'crosmos.output_count': 2,
+      },
+    }]);
+  });
 });

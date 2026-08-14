@@ -7,6 +7,7 @@ import {
   createMetrics,
   createStageRecorder,
   durationMs,
+  type TraceProvider,
 } from '@crosmos/observability';
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
@@ -227,9 +228,13 @@ searchRoutes.openapi(
       environment: c.env.ENVIRONMENT,
       version: c.env.CF_VERSION_METADATA?.id,
     });
+    const tracing = (
+      c.executionCtx as ExecutionContext & { tracing?: TraceProvider }
+    ).tracing;
     const stages = createStageRecorder({
       logger,
       metrics,
+      tracing,
       event: 'retrieval.stage_completed',
       metric: 'api_stage',
     });
@@ -526,6 +531,7 @@ searchRoutes.openapi(
           deferSourceContent: true,
           signal: deadline.signal,
           metrics,
+          tracing,
           logger: logger.child({ space_id: space.id }),
         }),
         limits.retrievalTimeoutSeconds * 1000,

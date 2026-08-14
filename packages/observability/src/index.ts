@@ -239,6 +239,15 @@ export interface StageMeasurements {
   transferBytes?: number;
 }
 
+/** Narrow structural subset of Cloudflare's custom-spans API. */
+export interface TraceSpan {
+  setAttribute(key: string, value?: boolean | number | string): void;
+}
+
+export interface TraceProvider {
+  enterSpan<T>(name: string, callback: (span: TraceSpan) => T): T;
+}
+
 export interface StageRecorder {
   /** Record a stage whose duration was measured by the caller. */
   record(
@@ -269,6 +278,7 @@ export interface StageRecorder {
 export function createStageRecorder(options: {
   logger?: Logger;
   metrics?: Metrics;
+  tracing?: TraceProvider;
   event: string;
   metric: 'api_stage' | 'ingestion_stage';
 }): StageRecorder {
@@ -303,29 +313,44 @@ export function createStageRecorder(options: {
 
   return {
     record: emit,
-    async time(stage, fields, fn, measurements = {}) {
-      const start = performance.now();
-      try {
-        const result = await fn();
-        emit(
-          stage,
-          'ok',
-          durationMs(start),
-          fields,
-          typeof measurements === 'function' ? measurements(result) : measurements,
-        );
-        return result;
-      } catch (err) {
-        emit(
-          stage,
-          'failed',
-          durationMs(start),
-          fields,
-          typeof measurements === 'function' ? {} : measurements,
-          err,
-        );
-        throw err;
-      }
+    time(stage, fields, fn, measurements = {}) {
+      const run = async (span?: TraceSpan) => {
+        const start = performance.now();
+        try {
+          const result = await fn();
+          const observed = typeof measurements === 'function'
+            ? measurements(result)
+            : measurements;
+          span?.setAttribute('crosmos.stage', stage);
+          span?.setAttribute('crosmos.outcome', 'ok');
+          if (observed.inputCount !== undefined) {
+            span?.setAttribute('crosmos.input_count', observed.inputCount);
+          }
+          if (observed.outputCount !== undefined) {
+            span?.setAttribute('crosmos.output_count', observed.outputCount);
+          }
+          if (observed.transferBytes !== undefined) {
+            span?.setAttribute('crosmos.transfer_bytes', observed.transferBytes);
+          }
+          emit(stage, 'ok', durationMs(start), fields, observed);
+          return result;
+        } catch (err) {
+          span?.setAttribute('crosmos.stage', stage);
+          span?.setAttribute('crosmos.outcome', 'failed');
+          emit(
+            stage,
+            'failed',
+            durationMs(start),
+            fields,
+            typeof measurements === 'function' ? {} : measurements,
+            err,
+          );
+          throw err;
+        }
+      };
+      return options.tracing
+        ? options.tracing.enterSpan(`${options.metric}.${stage}`, run)
+        : run();
     },
   };
 }
