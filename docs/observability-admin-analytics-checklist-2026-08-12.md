@@ -506,7 +506,9 @@ principal resolution, and management limiting through the same recorder.
 Complete timing coverage, hosted panel verification, Grafana trace/log export,
 deployment, and an operator-tested single-request workflow remain. The outer
 request clock classifies every 4xx/5xx response as `failed`; a regression test
-pins both metric and span behavior for a 404._
+pins both metric and span behavior for a 404. Search now has a parent
+`search_total` span/metric around admission and retrieval, plus explicit
+response-build and response-serialization children._
 
 **Why**
 
