@@ -3,6 +3,12 @@ import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getCachedMembership } from '../../lib/gate-cache';
+import {
+  createLogger,
+  createMetrics,
+  createStageRecorder,
+  type TraceProvider,
+} from '@crosmos/observability';
 
 /**
  * Mirrors Python's `get_current_principal`: assumes `requireAuth` has already
@@ -23,7 +29,30 @@ export const requirePrincipal = createMiddleware<HonoEnv>(async (c, next) => {
   if (c.var.activeOrgId == null) {
     throw new HTTPException(400, { message: 'no_org_context' });
   }
-  const member = await getCachedMembership(c, c.var.activeOrgId, c.var.userId);
+  const tracing = (
+    c.executionCtx as ExecutionContext & { tracing?: TraceProvider }
+  ).tracing;
+  const stages = createStageRecorder({
+    logger: createLogger({
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      base: { request_id: c.var.requestId },
+    }),
+    metrics: createMetrics(c.env.ANALYTICS, {
+      service: 'api',
+      environment: c.env.ENVIRONMENT,
+      version: c.env.CF_VERSION_METADATA?.id,
+    }),
+    tracing,
+    event: 'auth.stage_completed',
+    metric: 'api_stage',
+  });
+  const member = await stages.time(
+    'auth_principal_resolution',
+    { auth_method: c.var.authMethod, dependency: 'database' },
+    () => getCachedMembership(c, c.var.activeOrgId!, c.var.userId!),
+    (value) => ({ outputCount: value === null ? 0 : 1 }),
+  );
   if (!member) {
     throw new HTTPException(404, { message: 'Organization not found' });
   }
