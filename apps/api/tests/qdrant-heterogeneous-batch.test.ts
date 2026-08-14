@@ -8,6 +8,61 @@ afterEach(() => {
 });
 
 describe('Qdrant heterogeneous ANN batch', () => {
+  test('matches the legacy two-call results on a frozen response snapshot', async () => {
+    const frozenSemantic = [
+      { id: 101, score: 0.91 },
+      { id: 102, score: 0.44 },
+      { id: 103, score: 0.09 },
+    ];
+    const frozenGraphSeeds = [
+      { id: 201, score: 0.82 },
+      { id: 202, score: 0.19 },
+    ];
+    let individualCalls = 0;
+    let batchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body)) as {
+        limit?: number;
+        searches?: Array<{ limit: number }>;
+      };
+      if (url.endsWith('/search/batch')) {
+        batchCalls += 1;
+        expect(body.searches?.map((search) => search.limit)).toEqual([50, 5]);
+        return Response.json({ result: [frozenSemantic, frozenGraphSeeds] });
+      }
+      individualCalls += 1;
+      return Response.json({
+        result: body.limit === 50 ? frozenSemantic : frozenGraphSeeds,
+      });
+    }) as typeof fetch;
+    const store = new QdrantStore({
+      url: 'https://qdrant.invalid',
+      apiKey: 'test',
+      memoriesCollection: 'memories',
+      entitiesCollection: 'entities',
+    });
+    const vector = [0.25, 0.75];
+    const scope = { orgId: 1, spaceId: 7 };
+
+    const legacy = await Promise.all([
+      store.queryNearest('memories', vector, scope, { topK: 50, minScore: 0.1 }),
+      store.queryNearest('memories', vector, scope, { topK: 5, minScore: 0.2 }),
+    ]);
+    const batched = await store.queryNearestMany('memories', [
+      { vector, scope, opts: { topK: 50, minScore: 0.1 } },
+      { vector, scope, opts: { topK: 5, minScore: 0.2 } },
+    ]);
+
+    expect(batched).toEqual(legacy);
+    expect(batched).toEqual([
+      [{ id: 101, score: 0.91 }, { id: 102, score: 0.44 }],
+      [{ id: 201, score: 0.82 }],
+    ]);
+    expect(individualCalls).toBe(2);
+    expect(batchCalls).toBe(1);
+  });
+
   test('sends independent limits and thresholds in one transport request', async () => {
     const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
     globalThis.fetch = (async (input, init) => {
