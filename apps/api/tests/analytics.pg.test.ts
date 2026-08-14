@@ -174,8 +174,10 @@ describeDb('analytics HTTP routes', () => {
   });
 
   test('tombstoned large spaces keep history in org totals but leave the breakdown', async () => {
-    const [{ id: otherSpaceId }] = await db!.execute<{ id: number }>(sql`
+    const otherSpaces = await db!.execute<{ id: number }>(sql`
       select id from memory_spaces where uuid = ${otherSpaceUuid}`);
+    const otherSpaceId = otherSpaces[0]?.id;
+    if (otherSpaceId === undefined) throw new Error('Expected the secondary test space');
     await db!.execute(sql`
       insert into daily_usage
         (uuid, org_id, user_id, space_id, date, sources_ingested, memories_created)
