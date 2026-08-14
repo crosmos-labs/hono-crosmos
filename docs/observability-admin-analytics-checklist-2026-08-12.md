@@ -145,6 +145,7 @@ So the real gaps are narrower than they feel:
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
 | 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
+| 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
 
 ---
 
@@ -152,8 +153,8 @@ So the real gaps are narrower than they feel:
 
 ### [~] O-1. Tag every metric with the deploy version
 
-_Deployed to production 2026-08-14 as API version `a81117b3` and ingestion
-version `3bfcc097`. Cross-version SQL verification remains._
+_Deployed to production 2026-08-14; current API version `561a810c` and ingestion
+version `511f7532`. Cross-version SQL verification remains._
 
 **Why**
 
@@ -1309,11 +1310,12 @@ previously written values stay valid.
 
 ### [~] U-4. Backfill history
 
-_An idempotent, range-bounded, dry-run-first backfill CLI is implemented and
-argument-tested. Apply refuses the live UTC day to make the cutover boundary
-explicit. Historical completion dates are approximated by creation date because
-the legacy schema recorded no source completion timestamp. Backup dry-run,
-double-apply, and reconciliation remain._
+_Completed for 2026-04-25 through 2026-08-13 on 2026-08-14. The backup
+dry-run/apply/double-apply reconciled exactly and exposed a legacy scalar-metadata
+case before production. Production then reconciled `2,542` completed sources,
+`28` failures, `4,806` memories, and `2,542` content-type rows against the
+authoritative tables. Historical completion dates are approximated by creation
+date because the legacy schema recorded no source completion timestamp._
 
 **Why**
 
