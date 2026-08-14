@@ -10,7 +10,12 @@
  * completed / partial / failed / cancelled.
  */
 import type { Database } from '@crosmos/db';
-import { createMetrics, durationMs, type Logger } from '@crosmos/observability';
+import {
+  createMetrics,
+  durationMs,
+  type Logger,
+  type TraceProvider,
+} from '@crosmos/observability';
 import type {
   IngestionJobMessage,
   IngestionJobResult,
@@ -111,6 +116,8 @@ export interface ProcessIngestionDeps {
   environment?: string;
   /** Cloudflare Worker version id, truncated by `createMetrics`. */
   version?: string;
+  /** Cloudflare custom-spans surface; omitted in local dev and unit tests. */
+  tracing?: TraceProvider;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -184,6 +191,26 @@ function emitOutcomeMetric(
 }
 
 export async function processIngestion(
+  msg: IngestionJobMessage,
+  deps: ProcessIngestionDeps,
+): Promise<IngestionRunResult> {
+  const run = () => processIngestionRun(msg, deps);
+  if (!deps.tracing) return run();
+  return deps.tracing.enterSpan('ingestion.job_total', async (span) => {
+    span.setAttribute('crosmos.source_count', msg.source_ids.length);
+    try {
+      const result = await run();
+      span.setAttribute('crosmos.outcome', result.outcome);
+      span.setAttribute('crosmos.chunks_processed', result.chunksProcessed);
+      return result;
+    } catch (error) {
+      span.setAttribute('crosmos.outcome', 'failed');
+      throw error;
+    }
+  });
+}
+
+async function processIngestionRun(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
 ): Promise<IngestionRunResult> {
@@ -404,7 +431,7 @@ export async function processIngestion(
     let lastErr: unknown = null;
     for (let attempt = 1; attempt <= SOURCE_RETRY_ATTEMPTS; attempt++) {
       try {
-        result = await ingestSource({
+        const ingestAttempt = () => ingestSource({
           db,
           scope,
           sourceId,
@@ -413,6 +440,7 @@ export async function processIngestion(
           vectorStore,
           logger: sourceLogger,
           metrics,
+          tracing: deps.tracing,
           heartbeat,
           // Max NEW chunks this source may process this invocation — the
           // remaining invocation budget. `ingestSource` resumes from the source's
@@ -420,6 +448,23 @@ export async function processIngestion(
           // any remainder for continuation on a re-queue (issue #9).
           chunkBudgetRemaining: MAX_CHUNKS_PER_INVOCATION - chunksProcessed,
         });
+        result = deps.tracing
+          ? await deps.tracing.enterSpan('ingestion.source_total', async (span) => {
+              span.setAttribute('crosmos.attempt', attempt);
+              try {
+                const sourceResult = await ingestAttempt();
+                span.setAttribute('crosmos.outcome', 'ok');
+                span.setAttribute(
+                  'crosmos.chunks_processed',
+                  sourceResult.processedChunkCount,
+                );
+                return sourceResult;
+              } catch (error) {
+                span.setAttribute('crosmos.outcome', 'failed');
+                throw error;
+              }
+            })
+          : await ingestAttempt();
         break;
       } catch (err) {
         lastErr = err;

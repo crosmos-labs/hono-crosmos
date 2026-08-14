@@ -1,5 +1,10 @@
 import type { Database } from '@crosmos/db';
-import { createMetrics, type Logger } from '@crosmos/observability';
+import {
+  createMetrics,
+  createStageRecorder,
+  type Logger,
+  type TraceProvider,
+} from '@crosmos/observability';
 import type { QueueDelivery } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { VectorStore } from '@crosmos/vector';
@@ -32,6 +37,8 @@ export interface IngestionQueueConsumerDeps {
   environment?: string;
   /** Cloudflare Worker version id, truncated by `createMetrics`. */
   version?: string;
+  /** Cloudflare custom-spans surface; omitted in local dev and unit tests. */
+  tracing?: TraceProvider;
 }
 
 /**
@@ -179,6 +186,18 @@ export async function handleIngestionDelivery(
     queue_delay_ms: queueDelayMs,
     continuation_count: continuationCount,
   });
+  if (queueDelayMs !== undefined) {
+    createStageRecorder({
+      logger,
+      metrics: createMetrics(deps.analytics, {
+        service: 'ingestion',
+        environment: deps.environment,
+        version: deps.version,
+      }),
+      event: 'ingestion.stage_completed',
+      metric: 'ingestion_stage',
+    }).record('queue_wait', 'ok', queueDelayMs);
+  }
 
   try {
     // One LLM + one embedder per job so totalTokens aggregates across every
@@ -195,6 +214,7 @@ export async function handleIngestionDelivery(
       analytics: deps.analytics,
       environment: deps.environment,
       version: deps.version,
+      tracing: deps.tracing,
     });
 
     // The queue is the durable backstop behind the direct RPC fast path.

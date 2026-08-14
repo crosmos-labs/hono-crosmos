@@ -33,6 +33,7 @@ import {
   durationMs,
   type Logger,
   type Metrics,
+  type TraceProvider,
 } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -134,6 +135,7 @@ export interface IngestSourceInput {
   existingMemories?: string[];
   logger?: Logger;
   metrics?: Metrics;
+  tracing?: TraceProvider;
   /**
    * Mid-source lease heartbeat (issue #1). Called once per chunk; the job-level
    * handler throttles it to re-stamp `started_at` so a long-but-healthy source
@@ -297,6 +299,7 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   const stages = createStageRecorder({
     logger,
     metrics: input.metrics,
+    tracing: input.tracing,
     event: 'ingestion.stage_completed',
     metric: 'ingestion_stage',
   });
