@@ -1,9 +1,17 @@
 # Latency optimization opportunity audit
 
 **Date:** 2026-08-11  
-**Status:** Ideation and investigation only; no proposal in this document has been implemented  
+**Status:** Research record, superseded as an execution backlog by
+[`observability-admin-analytics-checklist-2026-08-12.md`](./observability-admin-analytics-checklist-2026-08-12.md),
+Track `P`; no proposal in this document has been implemented.
+
 **Production reality:** `api.crosmos.dev` is the customer-facing Hono API. The Hono API Worker, ingestion Worker, Neon database, Qdrant collections, OpenAI embedding/extraction calls, and ZeroEntropy reranking are serving existing production users and existing data.  
-**Relationship to the remediation checklist:** This is a separate R&D document. It does not change, replace, or mark anything in `ingestion-retrieval-priority-checklist-2026-08-10.md`.
+
+**Relationship to the remediation checklist:** This remains the detailed R&D
+record. All viable action items, deferrals, dependencies, and acceptance gates
+are consolidated into the canonical observability/admin/analytics checklist so
+there is only one execution checklist. It does not change or mark anything in
+`ingestion-retrieval-priority-checklist-2026-08-10.md`.
 
 ## Executive conclusion
 
