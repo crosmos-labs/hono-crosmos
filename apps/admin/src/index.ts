@@ -18,7 +18,18 @@ import {
   invalidateEntitlementCache,
   resolveEntitlements,
 } from '@crosmos/runtime';
-import { and, count, desc, eq, gte, isNotNull, lt, sql, sum } from 'drizzle-orm';
+import {
+  and,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  gte,
+  isNotNull,
+  lt,
+  sql,
+  sum,
+} from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
@@ -54,20 +65,90 @@ app.get('/admin/overview', async (c) => {
   const database = db(c);
   const days = positiveInt(c.req.query('days'), 30, 90);
   const since = new Date(Date.now() - days * 86_400_000);
-  const [userTotal, orgTotal, spaceTotal, sourceTotal, memoryTotal, newUsers, newOrgs] = await Promise.all([
+  const previousSince = new Date(since.getTime() - days * 86_400_000);
+  const currentWindow = <T>(column: T) => gte(column as never, since);
+  const previousWindow = <T>(column: T) => and(
+    gte(column as never, previousSince),
+    lt(column as never, since),
+  );
+  const activitySince = since.toISOString().slice(0, 10);
+  const previousActivitySince = previousSince.toISOString().slice(0, 10);
+  const [
+    userTotal,
+    orgTotal,
+    spaceTotal,
+    sourceTotal,
+    memoryTotal,
+    newUsers,
+    newOrgs,
+    newSpaces,
+    newSources,
+    newMemories,
+    previousUsers,
+    previousOrgs,
+    previousSpaces,
+    previousSources,
+    previousMemories,
+    activeCurrent,
+    activePrevious,
+  ] = await Promise.all([
     database.select({ count: count() }).from(users),
     database.select({ count: count() }).from(organizations),
     database.select({ count: count() }).from(memorySpaces).where(sql`${memorySpaces.deletedAt} IS NULL`),
     database.select({ count: count() }).from(sources),
     database.select({ count: count() }).from(memories),
-    database.select({ count: count() }).from(users).where(gte(users.createdAt, since)),
-    database.select({ count: count() }).from(organizations).where(gte(organizations.createdAt, since)),
+    database.select({ count: count() }).from(users).where(currentWindow(users.createdAt)),
+    database.select({ count: count() }).from(organizations).where(currentWindow(organizations.createdAt)),
+    database.select({ count: count() }).from(memorySpaces).where(currentWindow(memorySpaces.createdAt)),
+    database.select({ count: count() }).from(sources).where(currentWindow(sources.createdAt)),
+    database.select({ count: count() }).from(memories).where(currentWindow(memories.createdAt)),
+    database.select({ count: count() }).from(users).where(previousWindow(users.createdAt)),
+    database.select({ count: count() }).from(organizations).where(previousWindow(organizations.createdAt)),
+    database.select({ count: count() }).from(memorySpaces).where(previousWindow(memorySpaces.createdAt)),
+    database.select({ count: count() }).from(sources).where(previousWindow(sources.createdAt)),
+    database.select({ count: count() }).from(memories).where(previousWindow(memories.createdAt)),
+    database.select({
+      users: countDistinct(dailyUsage.userId),
+      organizations: countDistinct(dailyUsage.orgId),
+      spaces: countDistinct(dailyUsage.spaceId),
+    }).from(dailyUsage).where(gte(dailyUsage.date, activitySince)),
+    database.select({
+      users: countDistinct(dailyUsage.userId),
+      organizations: countDistinct(dailyUsage.orgId),
+      spaces: countDistinct(dailyUsage.spaceId),
+    }).from(dailyUsage).where(and(
+      gte(dailyUsage.date, previousActivitySince),
+      lt(dailyUsage.date, activitySince),
+    )),
   ]);
+  const currentNew = {
+    users: newUsers[0]?.count ?? 0,
+    organizations: newOrgs[0]?.count ?? 0,
+    spaces: newSpaces[0]?.count ?? 0,
+    sources: newSources[0]?.count ?? 0,
+    memories: newMemories[0]?.count ?? 0,
+  };
+  const previousNew = {
+    users: previousUsers[0]?.count ?? 0,
+    organizations: previousOrgs[0]?.count ?? 0,
+    spaces: previousSpaces[0]?.count ?? 0,
+    sources: previousSources[0]?.count ?? 0,
+    memories: previousMemories[0]?.count ?? 0,
+  };
   return c.json({ days, totals: {
     users: userTotal[0]?.count ?? 0, organizations: orgTotal[0]?.count ?? 0,
     active_spaces: spaceTotal[0]?.count ?? 0, sources: sourceTotal[0]?.count ?? 0,
     memories: memoryTotal[0]?.count ?? 0,
-  }, new: { users: newUsers[0]?.count ?? 0, organizations: newOrgs[0]?.count ?? 0 } });
+  },
+  new: currentNew,
+  previous_window_new: previousNew,
+  active: activeCurrent[0] ?? { users: 0, organizations: 0, spaces: 0 },
+  previous_window_active: activePrevious[0] ?? { users: 0, organizations: 0, spaces: 0 },
+  deltas: Object.fromEntries(Object.keys(currentNew).map((key) => [
+    key,
+    currentNew[key as keyof typeof currentNew] - previousNew[key as keyof typeof previousNew],
+  ])),
+  });
 });
 
 app.get('/admin/orgs/:uuid', async (c) => {
