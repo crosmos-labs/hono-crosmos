@@ -787,8 +787,11 @@ orchestration to the two calls; no data migration is involved.
 _Plan/quota checks and final source/owner enrichment are overlapped locally.
 The now-active real-Postgres/provider-replay corpus pins exact ingestion
 artifacts, reranker-backed response order/scores, gold-session recall, and
-session diversity across six queries. MMR prefetch remains evidence-gated;
-route-level admission/error differential and deployed latency gates remain._
+session diversity across six queries. A deterministic route-admission test
+holds each concurrent gate open and proves provider work waits for both, a plan
+failure retains precedence when both reject, and an isolated quota failure
+retains its stage. MMR prefetch remains evidence-gated; an HTTP error-envelope
+differential and deployed latency gates remain._
 
 **Why**
 
