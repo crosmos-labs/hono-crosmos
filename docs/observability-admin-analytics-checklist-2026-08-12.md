@@ -498,9 +498,11 @@ recorder now creates correctly nested custom spans for timed API stages; manual
 same tracer through `job_total`, per-attempt `source_total`, and its timed
 pipeline stages; observed queue wait is emitted as a metric/log rather than a
 fake retroactive span. The restorable Grafana model now includes a separately
-labeled three-clock panel. Complete timing coverage, hosted panel verification,
-Grafana trace/log export, deployment, and an operator-tested single-request
-workflow remain._
+labeled three-clock panel. API-side source and conversation ingestion now record
+enqueue total, preflight, source persistence, job creation, and dispatch through
+the shared metric/log/span recorder. Complete timing coverage, hosted panel
+verification, Grafana trace/log export, deployment, and an operator-tested
+single-request workflow remain._
 
 **Why**
 
