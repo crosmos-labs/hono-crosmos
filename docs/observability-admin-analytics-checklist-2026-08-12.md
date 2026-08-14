@@ -148,6 +148,7 @@ So the real gaps are narrower than they feel:
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
 | 2026-08-14 | Created the private R2 archive bucket with a verified 90-day lifecycle; deployed the admin Worker behind the Access application; configured its issuer/AUD/four-email allowlist; verified the unauthenticated redirect, issuer JWKS, a successful allowlisted `/admin/whoami` browser session, and production totals from `/admin/overview`. | — | — | `78889c96-00b8-4cef-81ca-d7853366fb38` |
 | 2026-08-14 | Enabled account Logpush job `1838803` for Workers Trace Events using Cloudflare's automatic R2 destination `cloudflare-managed-9459b43b`; retained the generated writer's original permission after its Health view stalled while edited; added the verified 90-day expiry rule; and inspected a landed API record with the required fields, no raw-IP-named field, and no truncation marker. Object timestamps show delivery began before the permission restoration, so no causal delivery failure is attributed to the narrower scope. Redeployed the unchanged Workers after job creation to make Logpush eligibility explicit. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
+| 2026-08-14 | Provisioned Grafana Cloud with a read-only Cloudflare Analytics datasource and imported the seven-panel dashboard. Corrected Analytics Engine timestamp/function/subquery incompatibilities, excluded legacy blob layouts, and verified live weighted endpoint, error, stage, and zero-throttle rendering. Raw-SQL parity, retention, and staging-burst gates remain. | — | — | — |
 
 ---
 
@@ -342,9 +343,11 @@ measurement is unavailable.
 
 ### [~] O-5. Stand up Grafana Cloud over the Analytics Engine SQL API
 
-_The importable seven-panel dashboard and datasource instructions were added
-2026-08-14. Grafana Cloud provisioning, import, and live parity checks are
-external and remain._
+_Grafana Cloud, its Account Analytics Read datasource, and the seven-panel
+dashboard were provisioned and rendered successfully on 2026-08-14. Live data
+shows weighted endpoint/error/stage results and a healthy zero-throttle cohort.
+Raw-SQL parity, a staging throttle burst, and dataset-retention measurement
+remain._
 
 **Why**
 

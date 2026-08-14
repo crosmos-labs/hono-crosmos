@@ -250,6 +250,11 @@ been imported and checked against one raw SQL query for the same time window,
 do not treat a rendered number as verified. The committed queries use a backend
 parser so they are eligible for Grafana Alerting after that parity check.
 
+The Grafana Cloud dashboard was imported against the production Analytics
+Engine datasets on 2026-08-14. All seven panels render without query errors;
+the first observed throttle summary showed 16 attempts and zero rejections.
+Independent raw-SQL parity for an identical window remains the final trust gate.
+
 ## What this runbook does NOT cover
 
 - **Alert configuration.** Thresholds and routing live in the Cloudflare
