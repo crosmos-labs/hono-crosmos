@@ -480,10 +480,13 @@ searchRoutes.openapi(
       // below instead of running after them inside retrieve(). The signals then
       // find the vector already resolved. Quality-neutral (same vector).
       const embedder = getEmbedder(c.env);
-      const embedPromise = embedder.embed(body.query, {
-        mode: 'search',
-        signal: deadline.signal,
-      });
+      const embedPromise = stages.span(
+        'retrieval_query_embedding',
+        () => embedder.embed(body.query, {
+          mode: 'search',
+          signal: deadline.signal,
+        }),
+      );
       // retrieve() awaits this; guard the pre-await window so a rejection here
       // isn't reported as an unhandled rejection.
       embedPromise.catch(() => {});

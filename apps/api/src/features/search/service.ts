@@ -260,7 +260,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // the route's pre-started embed (overlaps the DB loads); else embed lazily.
   const embedStart = performance.now();
   const embedSource =
-    input.embedPromise ?? embedder.embed(query.text, { mode: 'search', signal: input.signal });
+    input.embedPromise ?? stages.span(
+      'retrieval_query_embedding',
+      () => embedder.embed(query.text, { mode: 'search', signal: input.signal }),
+    );
   const embedPromise = embedSource.then(
     (result) => {
       stages.record('retrieval_query_embedding', 'ok', durationMs(embedStart), {
@@ -284,7 +287,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // collection but intentionally different limits/thresholds. Qdrant can run
   // those as two independent searches in one HTTP batch. Other adapters fall
   // back to the exact former calls, preserving portability and result order.
-  const memoryAnnPromise = embedPromise.then(async ({ vector }) => {
+  const memoryAnnPromise = embedPromise.then(({ vector }) => stages.span('memory_ann_batch', async () => {
     const start = performance.now();
     const searches = [
       {
@@ -328,7 +331,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       }, err);
       throw err;
     }
-  });
+  }));
 
   // Stage 3 — four signals in parallel.
   //
@@ -472,7 +475,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   let attachPromise: Promise<void> = Promise.resolve();
   if (candidateLookup.size > 0) {
     const attachSourceStart = performance.now();
-    attachPromise = attachCandidateProvenance(db, scope, candidateLookup).then(
+    attachPromise = stages.span(
+      'source_provenance_attach',
+      () => attachCandidateProvenance(db, scope, candidateLookup),
+    ).then(
       () => {
         stages.record('source_provenance_attach', 'ok', durationMs(attachSourceStart), {
           candidate_count: candidateLookup.size,
@@ -519,7 +525,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       if (c) selection.push(c);
     }
     try {
-      baseScores = await rerankCandidates(reranker!, query.text, selection, input.signal);
+      baseScores = await stages.span(
+        'rerank',
+        () => rerankCandidates(reranker!, query.text, selection, input.signal),
+      );
       if (baseScores.size === 0) ceEnabled = false;
       stages.record('rerank', 'ok', durationMs(rerankStart), {
         candidate_count: selection.length,
@@ -690,7 +699,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   ) {
     const sourceContentStart = performance.now();
     try {
-      await attachSourceContent(db, scope, top);
+      await stages.span('source_content_load', () => attachSourceContent(db, scope, top));
       stages.record('source_content_load', 'ok', durationMs(sourceContentStart), {
         result_count: top.length,
       }, { inputCount: top.length, outputCount: top.length });
@@ -772,7 +781,7 @@ async function timeSignal(
 ): Promise<RankedCandidate[]> {
   const start = performance.now();
   try {
-    const results = await fn();
+    const results = await stages.span(`signal_${signal}`, fn);
     logger?.info('retrieval.signal_completed', {
       signal,
       duration_ms: durationMs(start),

@@ -91,4 +91,24 @@ describe('stage recorder', () => {
       },
     }]);
   });
+
+  test('wraps manually measured async work without emitting a duplicate metric', async () => {
+    const spanNames: string[] = [];
+    const metricNames: string[] = [];
+    const recorder = createStageRecorder({
+      event: 'retrieval.stage_completed',
+      metric: 'api_stage',
+      metrics: { count(name) { metricNames.push(name); } },
+      tracing: {
+        enterSpan<T>(name: string, callback: (span: { setAttribute(): void }) => T): T {
+          spanNames.push(name);
+          return callback({ setAttribute() {} });
+        },
+      },
+    });
+
+    await expect(recorder.span('rerank', async () => 'ranked')).resolves.toBe('ranked');
+    expect(spanNames).toEqual(['api_stage.rerank']);
+    expect(metricNames).toEqual([]);
+  });
 });

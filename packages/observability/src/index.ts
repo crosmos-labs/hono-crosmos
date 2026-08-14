@@ -258,6 +258,8 @@ export interface StageRecorder {
     measurements?: StageMeasurements,
     err?: unknown,
   ): void;
+  /** Wrap already-manually-measured work in a correctly nested custom span. */
+  span<T>(stage: string, fn: () => T): T;
   /** Time a stage and emit the same log + metric on both success and failure. */
   time<T>(
     stage: string,
@@ -313,6 +315,11 @@ export function createStageRecorder(options: {
 
   return {
     record: emit,
+    span(stage, fn) {
+      return options.tracing
+        ? options.tracing.enterSpan(`${options.metric}.${stage}`, fn)
+        : fn();
+    },
     time(stage, fields, fn, measurements = {}) {
       const run = async (span?: TraceSpan) => {
         const start = performance.now();
