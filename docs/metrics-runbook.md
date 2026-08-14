@@ -253,7 +253,10 @@ parser so they are eligible for Grafana Alerting after that parity check.
 The Grafana Cloud dashboard was imported against the production Analytics
 Engine datasets on 2026-08-14. All seven panels render without query errors;
 the first observed throttle summary showed 16 attempts and zero rejections.
-Independent raw-SQL parity for an identical window remains the final trust gate.
+Raw SQL through the Cloudflare API for the same moving 24-hour window returned
+the same throttle counts and panel values: 301 HTTP requests, two errors, and
+the matching endpoint and stage percentiles. This completes the dashboard
+parity gate; staging-burst visibility and measured dataset retention remain.
 
 ## What this runbook does NOT cover
 

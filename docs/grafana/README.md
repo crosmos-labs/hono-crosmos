@@ -31,6 +31,9 @@ weighted rejection p95 only when rejection events exist. This stays within the
 Analytics Engine SQL subset and distinguishes "zero throttling" from a broken
 panel.
 
-The JSON is repository-complete but external setup is not: after import, verify
-one panel against the equivalent query in `docs/metrics-runbook.md`, then induce
-a staging throttle burst and confirm it appears before enabling alert rules.
+The production import and raw-SQL parity check were completed on 2026-08-14.
+For the same moving 24-hour window, Grafana and the Cloudflare SQL API showed 16
+search attempts, zero rejections, 301 HTTP requests, two errors, and matching
+endpoint and stage percentiles. Before enabling alert rules, induce a staging
+throttle burst and confirm it appears; also record the measured Analytics
+Engine retention once the datasets are old enough to observe it.
