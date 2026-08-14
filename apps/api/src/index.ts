@@ -66,7 +66,7 @@ app.use(
     origin: (origin) => origin ?? '*',
     allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Authorization', 'Content-Type'],
-    exposeHeaders: ['X-Request-Id', 'X-Crosmos-Took-Ms'],
+    exposeHeaders: ['X-Request-Id'],
     credentials: true,
     maxAge: 600,
   }),

@@ -5,19 +5,22 @@
  * Phase A — ingest 100 dated conversations for ONE persona (Alex Rivera) spread
  *   across categories so multi-session aggregation is real. Measures per-job
  *   server time (completed_at - created_at) and end-to-end wall-clock.
- * Phase B — retrieval. For each query measures the server duration from
- *   X-Crosmos-Took-Ms and client total
- *   latency (this box = India vantage). US-user latency is ESTIMATED by
- *   decomposing the India network tax out of the client total.
+ * Phase B — retrieval. For each query retains the public opaque X-Request-Id,
+ *   resolves server duration through the private Workers Observability API,
+ *   and separately measures client total latency (this box = India vantage).
  * Phase C — quality probe: aggregation / single-session / preference /
  *   adversarial queries to eyeball the session-diversity penalty's effect.
  */
-import { readServerTookMs } from './latency-response';
+import { waitForPrivateRetrievalTimings } from './private-retrieval-timing';
 
 const BASE = process.env.BASE_URL ?? 'https://api.crosmos.dev';
 const KEY = process.env.CROSMOS_API_KEY!;
 if (!KEY) throw new Error('set CROSMOS_API_KEY');
 const H = { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' };
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN?.trim();
+if (!CLOUDFLARE_ACCOUNT_ID) throw new Error('set CLOUDFLARE_ACCOUNT_ID');
+if (!CLOUDFLARE_API_TOKEN) throw new Error('set CLOUDFLARE_API_TOKEN');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const positiveIntEnv = (name: string, fallback: number) => {
   const raw = process.env[name];
@@ -377,8 +380,9 @@ const queries: Q[] = [
 
 async function retrieve(spaceId: string, selectedQueries: Q[], repeats: number) {
   const rows: any[] = [];
+  const telemetryFrom = Date.now() - 5_000;
   for (const item of selectedQueries) {
-    const samples: { total: number; took: number }[] = [];
+    const samples: { requestId: string; total: number; took?: number }[] = [];
     let lastBody: any = null;
     for (let i = 0; i < repeats; i++) {
       const t0 = performance.now();
@@ -389,21 +393,24 @@ async function retrieve(spaceId: string, selectedQueries: Q[], repeats: number) 
       const total = performance.now() - t0;
       const body = await r.json();
       if (!r.ok) { console.error(`search "${item.q}" -> ${r.status}: ${JSON.stringify(body)}`); break; }
-      samples.push({ total, took: readServerTookMs(r.headers) });
+      const requestId = r.headers.get('x-request-id')?.trim();
+      if (!requestId) {
+        throw new Error('Search response is missing X-Request-Id');
+      }
+      samples.push({ requestId, total });
       lastBody = body;
       await sleep(150);
     }
     if (!samples.length) continue;
     const totals = samples.map((s) => s.total);
-    const tooks = samples.map((s) => s.took);
     // session distribution of the returned candidates (penalty effect signal)
     const sessions = (lastBody?.candidates ?? []).map((c: any) => c.session_id);
     const uniqSessions = new Set(sessions).size;
     rows.push({
       kind: item.kind, q: item.q, note: item.note,
-      took_med: Math.round(pct(tooks, 50)), total_med: Math.round(pct(totals, 50)),
-      samples: samples.map(({ took, total }) => ({
-        took: Math.round(took),
+      total_med: Math.round(pct(totals, 50)),
+      samples: samples.map(({ requestId, total }) => ({
+        requestId,
         total: Math.round(total),
       })),
       n: lastBody?.candidates?.length ?? 0, uniqSessions,
@@ -411,6 +418,33 @@ async function retrieve(spaceId: string, selectedQueries: Q[], repeats: number) 
         content: c.content, session: c.session_id, score: Number(c.score?.toFixed?.(3) ?? c.score),
       })),
     });
+  }
+
+  const requestIds = rows.flatMap((row) =>
+    row.samples.map((sample: { requestId: string }) => sample.requestId),
+  );
+  const timings = await waitForPrivateRetrievalTimings({
+    accountId: CLOUDFLARE_ACCOUNT_ID,
+    apiToken: CLOUDFLARE_API_TOKEN,
+    requestIds,
+    from: telemetryFrom,
+    to: Date.now() + 5_000,
+    scriptName: process.env.CLOUDFLARE_API_SCRIPT ?? 'crosmos-api-production',
+    timeoutMs: positiveIntEnv('BENCH_TELEMETRY_TIMEOUT_MS', 5 * 60_000),
+    pollMs: positiveIntEnv('BENCH_TELEMETRY_POLL_MS', 10_000),
+  });
+  for (const row of rows) {
+    for (const sample of row.samples) {
+      const took = timings.get(sample.requestId);
+      if (took === undefined) {
+        throw new Error(`Private retrieval timing missing for ${sample.requestId}`);
+      }
+      sample.took = Math.round(took);
+    }
+    row.took_med = Math.round(pct(
+      row.samples.map((sample: { took: number }) => sample.took),
+      50,
+    ));
   }
   return rows;
 }
