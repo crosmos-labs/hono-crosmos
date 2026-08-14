@@ -1,815 +1,120 @@
 {
-  "spaceId": "019ef079-6234-7230-85fa-361a8bbf5a1d",
+  "generatedAt": "2026-08-14T14:35:36.139Z",
+  "baseUrl": "https://api.crosmos.dev",
+  "parameters": {
+    "conversationLimit": 12,
+    "queryLimit": 5,
+    "repeats": 4
+  },
+  "spaceId": "01a000b2-b7b6-7b1d-b982-7ef5219b631d",
   "ing": {
     "serverMs": [
-      20379,
-      5918,
-      9919,
-      5579,
-      7834,
-      8793,
-      10377,
-      5259,
-      12347,
-      6887,
-      7335,
-      9983,
-      8200,
-      8172,
-      7880,
-      27084,
-      19872,
-      6153,
-      15397,
-      7858,
-      12569,
-      18561,
-      18068,
-      8162,
-      6156,
-      8770,
-      8453,
-      11013,
-      12721,
-      16952,
-      8148,
-      21730,
-      19740,
-      11780,
-      16186,
-      19518,
-      16495,
-      19043,
-      19337,
-      19239,
-      16353,
-      19651,
-      14774,
-      12283,
-      18419,
-      19445,
-      5691,
-      6447,
-      8012,
-      8539,
-      19954,
-      17245,
-      17174,
-      7893,
-      5856,
-      21573,
-      6738,
-      12468,
-      10616,
-      7689,
-      9809,
-      7816,
-      5794,
-      28710,
-      7444,
-      17822,
-      17801,
-      6225,
-      13654,
-      7663,
-      10144,
-      8783,
-      8905,
-      7823,
-      18155,
-      6404,
-      6568,
-      8404,
-      9505,
-      13491,
-      13435,
-      5974,
-      10842,
-      20069,
-      13325,
-      7195,
-      6155,
-      7729,
-      11262,
-      10163,
-      9075,
-      9399,
-      12404,
-      9508,
-      9653,
-      9023,
-      9860,
-      12544
+      5430,
+      6356,
+      6801,
+      7331,
+      9566,
+      9612,
+      10833,
+      8853,
+      9262,
+      9115
     ],
-    "wallMs": 549834.013816,
-    "memTotal": 163,
-    "ok": 98,
+    "wallMs": 12185.613373,
+    "memTotal": 23,
+    "ok": 10,
     "failed": 0,
-    "polled": 98,
-    "total": 99
+    "polled": 10,
+    "total": 10
   },
   "ret": [
     {
       "kind": "aggregation",
       "q": "What books have I read this year?",
-      "took_med": 4491,
-      "total_med": 5804,
+      "took_med": 1030,
+      "total_med": 1427,
       "n": 10,
-      "uniqSessions": 8,
+      "uniqSessions": 1,
       "top": [
         {
-          "content": "Born a Crime by Trevor Noah is one of the user's reads in 2026.",
-          "session": "book-9",
-          "score": 0.8
+          "content": "User finished reading Born a Crime by Trevor Noah in 2026.",
+          "score": 0.77
         },
         {
           "content": "User finished reading Educated by Tara Westover.",
-          "session": "book-2",
-          "score": 0.799
-        },
-        {
-          "content": "User finished reading The Song of Achilles by Madeline Miller in 2026.",
-          "session": "book-8",
-          "score": 0.749
+          "score": 0.761
         },
         {
           "content": "User finished reading Atomic Habits by James Clear in 2026.",
-          "session": "book-4",
-          "score": 0.735
+          "score": 0.749
         },
         {
-          "content": "User finished reading Klara and the Sun by Kazuo Ishiguro in 2026.",
-          "session": "book-7",
-          "score": 0.701
+          "content": "User finished reading The Song of Achilles by Madeline Miller.",
+          "score": 0.723
+        },
+        {
+          "content": "User finished reading Dune by Frank Herbert in 2026.",
+          "score": 0.659
         }
       ]
     },
     {
       "kind": "aggregation",
       "q": "List all the restaurants I have eaten at.",
-      "took_med": 4216,
-      "total_med": 4458,
+      "took_med": 678,
+      "total_med": 1282,
       "n": 10,
-      "uniqSessions": 9,
+      "uniqSessions": 1,
       "top": [
         {
-          "content": "User ate lamb shoulder and hummus tehina at Zahav in Philadelphia on 2026-05-15.",
-          "session": "resto-4",
-          "score": 0.658
+          "content": "User has a list of places they have eaten at, including Tartine Bakery in San Francisco.",
+          "score": 0.719
         },
         {
-          "content": "User ate cornbread and shrimp and grits at Husk in Charleston on 2026-03-18.",
-          "session": "resto-7",
-          "score": 0.653
+          "content": "User had the green curry, extra spicy, at Najia Spice in Seattle.",
+          "score": 0.538
         },
         {
-          "content": "User has added Liholiho Yacht Club in San Francisco to their list of places they've eaten at.",
-          "session": "resto-5",
-          "score": 0.646
+          "content": "User ate a morning bun and drank a cortado at Tartine Bakery in San Francisco on 2026-01-11.",
+          "score": 0.498
         },
         {
-          "content": "User ate burrata and tagliatelle at Osteria Mozza in Los Angeles on 2026-03-13.",
-          "session": "resto-2",
-          "score": 0.639
+          "content": "User went to Najia Spice in Seattle for dinner on 2026-02-12.",
+          "score": 0.492
         },
         {
-          "content": "User added Franklin Barbecue in Austin to their list of places they've eaten at.",
-          "session": "resto-6",
-          "score": 0.632
+          "content": "User went to Tartine Bakery in San Francisco for dinner on 2026-01-11.",
+          "score": 0.444
         }
       ]
     },
     {
       "kind": "aggregation",
       "q": "What movies have I watched recently?",
-      "took_med": 4332,
-      "total_med": 4503,
-      "n": 5,
-      "uniqSessions": 4,
-      "top": [
-        {
-          "content": "Sam got a promotion at work and they celebrated with sushi.",
-          "session": "daily-35",
-          "score": 0.179
-        },
-        {
-          "content": "User's favorite podcast host announced she is ending the show, which has left the user feeling gutted.",
-          "session": "daily-29",
-          "score": 0.151
-        },
-        {
-          "content": "User fixed the leaky faucet in the bathroom themselves and felt accomplished.",
-          "session": "daily-5",
-          "score": 0.138
-        },
-        {
-          "content": "User drinks their coffee black.",
-          "session": "pref-5",
-          "score": 0.103
-        },
-        {
-          "content": "User quit sugary energy drinks because the afternoon crash was brutal.",
-          "session": "pref-5",
-          "score": 0.099
-        }
-      ]
-    },
-    {
-      "kind": "aggregation",
-      "q": "Which countries and cities have I traveled to this year?",
-      "took_med": 4797,
-      "total_med": 4969,
+      "took_med": 617,
+      "total_med": 1077,
       "n": 10,
-      "uniqSessions": 7,
+      "uniqSessions": 1,
       "top": [
         {
-          "content": "User has completed traveling to Banff, Canada as one of the countries on their travel list for the year 2026.",
-          "session": "trip-2",
-          "score": 0.743
+          "content": "User loved the science and the alien friendship Rocky in Project Hail Mary by Andy Weir.",
+          "score": 0.547
         },
         {
-          "content": "User traveled to Mexico City with their partner Sam.",
-          "session": "trip-3",
-          "score": 0.712
+          "content": "User cried at the end of The Song of Achilles by Madeline Miller because of its beautiful prose.",
+          "score": 0.483
         },
         {
-          "content": "User traveled to Reykjavik, Iceland, and returned by 2026-05-15.",
-          "session": "trip-4",
-          "score": 0.692
+          "content": "User found the physics in The Three-Body Problem dense but the scope incredible.",
+          "score": 0.357
         },
         {
-          "content": "User traveled to Lisbon, Portugal, and returned by 2026-02-15.",
-          "session": "trip-1",
-          "score": 0.673
-        },
-        {
-          "content": "User has completed traveling to Kyoto, Japan as one of the countries on their list for the year 2026.",
-          "session": "trip-0",
-          "score": 0.649
-        }
-      ]
-    },
-    {
-      "kind": "aggregation",
-      "q": "What things have I bought recently?",
-      "took_med": 4271,
-      "total_med": 4522,
-      "n": 5,
-      "uniqSessions": 4,
-      "top": [
-        {
-          "content": "Sam got a promotion at work and they celebrated with sushi.",
-          "session": "daily-35",
-          "score": 0.595
-        },
-        {
-          "content": "User fixed the leaky faucet in the bathroom themselves and felt accomplished.",
-          "session": "daily-5",
-          "score": 0.503
-        },
-        {
-          "content": "User quit sugary energy drinks because the afternoon crash was brutal.",
-          "session": "pref-5",
-          "score": 0.348
-        },
-        {
-          "content": "User's favorite podcast host announced she is ending the show, which has left the user feeling gutted.",
-          "session": "daily-29",
-          "score": 0.247
-        },
-        {
-          "content": "User drinks their coffee black.",
-          "session": "pref-5",
-          "score": 0.158
-        }
-      ]
-    },
-    {
-      "kind": "aggregation",
-      "q": "How many places have I traveled to?",
-      "took_med": 4497,
-      "total_med": 5285,
-      "n": 10,
-      "uniqSessions": 8,
-      "top": [
-        {
-          "content": "User traveled to Reykjavik, Iceland, and returned by 2026-05-15.",
-          "session": "trip-4",
-          "score": 0.59
-        },
-        {
-          "content": "User traveled to Banff, Canada, and visited Lake Louise when it was frozen turquoise and hiked Johnston Canyon with their partner Sam.",
-          "session": "trip-2",
-          "score": 0.576
-        },
-        {
-          "content": "User traveled to Lisbon, Portugal, and returned by 2026-02-15.",
-          "session": "trip-1",
-          "score": 0.54
-        },
-        {
-          "content": "User traveled to Mexico City with their partner Sam.",
-          "session": "trip-3",
-          "score": 0.505
-        },
-        {
-          "content": "User has completed traveling to Kyoto, Japan as one of the countries on their list for the year 2026.",
-          "session": "trip-0",
-          "score": 0.499
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "What did I think of Project Hail Mary?",
-      "took_med": 4252,
-      "total_med": 4967,
-      "n": 10,
-      "uniqSessions": 8,
-      "top": [
-        {
-          "content": "User loved the science and the alien friendship character Rocky in Project Hail Mary by Andy Weir.",
-          "session": "book-0",
-          "score": 0.703
-        },
-        {
-          "content": "User finished reading Project Hail Mary by Andy Weir.",
-          "session": "book-0",
-          "score": 0.326
-        },
-        {
-          "content": "User watched a documentary about deep sea creatures and found it captivating, unable to look away.",
-          "session": "daily-38",
-          "score": 0.106
-        },
-        {
-          "content": "User considers Project Hail Mary by Andy Weir as one of their reads in 2026.",
-          "session": "book-0",
-          "score": 0.285
-        },
-        {
-          "content": "User tried a no-spend weekend challenge and actually enjoyed it.",
-          "session": "daily-53",
-          "score": 0.067
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "What did I order at Franklin Barbecue?",
-      "took_med": 4314,
-      "total_med": 4566,
-      "n": 10,
-      "uniqSessions": 9,
-      "top": [
-        {
-          "content": "User waited two hours for the brisket at Franklin Barbecue and has no regrets about it.",
-          "session": "resto-6",
-          "score": 0.656
-        },
-        {
-          "content": "User went to Franklin Barbecue in Austin for dinner on 2026-02-17.",
-          "session": "resto-6",
-          "score": 0.38
-        },
-        {
-          "content": "User tried a new recipe on 2026-02-11: a miso-glazed salmon, which came out great.",
-          "session": "daily-1",
-          "score": 0.172
-        },
-        {
-          "content": "User made a big pot of chili for the week and is freezing half of it on 2026-06-24.",
-          "session": "daily-41",
-          "score": 0.167
-        },
-        {
-          "content": "User ate cornbread and shrimp and grits at Husk in Charleston on 2026-03-18.",
-          "session": "resto-7",
-          "score": 0.152
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "Tell me about my trip to Kyoto.",
-      "took_med": 4146,
-      "total_med": 4411,
-      "n": 10,
-      "uniqSessions": 8,
-      "top": [
-        {
-          "content": "User's highlight in Kyoto was visiting the Fushimi Inari shrine at dawn and eating at a tiny ramen counter near Gion.",
-          "session": "trip-0",
-          "score": 0.843
-        },
-        {
-          "content": "User traveled to Kyoto, Japan with their partner Sam.",
-          "session": "trip-0",
-          "score": 0.388
-        },
-        {
-          "content": "User took a pottery class and made a lopsided mug they are weirdly proud of.",
-          "session": "daily-33",
-          "score": 0.229
-        },
-        {
-          "content": "User has completed traveling to Kyoto, Japan as one of the countries on their list for the year 2026.",
-          "session": "trip-0",
-          "score": 0.384
-        },
-        {
-          "content": "User went to a jazz bar downtown on 2026-05-02 and found the trumpet player incredible.",
-          "session": "daily-46",
-          "score": 0.167
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "What is my new job and who is my manager?",
-      "took_med": 4173,
-      "total_med": 4465,
-      "n": 10,
-      "uniqSessions": 9,
-      "top": [
-        {
-          "content": "User's manager at Northwind is Priya and the team is fully remote.",
-          "session": "fact-work",
-          "score": 0.74
-        },
-        {
-          "content": "User started a new job as a senior product designer at a fintech startup called Northwind in February 2026.",
-          "session": "fact-work",
-          "score": 0.724
-        },
-        {
-          "content": "User had a tough 1:1 meeting with Priya about scope creep on the onboarding project on 2026-01-01.",
-          "session": "daily-18",
-          "score": 0.276
-        },
-        {
-          "content": "Sam got a promotion at work and they celebrated with sushi.",
-          "session": "daily-35",
-          "score": 0.248
-        },
-        {
-          "content": "User had a long meeting about the Q3 roadmap on 2026-01-10 and was mostly aligned on priorities.",
-          "session": "daily-0",
-          "score": 0.202
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "What is my dog called and what is he afraid of?",
-      "took_med": 4230,
-      "total_med": 4506,
-      "n": 10,
-      "uniqSessions": 9,
-      "top": [
-        {
-          "content": "Biscuit is afraid of the vacuum but loves the dog park.",
-          "session": "fact-pet",
-          "score": 0.604
-        },
-        {
-          "content": "User took Biscuit to the beach for the first time on 2026-05-26 and Biscuit hated the waves.",
-          "session": "daily-16",
-          "score": 0.445
-        },
-        {
-          "content": "User adopted a rescue dog, a three-year-old beagle mix named Biscuit.",
-          "session": "fact-pet",
-          "score": 0.262
-        },
-        {
-          "content": "User adopted a routine of walking Biscuit every morning before work.",
-          "session": "daily-52",
-          "score": 0.156
-        },
-        {
-          "content": "User watched a documentary about deep sea creatures and found it captivating, unable to look away.",
-          "session": "daily-38",
-          "score": 0.078
-        }
-      ]
-    },
-    {
-      "kind": "single-session",
-      "q": "Who had a baby and what is the baby called?",
-      "took_med": 4131,
-      "total_med": 4386,
-      "n": 10,
-      "uniqSessions": 8,
-      "top": [
-        {
-          "content": "User's sister Mara had a baby girl named Juniper in May 2026.",
-          "session": "fact-family",
-          "score": 1.064
-        },
-        {
-          "content": "User flew to Denver to meet their sister Mara's baby Juniper in May 2026.",
-          "session": "fact-family",
-          "score": 0.836
-        },
-        {
-          "content": "Born a Crime by Trevor Noah is one of the user's reads in 2026.",
-          "session": "book-9",
-          "score": 0.4
-        },
-        {
-          "content": "User listened to the audiobook version of Born a Crime by Trevor Noah.",
-          "session": "book-9",
-          "score": 0.39
-        },
-        {
-          "content": "User finished reading The Song of Achilles by Madeline Miller in 2026.",
-          "session": "book-8",
-          "score": 0.283
-        }
-      ]
-    },
-    {
-      "kind": "preference",
-      "q": "What foods do I dislike or avoid, and why?",
-      "took_med": 4196,
-      "total_med": 4406,
-      "n": 10,
-      "uniqSessions": 9,
-      "top": [
-        {
-          "content": "User cannot stand cilantro because it tastes like soap to them, so they always ask for it to be left out.",
-          "session": "pref-0",
-          "score": 0.878
-        },
-        {
-          "content": "User quit sugary energy drinks because the afternoon crash was brutal.",
-          "session": "pref-5",
-          "score": 0.549
-        },
-        {
-          "content": "User ate fish-sauce wings at Pok Pok in Portland and found them messy but worth it.",
-          "session": "resto-3",
-          "score": 0.297
-        },
-        {
-          "content": "User loves spicy food, especially Thai and Sichuan cuisine, preferring it very spicy.",
-          "session": "pref-0",
-          "score": 0.332
-        },
-        {
-          "content": "User avoids red-eye flights entirely because they never actually sleep and feel wrecked the next day.",
-          "session": "pref-2",
-          "score": 0.221
-        }
-      ]
-    },
-    {
-      "kind": "preference",
-      "q": "What kind of podcasts am I moving away from?",
-      "took_med": 4258,
-      "total_med": 4514,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "User is getting tired of true crime podcasts and wants to switch to history podcasts instead in 2026.",
-          "session": "pref-3",
-          "score": 1.009
-        },
-        {
-          "content": "User's favorite podcast host announced she is ending the show, which has left the user feeling gutted.",
-          "session": "daily-29",
-          "score": 0.466
-        },
-        {
-          "content": "User changed how they think about money and myths after reading Sapiens by Yuval Noah Harari.",
-          "session": "book-6",
-          "score": 0.238
-        },
-        {
-          "content": "User found Born a Crime by Trevor Noah funny and sharp.",
-          "session": "book-9",
-          "score": 0.218
-        },
-        {
-          "content": "User has been avoiding screens after 9pm because late-night scrolling was hurting their sleep.",
-          "session": "pref-4",
+          "content": "User found Educated by Tara Westover to be a memoir that wrecked them emotionally.",
           "score": 0.189
-        }
-      ]
-    },
-    {
-      "kind": "preference",
-      "q": "What exercise have I given up and why?",
-      "took_med": 4565,
-      "total_med": 5560,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "User has completely given up running on pavement because it wrecked their knees and they dread it.",
-          "session": "pref-1",
-          "score": 0.941
         },
         {
-          "content": "User cancelled the gym membership they never use on 2026-02-02.",
-          "session": "daily-19",
-          "score": 0.582
-        },
-        {
-          "content": "User quit sugary energy drinks because the afternoon crash was brutal.",
-          "session": "pref-5",
-          "score": 0.431
-        },
-        {
-          "content": "User tried a no-spend weekend challenge and actually enjoyed it.",
-          "session": "daily-53",
-          "score": 0.39
-        },
-        {
-          "content": "User has been avoiding screens after 9pm because late-night scrolling was hurting their sleep.",
-          "session": "pref-4",
-          "score": 0.388
-        }
-      ]
-    },
-    {
-      "kind": "temporal",
-      "q": "What happened in May 2026?",
-      "took_med": 4731,
-      "total_med": 4943,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "User traveled to Reykjavik, Iceland with their partner Sam.",
-          "session": "trip-4",
-          "score": 0.966
-        },
-        {
-          "content": "User watched the sunset from Twin Peaks with their partner Sam.",
-          "session": "daily-10",
-          "score": 0.949
-        },
-        {
-          "content": "User's sister Mara had a baby girl named Juniper in May 2026.",
-          "session": "fact-family",
-          "score": 0.902
-        },
-        {
-          "content": "User took Biscuit to the beach for the first time on 2026-05-26 and Biscuit hated the waves.",
-          "session": "daily-16",
-          "score": 0.892
-        },
-        {
-          "content": "User watched Dune Part Two over the weekend on 2026-05-23.",
-          "session": "movie-4",
-          "score": 0.882
-        }
-      ]
-    },
-    {
-      "kind": "adversarial",
-      "q": "How was my trip to Tokyo?",
-      "note": "never went to Tokyo (Kyoto, yes)",
-      "took_med": 4235,
-      "total_med": 4405,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "User got rained on during their run on 2026-05-23 and found it strangely refreshing.",
-          "session": "daily-40",
-          "score": 0.382
-        },
-        {
-          "content": "User went to a jazz bar downtown on 2026-05-02 and found the trumpet player incredible.",
-          "session": "daily-46",
-          "score": 0.305
-        },
-        {
-          "content": "User's highlight in Kyoto was visiting the Fushimi Inari shrine at dawn and eating at a tiny ramen counter near Gion.",
-          "session": "trip-0",
-          "score": 0.293
-        },
-        {
-          "content": "User tried a no-spend weekend challenge and actually enjoyed it.",
-          "session": "daily-53",
-          "score": 0.247
-        },
-        {
-          "content": "User tried a new recipe on 2026-02-11: a miso-glazed salmon, which came out great.",
-          "session": "daily-1",
-          "score": 0.219
-        }
-      ]
-    },
-    {
-      "kind": "adversarial",
-      "q": "Why did I quit my job at Google?",
-      "note": "never worked at Google",
-      "took_med": 4163,
-      "total_med": 4340,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "User had a tough 1:1 meeting with Priya about scope creep on the onboarding project on 2026-01-01.",
-          "session": "daily-18",
-          "score": 0.18
-        },
-        {
-          "content": "User started a new job as a senior product designer at a fintech startup called Northwind in February 2026.",
-          "session": "fact-work",
-          "score": 0.179
-        },
-        {
-          "content": "User changed how they think about money and myths after reading Sapiens by Yuval Noah Harari.",
-          "session": "book-6",
-          "score": 0.143
-        },
-        {
-          "content": "User has been avoiding screens after 9pm because late-night scrolling was hurting their sleep.",
-          "session": "pref-4",
-          "score": 0.139
-        },
-        {
-          "content": "User is getting tired of true crime podcasts and wants to switch to history podcasts instead in 2026.",
-          "session": "pref-3",
-          "score": 0.127
-        }
-      ]
-    },
-    {
-      "kind": "adversarial",
-      "q": "What did I think of the book Dune Part Two?",
-      "note": "Dune is a book; Dune Part Two is a movie",
-      "took_med": 4114,
-      "total_med": 4276,
-      "n": 10,
-      "uniqSessions": 9,
-      "top": [
-        {
-          "content": "User found the sandworm-riding sequence in Dune Part Two in IMAX to be unreal.",
-          "session": "movie-4",
-          "score": 0.648
-        },
-        {
-          "content": "User watched Dune Part Two over the weekend on 2026-05-23.",
-          "session": "movie-4",
-          "score": 0.277
-        },
-        {
-          "content": "User finished reading Dune by Frank Herbert in 2026.",
-          "session": "book-3",
-          "score": 0.14
-        },
-        {
-          "content": "User is trying to read more literary fiction in 2026.",
-          "session": "pref-3",
-          "score": 0.054
-        },
-        {
-          "content": "User checked out four novels from the library.",
-          "session": "daily-51",
-          "score": 0.054
-        }
-      ]
-    },
-    {
-      "kind": "adversarial",
-      "q": "Tell me about my cat.",
-      "note": "has a dog, not a cat",
-      "took_med": 4167,
-      "total_med": 4352,
-      "n": 10,
-      "uniqSessions": 10,
-      "top": [
-        {
-          "content": "Biscuit is afraid of the vacuum but loves the dog park.",
-          "session": "fact-pet",
-          "score": 0.457
-        },
-        {
-          "content": "User took Biscuit to the beach for the first time on 2026-05-26 and Biscuit hated the waves.",
-          "session": "daily-16",
-          "score": 0.358
-        },
-        {
-          "content": "User adopted a routine of walking Biscuit every morning before work.",
-          "session": "daily-52",
-          "score": 0.256
-        },
-        {
-          "content": "User fixed the squeaky door hinge that had been bugging them for months.",
-          "session": "daily-45",
-          "score": 0.107
-        },
-        {
-          "content": "User started journaling every morning, writing just three lines a day, on 2026-05-17.",
-          "session": "daily-34",
-          "score": 0.102
+          "content": "User finished reading The Midnight Library by Matt Haig in 2026.",
+          "score": 0.164
         }
       ]
     }
