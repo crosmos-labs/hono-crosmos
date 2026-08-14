@@ -2,6 +2,7 @@ import { createLogger } from '@crosmos/observability';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
+import { hmacSha256Hex } from '../../lib/crypto';
 import { errorEnvelope } from '../../lib/errors';
 
 /**
@@ -60,6 +61,19 @@ function clientIp(c: { req: { header(name: string): string | undefined } }): str
   return 'unknown';
 }
 
+/**
+ * Pseudonymize an address only for durable logs. The rate-limit DO key keeps
+ * using the raw address so rotating the secret never resets live counters.
+ * Missing configuration fails private: the identifying field is omitted.
+ */
+export async function hashIpForLog(
+  secret: string | undefined,
+  ip: string,
+): Promise<string | undefined> {
+  if (!secret) return undefined;
+  return (await hmacSha256Hex(secret, ip)).slice(0, 16);
+}
+
 export function perIpRateLimit(opts: IpRateLimitOptions) {
   const { limit, windowSeconds } = TIER_LIMITS[opts.tier];
   return createMiddleware<HonoEnv>(async (c, next) => {
@@ -80,9 +94,15 @@ export function perIpRateLimit(opts: IpRateLimitOptions) {
       });
       const { success } = (await res.json()) as { success: boolean };
       if (!success) {
+        const ipHash = await hashIpForLog(c.env.LOG_IP_HASH_SALT, ip);
         createLogger({ service: 'api', environment: c.env.ENVIRONMENT }).warn(
           'ratelimit.ip_exceeded',
-          { reason: opts.bucket, ip, limit, scope: 'ip' },
+          {
+            reason: opts.bucket,
+            ...(ipHash ? { ip_hash: ipHash } : {}),
+            limit,
+            scope: 'ip',
+          },
         );
         const requestId = c.var.requestId;
         const body = new Response(

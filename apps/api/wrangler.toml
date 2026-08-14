@@ -2,6 +2,7 @@ name = "crosmos-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
+logpush = true
 
 # ───────────────────────────────────────────────────────────────────────────
 # PRODUCTION STACK (the [ai] + [[vectorize]] bindings below are DORMANT in prod):
@@ -19,6 +20,9 @@ compatibility_flags = ["nodejs_compat"]
 # Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
 # inherited by named environments, so it's repeated under [env.production].
 workers_dev = false
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [observability]
 enabled = true
@@ -168,6 +172,10 @@ VECTOR_STORE = "vectorize"
 [env.production]
 # No *.workers.dev for prod — only the api.crosmos.dev custom domain route.
 workers_dev = false
+logpush = true
+
+[env.production.version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [env.production.observability]
 enabled = true
@@ -232,9 +240,10 @@ index_name = "crosmos-entities-v3"
 crons = ["17 3 * * *", "*/15 * * * *"]
 
 # Targeted Placement for production (env config is not inherited from top-level).
-# `mode = "smart"` (automatic) was NOT relocating the Worker for India-origin
-# traffic — measured took_ms stayed flat at ~4.2s, dominated by sequential
-# cross-region DB/Qdrant round-trips (graph signal alone ~3.1s). `targeted`
+# `mode = "smart"` (automatic) was not reliably relocating the Worker for
+# India-origin traffic in the historical benchmark. That artifact predates the
+# current response-header measurement and is not treated as a current latency
+# baseline. `targeted`
 # pins execution to the CF data center closest to AWS us-east-1, where BOTH
 # Neon (Hyperdrive origin) and the Qdrant cluster live, so the retrieval path's
 # DB/vector hops are region-local and the India user pays the cross-region
@@ -282,6 +291,10 @@ entrypoint = "IngestionWorker"
 # ───────────────────────────────────────────────────────────────────────────
 [env.staging]
 workers_dev = false
+logpush = true
+
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [env.staging.observability]
 enabled = true

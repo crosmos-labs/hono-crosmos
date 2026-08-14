@@ -92,8 +92,10 @@ const FIELD_ALLOWLIST = new Set([
   'floor',
   'from_sequence',
   'graph_enabled',
+  'grants_expired',
   'input_token_count',
-  'ip',
+  'input_count',
+  'ip_hash',
   'job_count',
   'job_id',
   'jobs_created',
@@ -107,6 +109,7 @@ const FIELD_ALLOWLIST = new Set([
   'method',
   'model',
   'org_id',
+  'output_count',
   'path',
   'permanent_failed_count',
   'processed_chunk_count',
@@ -123,6 +126,7 @@ const FIELD_ALLOWLIST = new Set([
   'retryable',
   'sample',
   'scope',
+  'sequence',
   'service',
   'signal',
   'skipped_no_owner',
@@ -145,6 +149,7 @@ const FIELD_ALLOWLIST = new Set([
   'top_k',
   'total_job_count',
   'total_ms',
+  'transfer_bytes',
   'transient_source_count',
   'trigger',
   'user_id',
@@ -210,8 +215,9 @@ export interface AnalyticsDataset {
  * request. When no dataset is bound (local dev / tests) it is a silent no-op.
  *
  * Analytics Engine positional limits: ≤20 blobs, ≤20 doubles, one index ≤96B.
- * Convention: blob[0]=service, blob[1]=environment, blob[2]=metric name, then
- * the caller's `tags`. So document the tag/value order at each call site.
+ * Convention: blob[0]=service, blob[1]=environment, blob[2]=metric name,
+ * blob[3]=8-character deploy version, then the caller's `tags`. So document
+ * the tag/value order at each call site.
  */
 export interface Metrics {
   count(
@@ -224,15 +230,116 @@ export interface Metrics {
   ): void;
 }
 
+export interface StageMeasurements {
+  /** Use zero only for an observed empty input; omit when it is unavailable. */
+  inputCount?: number;
+  /** Use zero only for an observed empty output; omit when it is unavailable. */
+  outputCount?: number;
+  /** Serialized/provider transfer size. Omit when it is unavailable. */
+  transferBytes?: number;
+}
+
+export interface StageRecorder {
+  /** Record a stage whose duration was measured by the caller. */
+  record(
+    stage: string,
+    outcome: 'ok' | 'failed',
+    durationMs: number,
+    fields?: LogFields,
+    measurements?: StageMeasurements,
+    err?: unknown,
+  ): void;
+  /** Time a stage and emit the same log + metric on both success and failure. */
+  time<T>(
+    stage: string,
+    fields: LogFields,
+    fn: () => Promise<T>,
+    measurements?: StageMeasurements | ((result: T) => StageMeasurements),
+  ): Promise<T>;
+}
+
+/**
+ * One source of truth for stage logs and Analytics Engine points.
+ *
+ * doubles are always `[duration_ms, input_count, output_count, transfer_bytes]`.
+ * `-1` means unavailable; unlike zero, it must be excluded from aggregations.
+ * Stage names must be bounded constants supplied by the caller, never ids or
+ * user input.
+ */
+export function createStageRecorder(options: {
+  logger?: Logger;
+  metrics?: Metrics;
+  event: string;
+  metric: 'api_stage' | 'ingestion_stage';
+}): StageRecorder {
+  const emit = (
+    stage: string,
+    outcome: 'ok' | 'failed',
+    elapsed: number,
+    fields: LogFields = {},
+    measurements: StageMeasurements = {},
+    err?: unknown,
+  ) => {
+    const inputCount = measurements.inputCount ?? -1;
+    const outputCount = measurements.outputCount ?? -1;
+    const transferBytes = measurements.transferBytes ?? -1;
+    const logFields: LogFields = {
+      ...fields,
+      stage,
+      status: outcome,
+      duration_ms: elapsed,
+      input_count: inputCount,
+      output_count: outputCount,
+      transfer_bytes: transferBytes,
+    };
+    if (outcome === 'failed') options.logger?.error(options.event, logFields, err);
+    else options.logger?.info(options.event, logFields);
+    options.metrics?.count(options.metric, {
+      tags: [stage, outcome],
+      values: [elapsed, inputCount, outputCount, transferBytes],
+      index: options.metric,
+    });
+  };
+
+  return {
+    record: emit,
+    async time(stage, fields, fn, measurements = {}) {
+      const start = performance.now();
+      try {
+        const result = await fn();
+        emit(
+          stage,
+          'ok',
+          durationMs(start),
+          fields,
+          typeof measurements === 'function' ? measurements(result) : measurements,
+        );
+        return result;
+      } catch (err) {
+        emit(
+          stage,
+          'failed',
+          durationMs(start),
+          fields,
+          typeof measurements === 'function' ? {} : measurements,
+          err,
+        );
+        throw err;
+      }
+    },
+  };
+}
+
 const NOOP_METRICS: Metrics = { count() {} };
 
 export function createMetrics(
   dataset: AnalyticsDataset | undefined,
-  base?: { service?: string; environment?: string },
+  base?: { service?: string; environment?: string; version?: string },
 ): Metrics {
   if (!dataset) return NOOP_METRICS;
   const service = base?.service ?? 'unknown';
   const environment = base?.environment ?? 'development';
+  const version = base?.version?.slice(0, 8) || 'unknown';
   return {
     count(name, fields = {}) {
       try {
@@ -241,7 +348,7 @@ export function createMetrics(
         );
         dataset.writeDataPoint({
           indexes: [fields.index ?? name],
-          blobs: [service, environment, name, ...tagBlobs].slice(0, 20),
+          blobs: [service, environment, name, version, ...tagBlobs].slice(0, 20),
           doubles: (fields.values ?? []).slice(0, 20),
         });
       } catch {

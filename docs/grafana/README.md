@@ -1,0 +1,25 @@
+# Crosmos Grafana dashboard
+
+`crosmos-observability.json` is a portable classic dashboard model. Import it
+through Grafana's dashboard UI and select an Infinity datasource when prompted.
+
+Configure the datasource before importing:
+
+- Plugin: `yesoreyeram-infinity-datasource`.
+- Allowed host: `https://api.cloudflare.com`.
+- Authentication header: `Authorization: Bearer <token>`, stored in the
+  datasource's secure configuration. The token needs only Account Analytics
+  Read.
+- The dashboard uses backend JSONata parsing (`root_selector = data`) so the
+  same queries can later be used by Grafana Alerting.
+- Set the `cf_account_id` dashboard variable after import. Do not commit an API
+  token or put it in a panel query.
+
+Every count uses `sum(_sample_interval)` and every percentile uses
+`quantileExactWeighted`. The dashboard defaults to the last 24 hours because
+Analytics Engine retention must be confirmed for the account before selecting
+long comparison windows.
+
+The JSON is repository-complete but external setup is not: after import, verify
+one panel against the equivalent query in `docs/metrics-runbook.md`, then induce
+a staging throttle burst and confirm it appears before enabling alert rules.

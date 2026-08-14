@@ -149,6 +149,7 @@ export async function runSweep<T>(
 export function sweepMetrics(
   analytics: AnalyticsEngineDataset | undefined,
   environment: string | undefined,
+  version?: string,
 ): Metrics {
-  return createMetrics(analytics, { service: 'api', environment });
+  return createMetrics(analytics, { service: 'api', environment, version });
 }

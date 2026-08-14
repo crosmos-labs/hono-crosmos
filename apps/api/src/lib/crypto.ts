@@ -30,6 +30,22 @@ export async function sha256Hex(input: string): Promise<string> {
   return toHex(new Uint8Array(hash));
 }
 
+export async function hmacSha256Hex(secret: string, input: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(input),
+  );
+  return toHex(new Uint8Array(signature));
+}
+
 /**
  * BASE64URL(SHA-256(input)) — the PKCE `S256` code-challenge transform
  * (RFC 7636 §4.2). Used to verify a `code_verifier` against the stored

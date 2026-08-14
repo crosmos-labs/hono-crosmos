@@ -112,6 +112,7 @@ export async function redriveStuckSources(
   const metrics = createMetrics(env.ANALYTICS, {
     service: 'api',
     environment: env.ENVIRONMENT,
+    version: env.CF_VERSION_METADATA?.id,
   });
   const result: RedriveResult = {
     candidates: 0,

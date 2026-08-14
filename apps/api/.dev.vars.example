@@ -5,6 +5,8 @@ GOOGLE_CLIENT_SECRET=your-google-client-secret
 RESEND_API_KEY=re_xxx
 SENTRY_DSN=
 POLAR_WEBHOOK_SECRET=
+# Random 32-byte secret; used only for pseudonymous rate-limit log correlation.
+LOG_IP_HASH_SALT=replace-with-openssl-rand-hex-32
 
 # Retrieval providers default to Cloudflare (Workers AI + Vectorize) via the
 # bindings in wrangler.toml — no keys needed for the default path.
