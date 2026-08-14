@@ -31,7 +31,17 @@ weighted rejection p95 only when rejection events exist. This stays within the
 Analytics Engine SQL subset and distinguishes "zero throttling" from a broken
 panel.
 
-The production import and raw-SQL parity check were completed on 2026-08-14.
+The API latency-clock panel intentionally keeps three boundaries separate.
+`request_total` begins before all application middleware, `http_request` begins
+at the access-log middleware, and `search` begins only after search admission.
+The panel uses two Analytics Engine queries because successful `search` points
+do not carry a path tag; labeling that bounded metric as `/api/v1/search` in its
+own query avoids positional-blob tricks and stays within the Analytics Engine
+SQL subset.
+
+The original seven-panel production import and raw-SQL parity check were
+completed on 2026-08-14. The eighth latency-clock panel is committed locally
+and still requires import/parity verification after `request_total` is deployed.
 For the same moving 24-hour window, Grafana and the Cloudflare SQL API showed 16
 search attempts, zero rejections, 301 HTTP requests, two errors, and matching
 endpoint and stage percentiles. Before enabling alert rules, induce a staging

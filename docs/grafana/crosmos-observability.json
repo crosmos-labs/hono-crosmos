@@ -226,6 +226,56 @@
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "showHeader": true }
+    },
+    {
+      "id": 8,
+      "title": "API latency clocks (weighted)",
+      "description": "Separate private boundaries: request_total starts before application middleware; http_request starts at access logging; search covers retrieval core after admission. All stop when their downstream work has produced a value/Response, not when the client receives the final byte.",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "clock", "text": "clock", "type": "string" },
+            { "selector": "path", "text": "path", "type": "string" },
+            { "selector": "requests", "text": "requests", "type": "number" },
+            { "selector": "p50_ms", "text": "p50_ms", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" },
+            { "selector": "p99_ms", "text": "p99_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT blob3 AS clock, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 IN ('request_total', 'http_request') AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY clock, path ORDER BY path, clock"
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "clock", "text": "clock", "type": "string" },
+            { "selector": "path", "text": "path", "type": "string" },
+            { "selector": "requests", "text": "requests", "type": "number" },
+            { "selector": "p50_ms", "text": "p50_ms", "type": "number" },
+            { "selector": "p95_ms", "text": "p95_ms", "type": "number" },
+            { "selector": "p99_ms", "text": "p99_ms", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT 'search' AS clock, '/api/v1/search' AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'search' AND blob5 = 'ok' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}')"
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "showHeader": true }
     }
   ],
   "refresh": "5m",
@@ -257,5 +307,5 @@
   "timezone": "utc",
   "title": "Crosmos production observability",
   "uid": "crosmos-observability",
-  "version": 1
+  "version": 2
 }

@@ -497,8 +497,10 @@ recorder now creates correctly nested custom spans for timed API stages; manual
 `record(...)` sites remain metric/log-only by design. Ingestion now threads the
 same tracer through `job_total`, per-attempt `source_total`, and its timed
 pipeline stages; observed queue wait is emitted as a metric/log rather than a
-fake retroactive span. Complete timing coverage, Grafana trace/log export,
-deployment, and an operator-tested single-request workflow remain._
+fake retroactive span. The restorable Grafana model now includes a separately
+labeled three-clock panel. Complete timing coverage, hosted panel verification,
+Grafana trace/log export, deployment, and an operator-tested single-request
+workflow remain._
 
 **Why**
 

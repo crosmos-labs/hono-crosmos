@@ -272,9 +272,10 @@ expected shape and also why a semantic drop would be conspicuous.
 
 The reviewable dashboard model lives at
 `docs/grafana/crosmos-observability.json`; import and datasource instructions
-are in `docs/grafana/README.md`. It covers weighted endpoint percentiles, HTTP
-error rate and the 429/503 split, search throttle share, retrieval and ingestion
-stage p95, ingestion outcomes, and deploy-version comparisons.
+are in `docs/grafana/README.md`. It covers weighted endpoint percentiles, the
+three private API timing boundaries, HTTP error rate and the 429/503 split,
+search throttle share, retrieval and ingestion stage p95, ingestion outcomes,
+and deploy-version comparisons.
 
 Grafana provisioning is external to this repository. Until the dashboard has
 been imported and checked against one raw SQL query for the same time window,
@@ -282,12 +283,14 @@ do not treat a rendered number as verified. The committed queries use a backend
 parser so they are eligible for Grafana Alerting after that parity check.
 
 The Grafana Cloud dashboard was imported against the production Analytics
-Engine datasets on 2026-08-14. All seven panels render without query errors;
+Engine datasets on 2026-08-14. The original seven panels render without query errors;
 the first observed throttle summary showed 16 attempts and zero rejections.
 Raw SQL through the Cloudflare API for the same moving 24-hour window returned
 the same throttle counts and panel values: 301 HTTP requests, two errors, and
 the matching endpoint and stage percentiles. This completes the dashboard
-parity gate; staging-burst visibility and measured dataset retention remain.
+parity gate for those panels. The locally committed eighth clock panel still
+needs import and parity verification after the new `request_total` metric is
+deployed; staging-burst visibility and measured dataset retention also remain.
 
 ## What this runbook does NOT cover
 
