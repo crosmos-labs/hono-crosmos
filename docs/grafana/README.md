@@ -24,6 +24,13 @@ format because Analytics Engine rejects the `T`/`Z` ISO macro expansion inside
 O-1 deploy-version field was added cannot be misread using the current blob
 layout.
 
+The throttle panel intentionally uses two queries rather than a scalar
+subquery or a conditional weighted quantile. Query A always returns attempts,
+rejections, and share (including a healthy zero); query B returns reason and
+weighted rejection p95 only when rejection events exist. This stays within the
+Analytics Engine SQL subset and distinguishes "zero throttling" from a broken
+panel.
+
 The JSON is repository-complete but external setup is not: after import, verify
 one panel against the equivalent query in `docs/metrics-runbook.md`, then induce
 a staging throttle burst and confirm it appears before enabling alert rules.
