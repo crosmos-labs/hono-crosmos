@@ -75,7 +75,12 @@ if (!ZEROENTROPY_API_KEY) throw new Error('ZEROENTROPY_API_KEY not found (env or
 // Production's dimension. Must match what the tests replay with.
 const DIMENSIONS = 1536;
 
-const store = new FixtureStore();
+// Code-only orchestration changes often need to add a handful of requests while
+// retaining the reviewed provider responses already in the fixture. Supplying a
+// seed makes that choice explicit; the default remains a clean full recapture.
+const store = process.env.PIPELINE_FIXTURE_SEED
+  ? await FixtureStore.load(process.env.PIPELINE_FIXTURE_SEED)
+  : new FixtureStore();
 const db = createDb(TEST_DATABASE_URL, { max: 4 });
 
 console.log('resetting the test database…');
