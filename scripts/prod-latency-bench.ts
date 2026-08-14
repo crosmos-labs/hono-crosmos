@@ -430,6 +430,20 @@ for (const r of ret) {
   for (const t of r.top) console.log(`   - (${t.score}) [${t.session}] ${t.content}`);
 }
 
-// machine-readable dump
-await Bun.write(`scripts/prod-latency-result.json`, JSON.stringify({ spaceId, ing: { ...ing, submitMs: undefined }, ret }, null, 2));
+// Machine-readable dump. Keep provenance alongside the measurements so a
+// checked-in result cannot be mistaken for an undated current baseline.
+await Bun.write(
+  `scripts/prod-latency-result.json`,
+  JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      baseUrl: BASE,
+      spaceId,
+      ing: { ...ing, submitMs: undefined },
+      ret,
+    },
+    null,
+    2,
+  ),
+);
 console.log('\nwrote scripts/prod-latency-result.json');
