@@ -4,6 +4,7 @@ import {
   DropCounter,
   normalizeBaseFacts,
   normalizeFacts,
+  parseIsoDate,
 } from '../src/extractors/normalize';
 import type { RawExtractedMemory, RawGraphResult } from '../src/extractors/types';
 
@@ -28,6 +29,13 @@ const graph: RawGraphResult[] = [{
 }];
 
 describe('phased normalization', () => {
+  test('interprets provider ISO timestamps without offsets as UTC', () => {
+    expect(parseIsoDate('2026-06-01T00:00:00')?.toISOString())
+      .toBe('2026-06-01T00:00:00.000Z');
+    expect(parseIsoDate('2026-06-01T00:00:00+05:30')?.toISOString())
+      .toBe('2026-05-31T18:30:00.000Z');
+  });
+
   test('matches the combined normalization result before temporal fallback', () => {
     const combined = normalizeFacts(raw, graph, new DropCounter());
     const base = normalizeBaseFacts(raw, new DropCounter());
