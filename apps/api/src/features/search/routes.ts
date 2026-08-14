@@ -182,12 +182,6 @@ searchRoutes.openapi(
     responses: {
       200: {
         description: 'Ranked memory candidates',
-        headers: {
-          'X-Crosmos-Took-Ms': {
-            description: 'Server-side retrieval duration in milliseconds',
-            schema: { type: 'number' },
-          },
-        },
         content: { 'application/json': { schema: SearchResponseSchema } },
       },
       401: { description: 'Unauthorized', content: { 'application/json': { schema: ErrorBody } } },
@@ -616,7 +610,6 @@ searchRoutes.openapi(
         }),
       );
 
-      c.header('X-Crosmos-Took-Ms', String(tookMs));
       return c.json(response, 200);
     } catch (err) {
       if (err instanceof TimeoutError) {

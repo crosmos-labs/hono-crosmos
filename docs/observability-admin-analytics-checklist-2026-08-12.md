@@ -335,7 +335,8 @@ the bounded 2026-08-14 verification, but the operator subsequently decided that
 server timing is developer telemetry, not part of the public `/search`
 contract. The private `search` Analytics Engine metric and
 `retrieval.request_completed` structured log already retain the same duration.
-Header removal and a private request-id-based benchmark reader remain._
+Header removal and a private request-id-based benchmark reader are implemented
+locally; deployment and live private-telemetry reconciliation remain._
 
 **Why**
 
