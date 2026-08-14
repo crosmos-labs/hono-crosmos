@@ -872,8 +872,10 @@ new batch path passes. No historical-data migration is required.
 
 _Implemented locally 2026-08-14: graph/embedding overlap, one bounded-window
 transaction, explicit chunk/fact/memory mapping, and one post-commit vector
-upsert. Real-Postgres continuation/fault injection and deployed latency gates
-remain._
+upsert. A real-Postgres fault test proves a vector-store failure leaves the
+post-checkpoint tail discoverable and that retry removes only that tail while
+preserving committed chunks, memories, and citations. Full continuation
+equivalence, broader phase injection, and deployed latency/lock gates remain._
 
 **Why**
 
