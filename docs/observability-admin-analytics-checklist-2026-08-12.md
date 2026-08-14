@@ -62,7 +62,7 @@ ignores this would waste weeks. Verified 2026-08-12:
 | Per-endpoint latency | `http_request`, `apps/api/src/index.ts:133` | `tags=[method, path, status]`, `values=[duration_ms]` |
 | Request id propagation | `apps/api/src/index.ts:75` | `X-Request-Id`, plus `correlation_id` across the worker boundary |
 | Queryable log history | Workers Logs (`[observability]`, both workers, all envs) | **7 days**, via dashboard, observability API, and the Cloudflare MCP server — already on, and unused |
-| Per-stage timings | retrieval `service.ts`, ingestion `pipeline.ts` | **Logs only** — not in Analytics Engine |
+| Per-stage timings | retrieval `service.ts`, ingestion `pipeline.ts`, and `createStageRecorder` | Structured logs **and** deployed `api_stage` / `ingestion_stage` Analytics Engine metrics; aggregate panels are live in Grafana |
 | Daily usage rollups | `packages/db/src/schema/daily-usage.ts` | `(org_id, user_id, space_id, date)`, atomic `ON CONFLICT` upserts |
 | Usage endpoints | `GET /api/v1/usage`, `GET /api/v1/spaces/{uuid}/usage` | Establish the response shape and the scoped-key access rule |
 | Entitlement overrides | `resolveEntitlements`, `apps/api/src/features/orgs/entitlements.ts:81` | Pure function; `organizations.entitlements` jsonb merges over `PLAN_DEFAULTS` |
@@ -80,11 +80,15 @@ across production and staging, and the current volume has never been measured
 
 So the real gaps are narrower than they feel:
 
-- **Dimensions.** No deploy version on any metric, and no stage names in
-  Analytics Engine — so "which stage got slower after which deploy" is
-  unanswerable even though both halves are nearly present.
-- **A query and visualisation layer.** The runbook documents a `curl`; nothing
-  automates it, renders it, or alerts on it.
+- **Per-request diagnosis.** Deploy versions and bounded stage names are now in
+  Analytics Engine, but request ids correctly remain logs-only. Aggregate stage
+  regressions are visible in Grafana; a single-request waterfall is not yet
+  available there.
+- **Complete timing coverage.** `http_request` is a broad application metric and
+  `X-Crosmos-Took-Ms` measures retrieval after several admission gates. Neither
+  is explicitly defined as earliest Worker entry through response readiness,
+  and authentication, request validation, response construction, API-side
+  ingestion enqueue, and ingestion orchestration still have gaps.
 - **An admin plane.** A separate Access-gated worker now exists locally; the
   former public-worker `POST /api/v1/_admin/reembed` surface has been removed.
 - **Two rollup counters** that user-facing analytics needs and nothing tracks.
@@ -140,6 +144,23 @@ So the real gaps are narrower than they feel:
   evidence.
 - `[external]` — required outside this repository.
 
+### Current completion snapshot — 2026-08-14
+
+This checklist is **not complete**. After the live deployment audit and the
+addition of O-7 below, the top-level items are:
+
+- **7 complete** (`[x]`);
+- **23 partial or awaiting a verification gate** (`[~]`);
+- **2 not started** (`[ ]`), including the new request-waterfall work and the
+  guarded experiment queue;
+- **11 deliberately deferred** (`[-]`).
+
+The immediate next engineering item is **O-7**. P-1 through P-6, the remaining
+admin/user-analytics fault gates, destructive deleted-space finalization, and
+archive-operability checks remain real work; their individual sections state
+the exact gate still missing. Deferred entries do not prevent completion unless
+new evidence explicitly reactivates them.
+
 ## Deployment log
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
@@ -158,8 +179,8 @@ So the real gaps are narrower than they feel:
 
 ### [~] O-1. Tag every metric with the deploy version
 
-_Deployed to production 2026-08-14; current API version `561a810c` and ingestion
-version `511f7532`. Cross-version SQL verification remains._
+_Deployed to production 2026-08-14; current API version `4d746005` and ingestion
+version `4e3aaa96`. Cross-version SQL verification remains._
 
 **Why**
 
@@ -210,11 +231,13 @@ Remove the binding and revert the base. Emission is best-effort and wrapped in
 try/catch, so a missing binding degrades to the pre-change layout rather than
 failing a request. Runbook queries must be reverted with it.
 
-### [~] O-2. Emit stage-level latency to Analytics Engine
+### [x] O-2. Emit stage-level latency to Analytics Engine
 
-_Implemented locally 2026-08-14 across retrieval, admission gates, ingestion,
-and entity resolution. Production data-point volume and query verification
-remain. Parallel stages must be compared as critical-path groups, not summed._
+_Implemented, deployed, and queried in production 2026-08-14 across retrieval,
+admission gates, ingestion, and entity resolution. Weighted raw SQL matched the
+Grafana panels, and the bounded production benchmark produced retrieval and
+ingestion stage cohorts. Parallel stages are compared as critical-path groups,
+not summed. Per-request waterfalls and the remaining timing gaps are O-7._
 
 **Why**
 
@@ -251,15 +274,18 @@ runbook already states.
 
 **Acceptance gate**
 
-- For a single `/search`, the sum of stage durations is within a few
-  milliseconds of that request's `http_request` duration; any systematic gap
-  identifies unaccounted work and must be named.
+- For one traffic window, the longest branches in each parallel group can be
+  compared with `http_request`; stage durations are never naively summed. Any
+  systematic remainder is named as orchestration, authentication, validation,
+  response construction, or other uninstrumented work and is routed to O-7.
 - A failing stage emits with `failed` rather than disappearing.
 - Provider/cache status and the relevant candidate/chunk/vector/token counts are
-  queryable for stages whose latency depends on them; sensitive text and IDs
-  are never emitted.
-- Emitted data-point volume per request is measured and recorded here before
-  production rollout.
+  available in the correlated structured log where applicable; bounded counts
+  are also emitted as metric doubles. Sensitive text and IDs are never metric
+  dimensions.
+- Production `api_stage` and `ingestion_stage` points are queryable with
+  `_sample_interval` weighting and match the Grafana result for the same
+  window.
 
 **Rollback**
 
@@ -350,7 +376,7 @@ client-side timing.
 Remove the header; the script's loud failure then correctly reports that the
 measurement is unavailable.
 
-### [~] O-5. Stand up Grafana Cloud over the Analytics Engine SQL API
+### [x] O-5. Stand up Grafana Cloud over the Analytics Engine SQL API
 
 _Grafana Cloud, its Account Analytics Read datasource, and the seven-panel
 dashboard were provisioned and rendered successfully on 2026-08-14. Live data
@@ -358,8 +384,10 @@ shows weighted endpoint/error/stage results and a healthy zero-throttle cohort.
 Raw SQL for the same moving 24-hour window reproduced its 16 attempts, zero
 rejections, 301 requests, two errors, and endpoint/stage values. A later bounded
 production burst was visible as ten completed searches and three rejections;
-the operator accepted production as the burst environment. Dataset-retention
-measurement remains._
+the operator accepted production as the burst environment. Analytics Engine's
+documented retention is three months. The later operator-created one-hour search
+chart should be exported with the next dashboard JSON revision under O-7 so a
+hosted-only edit does not become configuration drift._
 
 **Why**
 
@@ -449,6 +477,144 @@ reported.
 **Rollback**
 
 Documentation and a script; no runtime effect.
+
+### [ ] O-7. Close the full request timing budget and add per-request waterfalls
+
+_Proposed 2026-08-14 after the first live benchmark. Aggregate stage metrics are
+working; complete application timing, custom spans, Grafana trace/log export,
+and an operator-tested single-request workflow are not implemented._
+
+**Why**
+
+The three useful latency clocks answer different questions and must not be
+conflated:
+
+| Clock | Current meaning | Gap |
+|---|---|---|
+| Client timer | Request start through body received by the client | Includes network RTT and client location; not server-only. |
+| `X-Crosmos-Took-Ms` | Search retrieval from after entitlements/space/plan/quota gates through result construction | Intentionally excludes auth and early admission work. Keep it as the retrieval-core clock. |
+| `http_request` | Access-middleware entry through the downstream Hono response being constructed | Includes route auth and handler work, but starts after CORS/request-id/security/body-limit middleware and is aggregate-only in Analytics Engine. |
+
+What the operator requested is a fourth, precisely named clock:
+**earliest application entry until the Worker has produced the response**. It is
+server-side and excludes Internet RTT. Worker code cannot observe when the last
+response byte physically reaches the client, so neither the field nor its docs
+may claim that. Cloudflare's root-span / `WallTimeMs` is also not a substitute:
+`waitUntil()` work can continue after the response and inflate it, while the
+runtime can close the JavaScript context before every response byte is sent.
+
+Analytics Engine must remain aggregate-only. Adding `request_id` as a metric
+dimension would create unbounded cardinality and would still not guarantee an
+exact row because Analytics Engine adaptively samples. Exact request inspection
+belongs in traces and structured logs.
+
+Cloudflare Workers now supports
+[custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/)
+and direct
+[OpenTelemetry export to Grafana Cloud](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/grafana-cloud/).
+Use those capabilities rather than inventing a second proprietary trace format.
+Cloudflare cannot export custom Analytics Engine metrics through OTLP yet, so
+Grafana remains one UI over three appropriate sources: Analytics Engine via
+Infinity for aggregates, Tempo for request waterfalls, and Loki for detailed
+logs. R2 remains the 90-day archive and is not replaced.
+
+**Repository change — complete server clock**
+
+- Start an outermost API timer before CORS and the other application
+  middleware, and stop it after the downstream `Response` object is ready.
+- Emit that value as the existing `http_request` metric/log, and return it as
+  `X-Crosmos-Server-Ms` plus the standard `Server-Timing: app;dur=...` entry.
+  Keep `X-Crosmos-Took-Ms` unchanged so core retrieval and total application
+  time remain separately comparable.
+- Document the boundary exactly. Expected relationship for a normal successful
+  search is usually `client elapsed >= X-Crosmos-Server-Ms >=
+  X-Crosmos-Took-Ms`; do not turn that expectation into a correctness rule for
+  aborted/streaming requests.
+- Record response construction/serialization separately where it is material.
+  The timer ends when Hono/Workers has a `Response`, not when the client receives
+  its final byte.
+
+**Repository change — meaningful timing coverage**
+
+Instrument meaningful awaited boundaries and parent phases, not every
+JavaScript expression. Parent/child and parallel relationships must be retained
+so nobody adds overlapping durations:
+
+- API admission: `auth_total`, API-key cache lookup, API-key DB resolution on a
+  miss, JWT verification, revocation lookup, principal load, principal/org
+  resolution, and management rate limit.
+- Search: retain the existing concurrency, entitlements, space access, plan
+  limiter, monthly quota, global throttle, visibility, retrieval-signal,
+  fusion/rerank, owner/source, and selection stages; add request validation,
+  response build, response serialization, and a `search_total` parent span.
+- API-side ingestion: move the existing logs for preflight, source insert, job
+  creation, queue dispatch, and enqueue total through the shared stage recorder
+  so they become metrics, logs, and spans consistently.
+- Ingestion Worker: add queue wait (`worker_start - enqueued_at_ms`), job claim,
+  cancellation/deletion checks, source-status transitions, checkpoint write,
+  usage rollup, terminal-status write, `source_total`, and `job_total` around the
+  already measured extraction, embedding, ANN, persistence, entity, and edge
+  phases.
+- Add bounded attributes only: outcome, auth method, cache hit/miss, dependency,
+  and counts/sizes. Never attach tokens, query/source content, API keys, raw IP,
+  or user/org/space/request IDs as Analytics Engine dimensions.
+
+Use `tracing.enterSpan()` around the actual async work so Cloudflare's automatic
+fetch/KV/Durable-Object spans nest underneath the application phase. A timer
+recorded after a promise settles cannot retroactively create a correct span, so
+manual `stages.record(...)` call sites on async work must be wrapped or changed
+to `stages.time(...)`. The custom-spans API currently cannot expose trace/span
+ids or manually wire parents across the API-to-queue boundary; preserve
+`request_id -> correlation_id -> job_id` in structured logs for that hop rather
+than pretending it is one distributed trace.
+
+**External change — one Grafana investigation surface**
+
+- Create least-privilege Grafana Cloud OTLP credentials for `traces:write` and
+  `logs:write`; store them only in Cloudflare's Observability Destination, not
+  in Wrangler or this repository.
+- Add separate Cloudflare trace and log destinations for Grafana Tempo/Loki,
+  then name those destinations in the API and ingestion production
+  `wrangler.toml` observability blocks.
+- In Grafana, verify `Explore -> Traces` shows a single search waterfall and
+  `Explore -> Logs` can filter the same invocation's structured logs. Add a
+  dashboard data link from aggregate latency panels into trace search for the
+  selected service/version/time window.
+- Add aggregate one-hour p50/p95/p99 charts for total request time, retrieval
+  core, auth, queue wait, ingestion job total, and the slowest stages. Export the
+  working hosted dashboard and commit it to `docs/grafana/`; operators should
+  not repeatedly overwrite JSON just to receive new data, only when dashboard
+  configuration changes.
+- Measure projected Cloudflare and Grafana event volume before leaving 100%
+  trace/log export enabled. Sampling policy and retention for Tempo/Loki must be
+  written next to the existing Workers Logs, Analytics Engine, and R2 policy.
+
+**Acceptance gate**
+
+- A controlled search returns client elapsed, `X-Crosmos-Server-Ms`, and
+  `X-Crosmos-Took-Ms`; their boundaries match the definitions above and the
+  total metric/log agrees with the response header within rounding overhead.
+- Injected delay in auth, one search dependency, response serialization, queue
+  wait, and one ingestion persistence stage appears in the correct parent span
+  and aggregate metric without being double-counted.
+- One request id finds its ordered structured logs in the recent tier; its trace
+  renders as a waterfall in Cloudflare and Grafana. One ingestion submission can
+  be followed across the queue using request/correlation/job ids even though
+  automatic cross-queue parent wiring is not yet available.
+- Error and timeout paths close their spans and emit `failed`; sensitive payloads
+  and credentials are absent from attributes/logs.
+- The Grafana aggregate query still matches weighted Analytics Engine SQL for
+  the same window. Tempo/Loki delivery delay, retention, sampling, and first-day
+  volume/cost are recorded here.
+- A bounded benchmark shows no material latency regression from the added
+  instrumentation. Trace/log export remains non-blocking.
+
+**Rollback**
+
+Remove the OTLP destination names to stop export without changing request
+behavior. Custom spans are diagnostic-only and can be reverted independently.
+Keep the full server clock and aggregate metrics unless measurement itself is
+shown to regress the request path.
 
 ---
 
@@ -1853,6 +2019,9 @@ flowchart TD
   O2 --> O5
   O3[O-3 throttle detail] --> O5
   O5 --> O6
+  O2 --> O7[O-7 full timing + request waterfalls]
+  O4 --> O7
+  O5 --> O7
 
   O2 --> P1[P-1 batch retrieval ANN]
   O6 --> P1
@@ -1904,15 +2073,18 @@ Recommended sequence:
    measurable. O-4 also fixes a tool that is currently reporting `NaN`.
 4. **Track U.** Highest user-visible value, isolated blast radius, and it
    produces the counters A-4 will want to display.
-5. **O-2, O-3, O-5, O-6, and L-1/L-4.** The dashboard is worth more once stage
-   data exists, and L-1's volume measurement should account for O-2's added
-   emission.
-6. **P-1 through P-6, one attributable change at a time.** Start with the
+5. **O-2, O-3, O-5, O-6, and L-1/L-4.** The aggregate measurement and dashboard
+   foundation is now deployed; finish the remaining log-volume and archive
+   operability gates rather than rebuilding it.
+6. **O-7 next.** Close the total server timing boundary, add the missing
+   auth/enqueue/orchestration phases, wrap them as custom spans, and export
+   traces/logs to Grafana so one slow request has a real waterfall.
+7. **P-1 through P-6, one attributable change at a time.** Start with the
    result-preserving round-trip reductions (P-1/P-2/P-3), then the higher-risk
    ingestion/graph refactors (P-4/P-5), and tune stores only from P-6's evidence.
    P-7 is an experiment queue after these establish the remaining latency
    budget; it is not permission to change the production model/vector space.
-7. **Track A last.** Largest new surface, and it benefits from everything above.
+8. **Track A last.** Largest new surface, and it benefits from everything above.
 
 **A-7 is the exception to that ordering.** Only its restore path needs the admin
 worker; the retention *decision* — pick a period, set
@@ -1925,11 +2097,12 @@ the cost of deferring is that deleted spaces accumulate under no stated policy.
 | Item | Verification |
 |---|---|
 | O-1 | Deploy twice; one query returns two distinct `blob4` values with separate p95s. Every runbook query still parses. |
-| O-2 | Stage durations for one `/search` sum to within a few ms of that request's `http_request` duration. |
+| O-2 | Weighted stage cohorts render in Grafana and match raw SQL; parallel branches are treated as critical-path groups rather than summed. |
 | O-3 | A synthetic burst yields `search_throttled` rows with sensible weighted counts and durations. |
 | O-4 | `scripts/prod-latency-bench.ts` prints real percentiles; absent header errors loudly. |
 | O-5 | A panel and the runbook `curl` agree for the same window; dashboard JSON imports into an empty Grafana. |
 | O-6 | `scripts/compare-versions.ts` reproduces a known delta and refuses to report below its minimum sample count. |
+| O-7 | Full server and retrieval-core headers match their metric/log boundaries; injected delays land in the right custom spans; one search and one ingestion can be inspected in Cloudflare and Grafana without high-cardinality metric dimensions. |
 | P-1 | Frozen-snapshot batch and two-call ANN results match exactly; call count drops to one; measured retrieval latency does not regress. |
 | P-2 | Gate/enrichment/MMR differential tests match; no provider work precedes admission; each scheduling delta is separately attributable. |
 | P-3 | Per-chunk hints and entity IDs match; batch failure remains fail-soft; simultaneous entity creation does not duplicate rows. |
