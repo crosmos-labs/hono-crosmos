@@ -84,12 +84,10 @@ So the real gaps are narrower than they feel:
   Analytics Engine, but request ids correctly remain logs-only. Aggregate stage
   regressions are visible in Grafana; a single-request waterfall is not yet
   available there.
-- **Complete timing coverage.** `http_request` is a broad application metric and
-  the private `search` metric measures retrieval after several admission gates.
-  Neither is explicitly defined as earliest Worker entry through response
-  readiness, and authentication, request validation, response construction,
-  API-side ingestion enqueue, and ingestion orchestration still have gaps. The
-  public `X-Crosmos-Took-Ms` header is now marked for removal in O-4/O-7.
+- **Complete timing coverage.** The three private API clocks and the meaningful
+  awaited API/search/ingestion boundaries are instrumented. Remaining work is
+  live trace/log inspection and Grafana Tempo/Loki export, not another public
+  timing field or an unbounded metric dimension.
 - **An admin plane.** A separate Access-gated worker now exists locally; the
   former public-worker `POST /api/v1/_admin/reembed` surface has been removed.
 - **Two rollup counters** that user-facing analytics needs and nothing tracks.
@@ -501,20 +499,22 @@ Documentation and a script; no runtime effect.
 
 ### [~] O-7. Close the full request timing budget and add per-request waterfalls
 
-_In progress 2026-08-14. The outermost private `request_total` metric/log/custom
-span and its boundary documentation are implemented locally. The shared stage
-recorder now creates correctly nested custom spans for timed API stages; manual
-`record(...)` sites remain metric/log-only by design. Ingestion now threads the
-same tracer through `job_total`, per-attempt `source_total`, and its timed
-pipeline stages; observed queue wait is emitted as a metric/log rather than a
-fake retroactive span. The restorable Grafana model now includes a separately
-labeled three-clock panel. API-side source and conversation ingestion now record
+_In progress 2026-08-14. Repository timing coverage is complete; live trace/log
+and hosted Grafana gates remain. The outermost private `request_total`
+metric/log/custom span and its boundary documentation are implemented. The
+shared stage recorder creates correctly nested custom spans for both directly
+timed stages and manually measured async work without emitting duplicate
+metrics. Every remaining manually measured async search and ingestion boundary
+is now wrapped around the work it describes; synchronous calculations remain
+metric/log-only, and observed queue wait remains a metric/log rather than a fake
+retroactive span. Ingestion threads the same tracer through `job_total`,
+per-attempt `source_total`, and its pipeline stages. The restorable Grafana model
+includes a separately labeled three-clock panel. API-side ingestion records
 enqueue total, preflight, source persistence, job creation, and dispatch through
-the shared metric/log/span recorder. Authentication now records `auth_total`,
-API-key hashing/cache/DB resolution, JWT verification/revocation/user loading,
-principal resolution, and management limiting through the same recorder.
-Complete timing coverage, hosted panel verification, Grafana trace/log export,
-and an operator-tested single-request workflow remain.
+the shared recorder. Authentication records `auth_total`, API-key
+hashing/cache/DB resolution, JWT verification/revocation/user loading, principal
+resolution, and management limiting. Hosted panel verification, Grafana
+trace/log export, and an operator-tested single-request workflow remain.
 The staging API (`4d103e8a`) and ingestion (`5c23c3e4`) deployments passed their
 public-surface smoke on 2026-08-14, and `request_total` landed privately in
 `crosmos_api_staging` with the deployed API version. Persisted-log/custom-trace
@@ -540,7 +540,7 @@ questions and must not be conflated:
 |---|---|---|
 | Retrieval core (`search` `double1`) | Search retrieval from after entitlements/space/plan/quota gates through result construction | Already private in Analytics Engine/logs. Remove its public `X-Crosmos-Took-Ms` copy under O-4. |
 | `http_request` | Access-middleware entry through the downstream Hono response being constructed | Includes route auth and handler work, but starts after CORS/request-id/security/body-limit middleware. Keep it as a private comparison clock. |
-| Full application request (`request_total`, new) | Earliest application entry until the Worker has produced the response | Not implemented; this is the private request-to-response-ready clock the bird's-eye view needs. |
+| Full application request (`request_total`) | Earliest application entry until the Worker has produced the response | Implemented privately; persisted-log/trace and hosted-panel reconciliation remain. |
 
 The full application clock is server-side and excludes Internet RTT. Worker
 code cannot observe when the last
