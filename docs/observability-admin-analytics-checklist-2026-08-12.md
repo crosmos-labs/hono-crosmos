@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **7 complete** (`[x]`);
-- **24 partial or awaiting a verification gate** (`[~]`);
+- **8 complete** (`[x]`);
+- **23 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1679,12 +1679,14 @@ explicit edit — leave it that way.
 
 Additive routes; remove them. No existing endpoint changes.
 
-### [~] U-6. Establish an HTTP-level route test pattern
+### [x] U-6. Establish an HTTP-level route test pattern
 
-_A typed `app.request(...)` Postgres suite now covers window validation, org
-totals, cross-org isolation, and own/other-space scoped-key behavior. It skips
-visibly without the disposable local database; execution against migrated
-Postgres remains._
+_Implemented and verified against migrated disposable Postgres on 2026-08-14.
+The typed `app.request(...)` suite covers all supported windows, invalid-window
+rejection, org totals, cross-org isolation, and own/other-space scoped-key
+behavior; 104 API tests passed, with only the separately documented pipeline
+baseline suite skipped. Its shared fixture path still skips visibly when the
+isolated database is unavailable._
 
 **Why**
 
