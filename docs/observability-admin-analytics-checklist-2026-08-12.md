@@ -964,10 +964,13 @@ ordering, and per-hop cap are implemented locally. Twelve real-Postgres
 legacy-vs-current edge differentials cover confidence/null handling, global
 ordering, temporal cutoff, hub caps, both endpoints, tenant boundaries, and
 per-user visibility; a separate seed-visibility test excludes entities linked
-only to another user's private memory. Production-shaped `EXPLAIN`, a full
-legacy-vs-current multi-hop traversal differential, and the evidence-gated
-index/recursive-CTE decision remain. The active end-to-end corpus additionally
-pins the current graph contribution inside exact final rankings and gold recall._
+only to another user's private memory. A complete three-hop real-Postgres
+differential now runs the BFS with the legacy and current edge loaders and
+matches final memory IDs, order, and scores through a cycle, null confidence,
+temporal cutoff, and private visibility. Production-shaped `EXPLAIN` and the
+evidence-gated index/recursive-CTE decision remain. The active end-to-end corpus
+additionally pins the current graph contribution inside exact final rankings
+and gold recall._
 
 **Why**
 
