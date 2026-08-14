@@ -402,6 +402,10 @@ async function retrieve(spaceId: string, selectedQueries: Q[], repeats: number) 
     rows.push({
       kind: item.kind, q: item.q, note: item.note,
       took_med: Math.round(pct(tooks, 50)), total_med: Math.round(pct(totals, 50)),
+      samples: samples.map(({ took, total }) => ({
+        took: Math.round(took),
+        total: Math.round(total),
+      })),
       n: lastBody?.candidates?.length ?? 0, uniqSessions,
       top: (lastBody?.candidates ?? []).slice(0, 5).map((c: any) => ({
         content: c.content, session: c.session_id, score: Number(c.score?.toFixed?.(3) ?? c.score),
@@ -435,12 +439,15 @@ try {
   console.log(`total wall-clock for ${ing.total}: ${(ing.wallMs/1000).toFixed(1)}s`);
 
   const ret = await retrieve(spaceId, selectedQueries, repeats);
-  const allTook = ret.map((r) => r.took_med);
-  const allTotal = ret.map((r) => r.total_med);
+  const retrievalSamples = ret.flatMap((row) => row.samples);
+  const allTook = retrievalSamples.map((sample) => sample.took);
+  const allTotal = retrievalSamples.map((sample) => sample.total);
   console.log('\n===== RETRIEVAL LATENCY (India vantage) =====');
   console.log(`server took_ms     p50=${Math.round(pct(allTook,50))} p95=${Math.round(pct(allTook,95))}`);
   console.log(`client total ms    p50=${Math.round(pct(allTotal,50))} p95=${Math.round(pct(allTotal,95))}`);
-  const overheads = ret.map((r) => r.total_med - r.took_med).filter((x) => x > 0);
+  const overheads = retrievalSamples
+    .map((sample) => sample.total - sample.took)
+    .filter((value) => value > 0);
   console.log(`india net overhead p50=${Math.round(pct(overheads,50))} p95=${Math.round(pct(overheads,95))} (client_total - server_took)`);
 
   console.log('\n===== RETRIEVAL QUALITY =====');

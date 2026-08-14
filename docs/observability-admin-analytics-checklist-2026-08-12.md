@@ -150,6 +150,7 @@ So the real gaps are narrower than they feel:
 | 2026-08-14 | Enabled account Logpush job `1838803` for Workers Trace Events using Cloudflare's automatic R2 destination `cloudflare-managed-9459b43b`; retained the generated writer's original permission after its Health view stalled while edited; added the verified 90-day expiry rule; and inspected a landed API record with the required fields, no raw-IP-named field, and no truncation marker. Object timestamps show delivery began before the permission restoration, so no causal delivery failure is attributed to the narrower scope. Redeployed the unchanged Workers after job creation to make Logpush eligibility explicit. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
 | 2026-08-14 | Provisioned Grafana Cloud with a read-only Cloudflare Analytics datasource and imported the seven-panel dashboard. Corrected Analytics Engine timestamp/function/subquery incompatibilities, excluded legacy blob layouts, and verified live weighted endpoint, error, stage, and zero-throttle rendering. Direct Cloudflare SQL for the same 24-hour window matched the visible 16 attempts, zero rejections, 301 requests, two errors, and endpoint/stage percentiles. Retention and staging-burst gates remain. | — | — | — |
 | 2026-08-14 | Checked only the currently deployed cohorts, per the operator's requested scope. API `4d746005` had 66 sampled requests with zero errors, zero 429/503 responses, and six unthrottled searches (observed p50 `1,923 ms`, p95 `3,813 ms`; provisional due to sample size). Ingestion `4e3aaa96` had 10 completed jobs, no recorded failure outcome, p50 `3,297 ms`, and p95 `7,113 ms`. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
+| 2026-08-14 | Ran a bounded production benchmark in an isolated, subsequently soft-deleted space: 10/12 submitted conversations completed (23 memories); the API-key RPM gate rejected the other submissions and later searches without a 503 or ingestion failure. Ten successful search metrics landed with p50 `628 ms`, mean `814.5 ms`, and p95 `1,670 ms`; three `search_throttled` metrics landed with mean rejection latency `35 ms`, giving a `23.08%` controlled-burst shed share. The harness summary (`678/1,030 ms`) and HTTP-request window (`662/1,053 ms`) agreed to `16/23 ms` at p50/p95. | `4e3aaa96-0ebf-4e6a-8a55-ae1677ed70b2` | `4d746005-f092-4d15-9dae-ddf28c91898a` | — |
 
 ---
 
@@ -264,9 +265,12 @@ runbook already states.
 
 Revert the call sites; the helper is inert without them.
 
-### [~] O-3. Give the shedding metrics enough detail to size an incident
+### [x] O-3. Give the shedding metrics enough detail to size an incident
 
-_Implemented locally 2026-08-14; the staging burst acceptance check remains._
+_Implemented and exercised in a bounded production burst on 2026-08-14. Ten
+successful searches and three throttled attempts landed; throttled mean
+rejection latency was `35 ms` and the controlled-window shed share was
+`23.08%`._
 
 **Why**
 
@@ -297,12 +301,14 @@ family indexes on `'search'`.
 
 Additive; revert the call sites.
 
-### [~] O-4. Restore an end-to-end retrieval latency number the harness can read
+### [x] O-4. Restore an end-to-end retrieval latency number the harness can read
 
 _Header, strict reader, tests, and production deployment completed 2026-08-14.
-The current API cohort reports search p50 `1,923 ms` and observed p95 `3,813
-ms`, but only six requests exist. Regenerating the controlled production result
-file remains._
+A bounded production run regenerated `scripts/prod-latency-result.json` with
+real values and cleanup provenance. Its header-derived p50/p95 (`678/1,030 ms`)
+and the same window's HTTP metric (`662/1,053 ms`) differed by only `16/23 ms`.
+The reader still fails loudly when the header is absent. The harness now also
+retains every attempt for correct whole-run percentiles on subsequent runs._
 
 **Why**
 
@@ -350,8 +356,10 @@ _Grafana Cloud, its Account Analytics Read datasource, and the seven-panel
 dashboard were provisioned and rendered successfully on 2026-08-14. Live data
 shows weighted endpoint/error/stage results and a healthy zero-throttle cohort.
 Raw SQL for the same moving 24-hour window reproduced its 16 attempts, zero
-rejections, 301 requests, two errors, and endpoint/stage values. A staging
-throttle burst and dataset-retention measurement remain._
+rejections, 301 requests, two errors, and endpoint/stage values. A later bounded
+production burst was visible as ten completed searches and three rejections;
+the operator accepted production as the burst environment. Dataset-retention
+measurement remains._
 
 **Why**
 
