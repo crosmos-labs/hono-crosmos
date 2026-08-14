@@ -18,7 +18,11 @@ Configure the datasource before importing:
 Every count uses `sum(_sample_interval)` and every percentile uses
 `quantileExactWeighted`. The dashboard defaults to the last 24 hours because
 Analytics Engine retention must be confirmed for the account before selecting
-long comparison windows.
+long comparison windows. Queries use Grafana's space-separated UTC timestamp
+format because Analytics Engine rejects the `T`/`Z` ISO macro expansion inside
+`toDateTime`. They also require `length(blob4) = 8` so rows emitted before the
+O-1 deploy-version field was added cannot be misread using the current blob
+layout.
 
 The JSON is repository-complete but external setup is not: after import, verify
 one panel against the equivalent query in `docs/metrics-runbook.md`, then induce

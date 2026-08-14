@@ -34,7 +34,7 @@
             "method": "POST",
             "body_type": "raw",
             "body_content_type": "text/plain",
-            "data": "SELECT blob5 AS method, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY method, path ORDER BY p95_ms DESC"
+            "data": "SELECT blob5 AS method, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY method, path ORDER BY p95_ms DESC"
           }
         }
       ],
@@ -63,7 +63,7 @@
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT sum(_sample_interval) AS requests, sumIf(_sample_interval, toInt32OrZero(blob7) >= 400) AS errors, 100 * errors / requests AS error_rate_pct, sumIf(_sample_interval, blob7 = '429') AS status_429, sumIf(_sample_interval, blob7 = '503') AS status_503 FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}')"
+            "data": "SELECT sum(_sample_interval) AS requests, sumIf(_sample_interval, blob7 >= '400' AND blob7 < '600') AS errors, 100 * sumIf(_sample_interval, blob7 >= '400' AND blob7 < '600') / sum(_sample_interval) AS error_rate_pct, sumIf(_sample_interval, blob7 = '429') AS status_429, sumIf(_sample_interval, blob7 = '503') AS status_503 FROM crosmos_api WHERE blob3 = 'http_request' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}')"
           }
         }
       ],
@@ -84,14 +84,14 @@
           "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
           "root_selector": "data",
           "columns": [
-            { "selector": "reason", "text": "reason", "type": "string" },
+            { "selector": "attempts", "text": "attempts", "type": "number" },
             { "selector": "rejections", "text": "rejections", "type": "number" },
             { "selector": "throttle_share_pct", "text": "throttle_share_pct", "type": "number" },
             { "selector": "p95_reject_ms", "text": "p95_reject_ms", "type": "number" }
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT blob5 AS reason, sum(_sample_interval) AS rejections, 100 * rejections / (SELECT sum(_sample_interval) FROM crosmos_api WHERE blob3 IN ('search', 'search_throttled') AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}')) AS throttle_share_pct, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_reject_ms FROM crosmos_api WHERE blob3 = 'search_throttled' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY reason ORDER BY rejections DESC"
+            "data": "SELECT sumIf(_sample_interval, blob3 IN ('search', 'search_throttled')) AS attempts, sumIf(_sample_interval, blob3 = 'search_throttled') AS rejections, if(sumIf(_sample_interval, blob3 IN ('search', 'search_throttled')) = 0, 0, 100 * sumIf(_sample_interval, blob3 = 'search_throttled') / sumIf(_sample_interval, blob3 IN ('search', 'search_throttled'))) AS throttle_share_pct, if(sumIf(_sample_interval, blob3 = 'search_throttled') = 0, 0, quantileExactWeighted(0.95)(double1, if(blob3 = 'search_throttled', _sample_interval, 0))) AS p95_reject_ms FROM crosmos_api WHERE blob3 IN ('search', 'search_throttled') AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}')"
           }
         }
       ],
@@ -119,7 +119,7 @@
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_api WHERE blob3 = 'api_stage' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
+            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_api WHERE blob3 = 'api_stage' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
           }
         }
       ],
@@ -147,7 +147,7 @@
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT blob5 AS outcome, blob6 AS category, sum(_sample_interval) AS jobs, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_outcome' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY outcome, category ORDER BY jobs DESC"
+            "data": "SELECT blob5 AS outcome, blob6 AS category, sum(_sample_interval) AS jobs, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_outcome' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY outcome, category ORDER BY jobs DESC"
           }
         }
       ],
@@ -175,7 +175,7 @@
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_stage' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
+            "data": "SELECT blob5 AS stage, blob6 AS outcome, sum(_sample_interval) AS executions, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM crosmos_ingestion WHERE blob3 = 'ingestion_stage' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY stage, outcome ORDER BY p95_ms DESC"
           }
         }
       ],
@@ -205,7 +205,7 @@
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT blob4 AS version, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND timestamp >= toDateTime('${__from:date:iso}') AND timestamp < toDateTime('${__to:date:iso}') GROUP BY version, path ORDER BY path, version"
+            "data": "SELECT blob4 AS version, blob6 AS path, sum(_sample_interval) AS requests, quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms, quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms FROM crosmos_api WHERE blob3 = 'http_request' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY version, path ORDER BY path, version"
           }
         }
       ],
