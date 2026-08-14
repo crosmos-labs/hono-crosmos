@@ -504,7 +504,9 @@ the shared metric/log/span recorder. Authentication now records `auth_total`,
 API-key hashing/cache/DB resolution, JWT verification/revocation/user loading,
 principal resolution, and management limiting through the same recorder.
 Complete timing coverage, hosted panel verification, Grafana trace/log export,
-deployment, and an operator-tested single-request workflow remain._
+deployment, and an operator-tested single-request workflow remain. The outer
+request clock classifies every 4xx/5xx response as `failed`; a regression test
+pins both metric and span behavior for a 404._
 
 **Why**
 

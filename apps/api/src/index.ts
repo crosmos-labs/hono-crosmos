@@ -71,7 +71,7 @@ app.use('*', async (c, next) => {
     try {
       await next();
       const elapsed = durationMs(started);
-      const outcome = c.res.status >= 500 ? 'failed' : 'ok';
+      const outcome = c.res.status >= 400 ? 'failed' : 'ok';
       span?.setAttribute('http.request.method', c.req.method);
       span?.setAttribute('url.path', path);
       span?.setAttribute('http.response.status_code', c.res.status);

@@ -72,5 +72,26 @@ describe('full application request timing', () => {
         'crosmos.outcome': 'ok',
       },
     }]);
+
+    const missing = await app.request('/does-not-exist', undefined, env, executionCtx);
+    expect(missing.status).toBe(404);
+    const failedTotal = points
+      .filter((point) => point.indexes?.[0] === 'request_total')
+      .at(-1);
+    expect(failedTotal?.blobs?.slice(4)).toEqual([
+      'GET',
+      '/does-not-exist',
+      '404',
+      'failed',
+    ]);
+    expect(spans.at(-1)).toEqual({
+      name: 'api.request_total',
+      attributes: {
+        'http.request.method': 'GET',
+        'url.path': '/does-not-exist',
+        'http.response.status_code': 404,
+        'crosmos.outcome': 'failed',
+      },
+    });
   });
 });
