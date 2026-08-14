@@ -121,12 +121,28 @@ export async function recordIngestionUsage(
     }
     if (completed.length > 0) {
       await tx.update(sources).set({
-        meta: sql`jsonb_set(coalesce(${sources.meta}, '{}'::jsonb), '{analytics_completion_recorded}', 'true'::jsonb)`,
+        meta: sql`jsonb_set(
+          case
+            when jsonb_typeof(${sources.meta}) = 'object' then ${sources.meta}
+            when ${sources.meta} is null then '{}'::jsonb
+            else jsonb_build_object('legacy_value', ${sources.meta})
+          end,
+          '{analytics_completion_recorded}',
+          'true'::jsonb
+        )`,
       }).where(inArray(sources.id, completed.map((source) => source.id)));
     }
     if (failed.length > 0) {
       await tx.update(sources).set({
-        meta: sql`jsonb_set(coalesce(${sources.meta}, '{}'::jsonb), '{analytics_failure_recorded}', 'true'::jsonb)`,
+        meta: sql`jsonb_set(
+          case
+            when jsonb_typeof(${sources.meta}) = 'object' then ${sources.meta}
+            when ${sources.meta} is null then '{}'::jsonb
+            else jsonb_build_object('legacy_value', ${sources.meta})
+          end,
+          '{analytics_failure_recorded}',
+          'true'::jsonb
+        )`,
       }).where(inArray(sources.id, failed.map((source) => source.id)));
     }
   });
