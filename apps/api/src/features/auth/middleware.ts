@@ -9,7 +9,13 @@ import { getCacheStore } from '../../integrations/cache';
 import { errorEnvelope } from '../../lib/errors';
 import { getCachedEntitlements } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
-import { createLogger, createMetrics } from '@crosmos/observability';
+import {
+  createLogger,
+  createMetrics,
+  createStageRecorder,
+  type StageRecorder,
+  type TraceProvider,
+} from '@crosmos/observability';
 import { apiKeyCacheKey, invalidateApiKeyCacheHash } from '@crosmos/runtime';
 import {
   enforceMgmtRateLimit,
@@ -72,8 +78,16 @@ interface CachedApiKey {
   expiresAt: number | null;
 }
 
-async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void> {
-  const hash = await hashApiKey(rawKey);
+async function authenticateApiKey(
+  c: AuthContext,
+  rawKey: string,
+  stages: StageRecorder,
+): Promise<void> {
+  const hash = await stages.time(
+    'auth_api_key_hash',
+    { auth_method: 'api_key' },
+    () => hashApiKey(rawKey),
+  );
   const cache = getCacheStore(c.env);
   const now = Date.now();
   const logger = createLogger({
@@ -81,7 +95,12 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
     environment: c.env.ENVIRONMENT,
   });
 
-  let cached = await cache.getJson<CachedApiKey>(apiKeyCacheKey(hash));
+  let cached = await stages.time(
+    'auth_api_key_cache_lookup',
+    { auth_method: 'api_key' },
+    () => cache.getJson<CachedApiKey>(apiKeyCacheKey(hash)),
+    (value) => ({ outputCount: value === null ? 0 : 1 }),
+  );
 
   if (cached && cached.expiresAt != null && cached.expiresAt < now) {
     cached = null;
@@ -96,7 +115,12 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
 
   if (!cached) {
     const db = getDb(c);
-    const resolved = await resolveApiKeyByHash(db, hash);
+    const resolved = await stages.time(
+      'auth_api_key_db_resolution',
+      { auth_method: 'api_key', dependency: 'database' },
+      () => resolveApiKeyByHash(db, hash),
+      (value) => ({ outputCount: value === null ? 0 : 1 }),
+    );
     if (!resolved) {
       failAuth(c, 'api_key_invalid', 'api_key', 'Invalid or revoked API key');
     }
@@ -147,10 +171,18 @@ async function authenticateApiKey(c: AuthContext, rawKey: string): Promise<void>
   if (cached.spaceId != null) c.set('scopedSpaceId', cached.spaceId);
 }
 
-async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
+async function authenticateJwt(
+  c: AuthContext,
+  token: string,
+  stages: StageRecorder,
+): Promise<void> {
   let claims;
   try {
-    claims = await decodeAccessTokenClaims(c.env.JWT_SECRET, token);
+    claims = await stages.time(
+      'auth_jwt_verify',
+      { auth_method: 'jwt' },
+      () => decodeAccessTokenClaims(c.env.JWT_SECRET, token),
+    );
   } catch (err) {
     if (err instanceof InvalidTokenError) {
       // Collapse expired/bad-sig/wrong-aud into one generic message so the 401
@@ -163,12 +195,24 @@ async function authenticateJwt(c: AuthContext, token: string): Promise<void> {
   // Reject explicitly-revoked access tokens (e.g. after /logout) before doing
   // any DB work. Tokens minted before jti existed have no jti → nothing to
   // check; their short TTL bounds the exposure.
-  if (claims.jti && (await isAccessTokenRevoked(c.env, claims.jti))) {
+  const revoked = claims.jti
+    ? await stages.time(
+        'auth_jwt_revocation_lookup',
+        { auth_method: 'jwt' },
+        () => isAccessTokenRevoked(c.env, claims.jti!),
+      )
+    : false;
+  if (revoked) {
     failAuth(c, 'jwt_revoked', 'jwt', 'Invalid or expired token');
   }
 
   const db = getDb(c);
-  const user = await getUserById(db, claims.userId);
+  const user = await stages.time(
+    'auth_user_load',
+    { auth_method: 'jwt', dependency: 'database' },
+    () => getUserById(db, claims.userId),
+    (value) => ({ outputCount: value === null ? 0 : 1 }),
+  );
   if (!user) {
     failAuth(c, 'user_not_found', 'jwt', 'Invalid or expired token');
   }
@@ -355,18 +399,45 @@ function enforceScopedKeyEndpoint(c: AuthContext): void {
  * The stricter AI-path limit is enforced separately by the search/ingest gates.
  */
 export const requireAuth = createMiddleware<HonoEnv>(async (c, next) => {
-  const token = extractBearer(c);
-  if (isApiKey(token)) {
-    await authenticateApiKey(c, token);
-  } else {
-    await authenticateJwt(c, token);
-  }
-  // Space-scoped keys are confined to the data plane (must run before the route
-  // body so management endpoints are unreachable).
-  if (c.var.scopedSpaceId != null) {
-    enforceScopedKeyEndpoint(c);
-  }
-  await enforceOrgMgmtRateLimit(c);
+  const logger = createLogger({
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+    base: { request_id: c.var.requestId },
+  });
+  const metrics = createMetrics(c.env.ANALYTICS, {
+    service: 'api',
+    environment: c.env.ENVIRONMENT,
+    version: c.env.CF_VERSION_METADATA?.id,
+  });
+  const tracing = (
+    c.executionCtx as ExecutionContext & { tracing?: TraceProvider }
+  ).tracing;
+  const stages = createStageRecorder({
+    logger,
+    metrics,
+    tracing,
+    event: 'auth.stage_completed',
+    metric: 'api_stage',
+  });
+
+  await stages.time('auth_total', {}, async () => {
+    const token = extractBearer(c);
+    if (isApiKey(token)) {
+      await authenticateApiKey(c, token, stages);
+    } else {
+      await authenticateJwt(c, token, stages);
+    }
+    // Space-scoped keys are confined to the data plane (must run before the route
+    // body so management endpoints are unreachable).
+    if (c.var.scopedSpaceId != null) {
+      enforceScopedKeyEndpoint(c);
+    }
+    await stages.time(
+      'auth_management_rate_limit',
+      { auth_method: c.var.authMethod },
+      () => enforceOrgMgmtRateLimit(c),
+    );
+  });
   await next();
 });
 

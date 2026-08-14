@@ -500,9 +500,11 @@ pipeline stages; observed queue wait is emitted as a metric/log rather than a
 fake retroactive span. The restorable Grafana model now includes a separately
 labeled three-clock panel. API-side source and conversation ingestion now record
 enqueue total, preflight, source persistence, job creation, and dispatch through
-the shared metric/log/span recorder. Complete timing coverage, hosted panel
-verification, Grafana trace/log export, deployment, and an operator-tested
-single-request workflow remain._
+the shared metric/log/span recorder. Authentication now records `auth_total`,
+API-key hashing/cache/DB resolution, JWT verification/revocation/user loading,
+principal resolution, and management limiting through the same recorder.
+Complete timing coverage, hosted panel verification, Grafana trace/log export,
+deployment, and an operator-tested single-request workflow remain._
 
 **Why**
 
