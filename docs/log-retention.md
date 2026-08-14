@@ -109,9 +109,9 @@ External state is recorded here before L-3 is marked complete:
 | Setting | Required value | Deployed value |
 |---|---|---|
 | Dataset | `workers_trace_events` | Account job `1838803`, enabled and reporting `Pushing` on 2026-08-14 |
-| Workers | API and ingestion, production and staging | Account-scoped job created; per-script landed-object coverage pending |
-| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | Cloudflare-managed private bucket `cloudflare-managed-9459b43b` in APAC; first object/path verification pending. The original empty `crosmos-worker-logs` bucket is retained until verification finishes. |
-| Selected fields | `Event`, `EventTimestampMs`, `Outcome`, `Exceptions`, `Logs`, `ScriptName` | _pending_ |
+| Workers | API and ingestion, production and staging | `crosmos-api-production` verified from a landed record; ingestion and staging coverage pending |
+| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | Cloudflare-managed private bucket `cloudflare-managed-9459b43b` in APAC; objects verified under `20260814/`. The original empty `crosmos-worker-logs` bucket is retained until verification finishes. |
+| Selected fields | `Event`, `EventTimestampMs`, `Outcome`, `Exceptions`, `Logs`, `ScriptName` | All required fields verified in a landed API record; automatic setup also includes runtime timing, entrypoint, tags, and version fields |
 | Sampling | 100% production; staging reviewed after L-1 volume measurement | Automatic job default is unsampled; live output verification pending |
 | Lifecycle | Delete objects after 90 days | Enabled rule `expire-operational-logs` on the managed destination, verified 2026-08-14 |
 | Query credential | Read-only, bucket-scoped R2 token | _pending_ |
@@ -144,9 +144,13 @@ bunx wrangler r2 bucket lifecycle list crosmos-worker-logs
 
 Cloudflare's automatic R2 setup was used after the manual destination form
 stalled in the dashboard. It created account job `1838803`, its destination,
-and the writer credential. The credential was then restricted to Object Read &
-Write on that destination bucket only. The account-level job should cover these
-deployed scripts; verify each from landed records before treating that as fact:
+and the writer credential. Narrowing that generated credential from its original
+Admin Read & Write permission to Object Read & Write caused the job Health view
+to stall and produced no uploads; restoring the generated permission restored
+delivery. Do not edit this Cloudflare-managed writer independently of its job.
+Use a separate Object Read-only token for queries. The account-level job should
+cover these deployed scripts; verify each from landed records before treating
+that as fact:
 
 - `crosmos-api-production`
 - `crosmos-api-staging`
