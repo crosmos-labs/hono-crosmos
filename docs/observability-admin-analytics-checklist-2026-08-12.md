@@ -107,7 +107,7 @@ So the real gaps are narrower than they feel:
 | Where do logs go after 7 days? | **Logpush → R2**, gzipped NDJSON, 90-day lifecycle | Server-side delivery: no worker CPU, no added latency, and log delivery stays outside our failure domain. A Tail Worker would spend an invocation per request to move data Cloudflare already holds. |
 | How is the archive queried? | **DuckDB over R2** via a repo script | Reads gzipped NDJSON directly over the S3 API with no service to operate — a better fit for agent-driven debugging than any hosted UI. Pipelines/Iceberg/R2 SQL is the eventual answer but is in open beta. |
 | How long are logs kept? | **90 days** in R2; 7 days interactive in Workers Logs | Long enough for "did this regress this quarter", short enough to state plainly in a security questionnaire. Analytics Engine covers longer horizons in aggregate. |
-| How long is a **deleted space** kept? | **OPEN — deferred 2026-08-12.** Today: indefinitely, by omission. | The finalizer exists and is switched off, so a deleted space is retained forever with no stated period. Same shape of question as log retention and answered in the same document. See A-7. |
+| How long is a **deleted space** kept? | **30 days — confirmed 2026-08-14.** | Thirty days provides an audited recovery window while bounding retained customer data. The destructive finalizer stays off until its staging gate passes. See A-7. |
 | What about the IP address? | **Rotating salted hash**, raw value never persisted | It is the only personal data in the logs. Removing it makes a 90-day archive pseudonymous operational data rather than something needing a much stronger justification. |
 | Which latency ideas become implementation work? | **Result-preserving round-trip reductions first; evidence-gated store tuning second; guarded model/vector changes only as experiments.** | This captures the viable audit work without turning every speculative architecture idea into an active commitment. |
 
@@ -144,7 +144,7 @@ So the real gaps are narrower than they feel:
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
 
 ---
 
@@ -152,8 +152,8 @@ So the real gaps are narrower than they feel:
 
 ### [~] O-1. Tag every metric with the deploy version
 
-_Implemented locally 2026-08-14; production deployment and cross-version SQL
-verification remain._
+_Deployed to production 2026-08-14 as API version `a81117b3` and ingestion
+version `3bfcc097`. Cross-version SQL verification remains._
 
 **Why**
 
@@ -1095,8 +1095,9 @@ _Thirty days is now the documented and coded retention period. The admin view
 shows purge eligibility and the audited restore refuses expired or name-conflict
 cases. The destructive finalizer remains disabled pending staging verification._
 
-**Deferred 2026-08-12 — recorded so the decision is made deliberately rather than
-by omission. Nothing else in this checklist is blocked on it.**
+**Decision confirmed 2026-08-14: retain deleted spaces for 30 days.** The
+destructive finalizer remains disabled until its staging observation gate
+passes; restore is already available through the audited admin implementation.
 
 **Why**
 
@@ -1133,10 +1134,10 @@ undoing a mistaken delete is hand-written SQL against production Neon. This is
 tolerable only while the retention window is infinite — which is exactly the
 thing under review.
 
-**Repository change (proposed, not decided)**
+**Repository change (implemented)**
 
-- Raise `SPACE_FINALIZE_GRACE_MS` (`apps/api/src/features/maintenance/finalize-spaces.ts`)
-  from 10 minutes to a real retention period — 30 days is the suggested default.
+- Set `SPACE_FINALIZE_GRACE_MS` (`apps/api/src/features/maintenance/finalize-spaces.ts`)
+  to the confirmed 30-day retention period.
   The constant already gates eligibility, so this is one line. It converts the
   grace period from "long enough to outlive an ingestion lease" into a stated
   retention policy, and makes enabling the finalizer a slow, observable change
@@ -1179,9 +1180,9 @@ deciding the number before switching the flag on rather than after.
 
 ### [~] U-1. Extend the daily rollups
 
-_Additive migration and schema are implemented locally 2026-08-14, including
-the org/date covering index and content-type table. Backup migration/plan
-verification remains._
+_Applied and verified on the production backup and production on 2026-08-14,
+including the org/date covering index and content-type table. Historical rows
+were preserved and initialized with zero-valued new counters._
 
 **Why**
 
@@ -1260,9 +1261,10 @@ Documentation only.
 
 ### [~] U-3. Write the counters at the existing site
 
-_Implemented at existing completion/budget/cancellation sites with a shared DB
-helper and newly-failed-only accounting. Continuation and rollup-failure tests
-against real Postgres remain._
+_Deployed 2026-08-14 at the existing completion/budget/cancellation sites with
+a shared DB helper and newly-failed-only accounting. A production smoke ingest
+recorded one completed source, one memory, and one content type; continuation
+and rollup-failure fault tests against real Postgres remain._
 
 **Why**
 
@@ -1342,9 +1344,10 @@ range in the deployment log.
 
 ### [~] U-5. The analytics endpoints
 
-_Org and active-space 30/60/90-day endpoints are implemented locally with
-previous-window totals, zero-filled series, content types, and active per-space
-breakdown. HTTP isolation and direct-count reconciliation remain._
+_Org and active-space 30/60/90-day endpoints were deployed and smoke-tested in
+production on 2026-08-14 with previous-window totals, zero-filled series,
+content types, and active per-space breakdown. Full HTTP isolation and
+historical direct-count reconciliation remain._
 
 **Why**
 
@@ -1487,8 +1490,8 @@ captured is gone permanently, which is why L-3 should not wait on this item.
 
 ### [~] L-2. Replace the one raw-IP log field with a rotating salted hash
 
-_Implemented and unit-tested locally 2026-08-14. Secret upload, deployment,
-and captured-log verification remain._
+_Implemented, unit-tested, secret-configured in staging/production, and deployed
+to production on 2026-08-14. Captured-log verification remains._
 
 **Why**
 
@@ -1764,6 +1767,12 @@ switching cost stays low.
 One generated additive migration, applied **by hand via `psql`** per
 `packages/db/migrations/README.md`. Never run `drizzle-kit migrate` against
 production.
+
+`0004_tense_speed` was applied to the production backup and production on
+2026-08-14 with `ON_ERROR_STOP` and a single transaction. Post-checks confirmed
+all expected columns, constraints, and indexes; the historical usage rows were
+preserved. Schema-only pre-migration dumps are held in the operator's temporary
+directory for the cutover session and contain no table data.
 
 | # | Change | Track | Backfill required |
 |---|---|---|---|
