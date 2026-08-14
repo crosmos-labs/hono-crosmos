@@ -31,7 +31,13 @@ import type { Env, HonoEnv } from '../bindings';
 import { getDb } from '../db';
 import { getCacheStore } from '../integrations/cache';
 import { getBackgroundTasks } from './runtime';
-import { type Entitlements, getEntitlements } from '../features/orgs/entitlements';
+import {
+  activeGrantedPlan,
+  type Entitlements,
+  resolveEntitlements,
+} from '../features/orgs/entitlements';
+import { getOrganizationByIdOrThrow } from '../features/orgs/service';
+import { entitlementCacheKey, invalidateEntitlementCache } from '@crosmos/runtime';
 import { getMembership, type MembershipRow } from '../features/orgs/memberships';
 import { getSpaceByUuid } from '../features/spaces/service';
 
@@ -40,7 +46,6 @@ const ENTITLEMENTS_TTL_SECONDS = 300;
 const MEMBERSHIP_TTL_SECONDS = 60;
 const SPACE_TTL_SECONDS = 60;
 
-const entKey = (orgId: number) => `gate:ent:${orgId}`;
 const memberKey = (orgId: number, userId: number) => `gate:member:${orgId}:${userId}`;
 const spaceKey = (uuid: string) => `gate:space:${uuid}`;
 
@@ -92,11 +97,27 @@ export async function getCachedEntitlements(
   orgId: number,
 ): Promise<Entitlements> {
   const db = getDb(c);
-  const ent = await readThrough<Entitlements>(c, entKey(orgId), ENTITLEMENTS_TTL_SECONDS, () =>
-    getEntitlements(db, orgId),
-  );
-  // getEntitlements resolves defaults or throws — it never yields null.
-  return ent as Entitlements;
+  const cache = getCacheStore(c.env);
+  const key = entitlementCacheKey(orgId);
+  const logger = createLogger({ service: 'api', environment: c.env.ENVIRONMENT });
+  try {
+    const cached = await cache.getJson<Entitlements>(key);
+    if (cached !== null) return cached;
+  } catch (err) {
+    logger.warn('gate_cache.read_failed', { stage: 'gate_cache_read' }, err);
+  }
+  const org = await getOrganizationByIdOrThrow(db, orgId);
+  const entitlements = resolveEntitlements(org);
+  // A time-boxed grant must expire on the first request after its deadline.
+  // Do not put granted entitlements in a fixed-TTL cache: the grant population
+  // is tiny and one DB gate read is preferable to serving expired quota.
+  if (activeGrantedPlan(org) === null) {
+    getBackgroundTasks(c).waitUntil(
+      cache.putJson(key, entitlements, { expirationTtlSeconds: ENTITLEMENTS_TTL_SECONDS })
+        .catch((err) => logger.warn('gate_cache.write_failed', { stage: 'gate_cache_write' }, err)),
+    );
+  }
+  return entitlements;
 }
 
 /** Org membership row, or null if the user isn't a member (null not cached). */
@@ -124,7 +145,7 @@ export async function getCachedSpaceByUuid(
 }
 
 export async function invalidateEntitlements(env: Env, orgId: number): Promise<void> {
-  await getCacheStore(env).delete(entKey(orgId));
+  await invalidateEntitlementCache(getCacheStore(env), orgId);
 }
 
 export async function invalidateMembership(

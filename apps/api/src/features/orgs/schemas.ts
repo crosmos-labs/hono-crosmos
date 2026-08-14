@@ -13,6 +13,10 @@ export const OrganizationSummarySchema = z
     slug: z.string(),
     name: z.string(),
     plan: PlanSchema,
+    active_grant: z.object({
+      plan: PlanSchema,
+      expires_at: IsoDateTimeSchema,
+    }).nullable(),
     billing_email: z.string().email().nullable(),
     created_at: IsoDateTimeSchema,
     updated_at: IsoDateTimeSchema,
@@ -59,6 +63,10 @@ export const UpdateOrganizationSchema = z
 export const EntitlementsResponseSchema = z
   .object({
     plan: PlanSchema,
+    active_grant: z.object({
+      plan: PlanSchema,
+      expires_at: IsoDateTimeSchema,
+    }).nullable(),
     entitlements: z.record(z.any()),
     usage_this_month: z.object({
       tokens_ingested: z.number().int().nonnegative(),

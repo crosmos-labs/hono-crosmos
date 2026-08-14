@@ -1,5 +1,10 @@
-import { dailyUsage, type Database } from '@crosmos/db';
-import { and, eq, gte, lte, sql, sum } from 'drizzle-orm';
+import {
+  dailyUsage,
+  recordIngestionUsage,
+  recordSearchUsage,
+  type Database,
+} from '@crosmos/db';
+import { and, eq, gte, lte, sum } from 'drizzle-orm';
 import type { TenantScope } from '../../lib/scope';
 
 /**
@@ -46,29 +51,11 @@ export async function recordIngestionTokens(
   scope: TenantScope,
   tokens: number,
 ): Promise<void> {
-  if (tokens <= 0) return;
-  await db
-    .insert(dailyUsage)
-    .values({
-      orgId: scope.orgId,
-      userId: scope.userId,
-      spaceId: scope.spaceId,
-      date: sql`current_date`,
-      tokensIngested: tokens,
-      searchQueries: 0,
-    })
-    .onConflictDoUpdate({
-      target: [
-        dailyUsage.orgId,
-        dailyUsage.userId,
-        dailyUsage.spaceId,
-        dailyUsage.date,
-      ],
-      set: {
-        tokensIngested: sql`${dailyUsage.tokensIngested} + ${tokens}`,
-        updatedAt: new Date(),
-      },
-    });
+  await recordIngestionUsage(db, scope, {
+    tokens,
+    completedSourceIds: [],
+    failedSourceIds: [],
+  });
 }
 
 /** Sibling for retrieval — keeps both upserts in one place. */
@@ -77,27 +64,5 @@ export async function recordSearchQueries(
   scope: TenantScope,
   queries: number,
 ): Promise<void> {
-  if (queries <= 0) return;
-  await db
-    .insert(dailyUsage)
-    .values({
-      orgId: scope.orgId,
-      userId: scope.userId,
-      spaceId: scope.spaceId,
-      date: sql`current_date`,
-      tokensIngested: 0,
-      searchQueries: queries,
-    })
-    .onConflictDoUpdate({
-      target: [
-        dailyUsage.orgId,
-        dailyUsage.userId,
-        dailyUsage.spaceId,
-        dailyUsage.date,
-      ],
-      set: {
-        searchQueries: sql`${dailyUsage.searchQueries} + ${queries}`,
-        updatedAt: new Date(),
-      },
-    });
+  await recordSearchUsage(db, scope, queries);
 }

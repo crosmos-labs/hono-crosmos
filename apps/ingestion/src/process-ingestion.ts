@@ -47,7 +47,7 @@ import {
   markSourcesStatus,
   markUnprocessedSourcesCancelled,
 } from './source-status';
-import { recordIngestionTokens } from './usage';
+import { recordIngestionUsage } from './usage';
 
 /**
  * What `processIngestion` did with this delivery. Drives the queue consumer's
@@ -109,6 +109,8 @@ export interface ProcessIngestionDeps {
   analytics?: AnalyticsEngineDataset;
   /** Deployment environment, used as a metrics tag. */
   environment?: string;
+  /** Cloudflare Worker version id, truncated by `createMetrics`. */
+  version?: string;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -173,6 +175,7 @@ function emitOutcomeMetric(
   createMetrics(deps.analytics, {
     service: 'ingestion',
     environment: deps.environment,
+    version: deps.version,
   }).count('ingestion_outcome', {
     tags: [outcome.finalStatus, outcome.errorCategory],
     values: [outcome.durationMs, outcome.failedSourceCount, outcome.tokenCount],
@@ -185,6 +188,11 @@ export async function processIngestion(
   deps: ProcessIngestionDeps,
 ): Promise<IngestionRunResult> {
   const { db, llm, embedder, vectorStore, logger } = deps;
+  const metrics = createMetrics(deps.analytics, {
+    service: 'ingestion',
+    environment: deps.environment,
+    version: deps.version,
+  });
   const jobStart = performance.now();
   const scope: TenantScope = {
     orgId: msg.org_id,
@@ -210,6 +218,7 @@ export async function processIngestion(
   });
 
   const failedSourceIds: number[] = [];
+  const newlyFailedSourceIds: number[] = [];
   const sourceErrors: Record<string, string> = {};
   const results: IngestResult[] = [];
   // Sources that failed on a RETRYABLE infrastructure error (e.g. a red vector
@@ -269,9 +278,13 @@ export async function processIngestion(
       // the outcome metric below — not the quota.
       const throughputTokens = llm.totalTokens + embedder.totalTokens;
       const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
-      if (inputTokens > 0) {
+      if (results.length > 0) {
         try {
-          await recordIngestionTokens(db, scope, inputTokens);
+          await recordIngestionUsage(db, scope, {
+            tokens: inputTokens,
+            completedSourceIds: results.map((result) => result.sourceId),
+            failedSourceIds: newlyFailedSourceIds,
+          });
         } catch (err) {
           logger.warn('ingestion.record_tokens_failed', {}, err);
         }
@@ -399,6 +412,7 @@ export async function processIngestion(
           embedder,
           vectorStore,
           logger: sourceLogger,
+          metrics,
           heartbeat,
           // Max NEW chunks this source may process this invocation — the
           // remaining invocation budget. `ingestSource` resumes from the source's
@@ -489,6 +503,7 @@ export async function processIngestion(
         createMetrics(deps.analytics, {
           service: 'ingestion',
           environment: deps.environment,
+          version: deps.version,
         }).count('ingestion_ai_error', {
           tags: [fields.dependency, String(lastErr.status), lastErr.retryable],
           index: 'ingestion_ai_error',
@@ -501,6 +516,7 @@ export async function processIngestion(
         sourceErrors[String(sourceId)] = message;
         await markSourcesFailed(db, scope, [sourceId], message);
         failedSourceIds.push(sourceId);
+        newlyFailedSourceIds.push(sourceId);
       }
     }
   }
@@ -546,9 +562,13 @@ export async function processIngestion(
     // provider cost, reported to the metric below.
     const throughputTokens = llm.totalTokens + embedder.totalTokens;
     const budgetTokens = results.reduce((n, r) => n + r.tokenCount, 0);
-    if (budgetTokens > 0) {
+    if (results.length > 0 || newlyFailedSourceIds.length > 0) {
       try {
-        await recordIngestionTokens(db, scope, budgetTokens);
+        await recordIngestionUsage(db, scope, {
+          tokens: budgetTokens,
+          completedSourceIds: results.map((result) => result.sourceId),
+          failedSourceIds: newlyFailedSourceIds,
+        });
       } catch (err) {
         logger.warn('ingestion.record_tokens_failed', {}, err);
       }
@@ -603,9 +623,13 @@ export async function processIngestion(
 
   // Best-effort token recording — failure does not fail the job (Python
   // wraps this in try/except too).
-  if (inputTokens > 0) {
+  if (results.length > 0 || newlyFailedSourceIds.length > 0) {
     try {
-      await recordIngestionTokens(db, scope, inputTokens);
+      await recordIngestionUsage(db, scope, {
+        tokens: inputTokens,
+        completedSourceIds: results.map((result) => result.sourceId),
+        failedSourceIds: newlyFailedSourceIds,
+      });
     } catch (err) {
       logger.warn('ingestion.record_tokens_failed', {}, err);
     }

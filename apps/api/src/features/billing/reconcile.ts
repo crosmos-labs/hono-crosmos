@@ -61,12 +61,25 @@ export async function clearAbandonedCheckouts(db: Database): Promise<number> {
   return rows.length;
 }
 
+export async function clearExpiredPlanGrants(db: Database): Promise<number> {
+  const rows = await db
+    .update(organizations)
+    .set({ grantedPlan: null, grantedPlanExpiresAt: null, updatedAt: new Date() })
+    .where(and(
+      isNotNull(organizations.grantedPlan),
+      lt(organizations.grantedPlanExpiresAt, new Date()),
+    ))
+    .returning({ id: organizations.id });
+  return rows.length;
+}
+
 export async function runBillingReconciliation(
   env: Env,
-): Promise<{ expired: number; abandoned: number }> {
+): Promise<{ expired: number; abandoned: number; grantsExpired: number }> {
   const db = createDb(env.HYPERDRIVE.connectionString);
   return {
     expired: await reconcileExpiredSubscriptions(db, env),
     abandoned: await clearAbandonedCheckouts(db),
+    grantsExpired: await clearExpiredPlanGrants(db),
   };
 }

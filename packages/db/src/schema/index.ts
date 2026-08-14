@@ -14,3 +14,4 @@ export * from './ingestion-jobs';
 export * from './daily-usage';
 export * from './visibility';
 export * from './billing-events';
+export * from './admin-audit-log';
