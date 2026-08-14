@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **10 complete** (`[x]`);
-- **21 partial or awaiting a verification gate** (`[~]`);
+- **12 complete** (`[x]`);
+- **19 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1203,11 +1203,13 @@ set requires a deploy.
 Remove the route binding. The worker becomes unreachable, which is the safe
 state.
 
-### [~] A-3. `admin_audit_log`, written in the same transaction as the change
+### [x] A-3. `admin_audit_log`, written in the same transaction as the change
 
-_The append-only schema and paginated audited read are implemented. Grant and
-restore mutations write their before/after evidence in the same transaction;
-backup fault-injection verification remains._
+_Implemented and verified against migrated PostgreSQL on 2026-08-14. Every
+mutation route produces an audit row with its target and before/after evidence.
+A database trigger that deliberately rejected `plan_grant.upsert` audit inserts
+proved the organization mutation rolls back and no orphan audit row remains.
+The schema exposes no update/delete helper or route._
 
 **Why**
 
@@ -1284,11 +1286,13 @@ than polling production, which is a pattern worth keeping.
 
 Read-only; remove the routes.
 
-### [~] A-5. Time-boxed plan grants
+### [x] A-5. Time-boxed plan grants
 
-_Grant columns, read-time entitlement resolution, customer-visible grant
-metadata, audited create/revoke routes, and daily expiry cleanup are implemented
-locally. Backup migration and webhook coexistence verification remain._
+_Implemented, migrated, deployed, and verified 2026-08-14. Read-time tests pin
+live and expired entitlement resolution. Migrated HTTP/Postgres tests grant and
+revoke repeatedly, preserve webhook-owned plan/subscription/Polar fields across
+an active grant, verify before/after audit evidence, and prove audit failure
+rolls the grant mutation back._
 
 **Why**
 
@@ -1337,7 +1341,10 @@ as today until a grant is written. Clear all grants before dropping the columns.
 _Audited grant revocation, shared API-key KV invalidation, and a bounded,
 idempotent source-redrive request are implemented. The former public API
 `ADMIN_TOOLS`/re-embed route has been deleted, leaving one admin surface.
-Staging end-to-end action checks remain._
+Migrated route tests now verify repeated revocation, cache invalidation, and
+requeue requests have the same end state with distinct audit rows, and that the
+redrive attempt cap refuses exhausted sources. Staging end-to-end action checks
+remain._
 
 **Why**
 
@@ -1374,7 +1381,9 @@ from the cron path.
 
 _Thirty days is now the documented and coded retention period. The admin view
 shows purge eligibility and the audited restore refuses expired or name-conflict
-cases. The destructive finalizer remains disabled pending staging verification._
+cases. Migrated route tests verify restore, repeat/no-op audit, expiry refusal,
+and name-conflict refusal. The destructive finalizer remains disabled pending
+staging verification._
 
 **Decision confirmed 2026-08-14: retain deleted spaces for 30 days.** The
 destructive finalizer remains disabled until its staging observation gate
