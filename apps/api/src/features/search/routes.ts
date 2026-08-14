@@ -47,6 +47,7 @@ import {
 } from '../../lib/retry-hints';
 import { classifyDependencyError } from '../../lib/dependency-errors';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
+import { awaitSearchAdmission } from './admission';
 import { retrieve } from './service';
 import type { CandidateMemory, RetrievalResult } from './types';
 
@@ -392,10 +393,10 @@ searchRoutes.openapi(
       const quotaCheck = stages.time('monthly_quota', {
         space_id: space.id,
       }, () => checkQuota(db, space.orgId, 'monthly_search_queries', 1, entitlements));
-      const [planResult, quotaResult] = await Promise.allSettled([planCheck, quotaCheck]);
+      const admission = await awaitSearchAdmission(planCheck, quotaCheck);
 
-      if (planResult.status === 'rejected') {
-        const err = planResult.reason;
+      if (!admission.accepted && admission.stage === 'plan_rate_limit') {
+        const err = admission.reason;
         if (err instanceof RateLimitError) {
           logger.warn('retrieval.request_rejected', {
             stage: 'plan_rate_limit',
@@ -414,8 +415,8 @@ searchRoutes.openapi(
       }
       if (shouldEnforcePlan) c.set('planRateLimitEnforced', true);
 
-      if (quotaResult.status === 'rejected') {
-        const err = quotaResult.reason;
+      if (!admission.accepted && admission.stage === 'monthly_quota') {
+        const err = admission.reason;
         if (err instanceof QuotaExceededError) {
           logger.warn('retrieval.request_rejected', {
             stage: 'monthly_quota',
