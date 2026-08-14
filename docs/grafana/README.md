@@ -12,8 +12,8 @@ Configure the datasource before importing:
   Read.
 - The dashboard uses backend JSONata parsing (`root_selector = data`) so the
   same queries can later be used by Grafana Alerting.
-- Set the `cf_account_id` dashboard variable after import. Do not commit an API
-  token or put it in a panel query.
+- The `cf_account_id` dashboard variable defaults to the non-secret Crosmos
+  account ID. Do not commit an API token or put it in a panel query.
 
 Every count uses `sum(_sample_interval)` and every percentile uses
 `quantileExactWeighted`. The dashboard defaults to the last 24 hours because
