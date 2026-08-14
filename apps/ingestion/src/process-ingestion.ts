@@ -53,7 +53,7 @@ import {
   markSourcesStatus,
   markUnprocessedSourcesCancelled,
 } from './source-status';
-import { recordIngestionUsage } from './usage';
+import { recordIngestionUsageBestEffort } from './usage';
 
 /**
  * What `processIngestion` did with this delivery. Drives the queue consumer's
@@ -324,17 +324,17 @@ async function processIngestionRun(
       const throughputTokens = llm.totalTokens + embedder.totalTokens;
       const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
       if (results.length > 0) {
-        try {
-          await stages.time('ingestion_usage_rollup', {
-            dependency: 'database',
-          }, () => recordIngestionUsage(db, scope, {
+        await recordIngestionUsageBestEffort({
+          db,
+          scope,
+          stages,
+          logger,
+          input: {
             tokens: inputTokens,
             completedSourceIds: results.map((result) => result.sourceId),
             failedSourceIds: newlyFailedSourceIds,
-          }));
-        } catch (err) {
-          logger.warn('ingestion.record_tokens_failed', {}, err);
-        }
+          },
+        });
       }
 
       // Drive the still-non-terminal (unprocessed) sources to a TERMINAL state
@@ -662,17 +662,17 @@ async function processIngestionRun(
     const throughputTokens = llm.totalTokens + embedder.totalTokens;
     const budgetTokens = results.reduce((n, r) => n + r.tokenCount, 0);
     if (results.length > 0 || newlyFailedSourceIds.length > 0) {
-      try {
-        await stages.time('ingestion_usage_rollup', {
-          dependency: 'database',
-        }, () => recordIngestionUsage(db, scope, {
+      await recordIngestionUsageBestEffort({
+        db,
+        scope,
+        stages,
+        logger,
+        input: {
           tokens: budgetTokens,
           completedSourceIds: results.map((result) => result.sourceId),
           failedSourceIds: newlyFailedSourceIds,
-        }));
-      } catch (err) {
-        logger.warn('ingestion.record_tokens_failed', {}, err);
-      }
+        },
+      });
     }
     const reset = await stages.time(
       'ingestion_job_reset',
@@ -729,17 +729,17 @@ async function processIngestionRun(
   // Best-effort token recording — failure does not fail the job (Python
   // wraps this in try/except too).
   if (results.length > 0 || newlyFailedSourceIds.length > 0) {
-    try {
-      await stages.time('ingestion_usage_rollup', {
-        dependency: 'database',
-      }, () => recordIngestionUsage(db, scope, {
+    await recordIngestionUsageBestEffort({
+      db,
+      scope,
+      stages,
+      logger,
+      input: {
         tokens: inputTokens,
         completedSourceIds: results.map((result) => result.sourceId),
         failedSourceIds: newlyFailedSourceIds,
-      }));
-    } catch (err) {
-      logger.warn('ingestion.record_tokens_failed', {}, err);
-    }
+      },
+    });
   }
 
   const resultBody: IngestionJobResult = {
