@@ -23,7 +23,11 @@ USER="${TEST_PGUSER:-crosmos}"
 # the suites TRUNCATE, so a single shared database means they clobber each
 # other's fixtures — which shows up as a large, confusing failure count that
 # disappears when you run either package alone.
-DBS=("${TEST_PGDATABASE:-crosmos_test}" "${TEST_PGDATABASE_INGESTION:-crosmos_test_ingestion}")
+DBS=(
+  "${TEST_PGDATABASE:-crosmos_test}"
+  "${TEST_PGDATABASE_INGESTION:-crosmos_test_ingestion}"
+  "${TEST_PGDATABASE_ADMIN:-crosmos_test_admin}"
+)
 export PGPASSWORD="${TEST_PGPASSWORD:-crosmos}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
