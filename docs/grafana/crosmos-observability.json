@@ -86,12 +86,27 @@
           "columns": [
             { "selector": "attempts", "text": "attempts", "type": "number" },
             { "selector": "rejections", "text": "rejections", "type": "number" },
-            { "selector": "throttle_share_pct", "text": "throttle_share_pct", "type": "number" },
+            { "selector": "throttle_share_pct", "text": "throttle_share_pct", "type": "number" }
+          ],
+          "url_options": {
+            "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
+            "data": "SELECT sumIf(_sample_interval, blob3 = 'search') + sumIf(_sample_interval, blob3 = 'search_throttled') AS attempts, sumIf(_sample_interval, blob3 = 'search_throttled') AS rejections, 100.0 * sumIf(_sample_interval, blob3 = 'search_throttled') / (sumIf(_sample_interval, blob3 = 'search') + sumIf(_sample_interval, blob3 = 'search_throttled') + 0.000001) AS throttle_share_pct FROM crosmos_api WHERE blob3 IN ('search', 'search_throttled') AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}')"
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "type": "json", "source": "url", "format": "table", "parser": "backend",
+          "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account_id}/analytics_engine/sql",
+          "root_selector": "data",
+          "columns": [
+            { "selector": "reason", "text": "reason", "type": "string" },
+            { "selector": "rejections", "text": "rejections", "type": "number" },
             { "selector": "p95_reject_ms", "text": "p95_reject_ms", "type": "number" }
           ],
           "url_options": {
             "method": "POST", "body_type": "raw", "body_content_type": "text/plain",
-            "data": "SELECT sumIf(_sample_interval, blob3 IN ('search', 'search_throttled')) AS attempts, sumIf(_sample_interval, blob3 = 'search_throttled') AS rejections, if(sumIf(_sample_interval, blob3 IN ('search', 'search_throttled')) = 0, 0, 100 * sumIf(_sample_interval, blob3 = 'search_throttled') / sumIf(_sample_interval, blob3 IN ('search', 'search_throttled'))) AS throttle_share_pct, if(sumIf(_sample_interval, blob3 = 'search_throttled') = 0, 0, quantileExactWeighted(0.95)(double1, if(blob3 = 'search_throttled', _sample_interval, 0))) AS p95_reject_ms FROM crosmos_api WHERE blob3 IN ('search', 'search_throttled') AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}')"
+            "data": "SELECT blob5 AS reason, sum(_sample_interval) AS rejections, quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_reject_ms FROM crosmos_api WHERE blob3 = 'search_throttled' AND length(blob4) = 8 AND timestamp >= toDateTime('${__from:date:YYYY-MM-DD HH:mm:ss}') AND timestamp < toDateTime('${__to:date:YYYY-MM-DD HH:mm:ss}') GROUP BY reason ORDER BY rejections DESC"
           }
         }
       ],
