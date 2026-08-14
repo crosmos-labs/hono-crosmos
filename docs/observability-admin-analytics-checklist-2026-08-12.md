@@ -737,9 +737,10 @@ latency.
 
 ### [~] P-1. Batch the two retrieval memory ANN searches
 
-_Implemented locally 2026-08-14 with per-search Qdrant batch options and
-adapter tests proving one request and positional result parity. Frozen-snapshot
-and deployed latency gates remain._
+_Implemented locally 2026-08-14 with per-search Qdrant batch options. Adapter
+tests prove one transport request, positional result handling, and exact
+IDs/order/scores against the legacy two-call path on a frozen response snapshot.
+The deployed latency gate remains._
 
 **Why**
 
