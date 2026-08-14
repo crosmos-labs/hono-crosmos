@@ -163,6 +163,7 @@ new evidence explicitly reactivates them.
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-14 | Completed O-7 repository span coverage by wrapping every remaining manually measured async search/ingestion boundary around its real work, while retaining synchronous calculations and retroactive queue wait as metric/log-only. API (108 pass), ingestion (85 pass), and observability tests plus production/test typechecks and both environment bundles passed. Staging and production public smoke returned opaque request IDs without timing fields; version-tagged `request_total`, `http_request`, and `auth_total` rows landed in both private API datasets. Persisted trace/log inspection and hosted Tempo/Loki remain externally gated. | staging `6216a8bc-6968-42be-bf5e-840124e5e8a8`; production `46802de1-2acf-489a-af05-51d50aef118f` | staging `1ee82537-9475-4285-be59-4bf7819b8ec2`; production `63462a00-a53d-4179-890a-5c0af14658e8` | — |
 | 2026-08-14 | Added the bounded A-4 organization detail surface and selectable current/previous overview windows with new/active counts and deltas; moved entitlement resolution into the shared runtime so API and admin cannot drift. Full workspace tests/typechecks and staging bundles passed. Staging public health and missing-credential admin denial passed; production public API smoke passed and Cloudflare Access intercepted admin requests before the Worker. Allowlisted live read reconciliation remains browser-gated. | — | staging `c07aa47f-45c6-4425-a77b-49eba663a140`; production `edc63d21-2a2e-4653-9245-7e4a0f6d39f4` | staging `beed94dd-2090-459a-aa6f-d824a7eed1a9`; production `3c4aa26a-c760-498e-b3df-275cb420c8f7` |
 | 2026-08-14 | Promoted the U-3 tested fail-open rollup helper after 85 ingestion tests and a staging dry run passed. Staging deployed normally. Production accepted and activated the new version, then Wrangler received a transient Cloudflare 503 while enumerating queues; a deployment read confirmed the version at 100%, and direct consumer reads confirmed both the primary and DLQ consumers still target `crosmos-ingestion-production` with their expected limits. | staging `56ef774a-752c-41c0-88ec-55a1713b3fe1`; production `e9c94434-04ca-43d7-9326-011f31c17889` | — | — |
 | 2026-08-14 | Promoted O-4/O-7 timing coverage to production after the staging gate. The first bare ingestion deploy was rejected before upload because it selected a nonexistent development Vectorize index; the explicit production deploy then succeeded. Public smoke verified the security endpoint, opaque request ID, and absence of timing headers/OpenAPI fields. Private Analytics Engine rows under the new API version include `request_total`, `http_request`, search stages, retrieval signals, and a successful live `/api/v1/search`; exact persisted-log/trace and hosted Grafana checks remain. | `a1b686ad-21f5-40af-b19c-a43e5a57f612` | `6c547aa3-93e0-4b56-8b64-0be2a0bbe1c8` | — |
@@ -523,6 +524,12 @@ cannot query Workers Observability and no authenticated browser was connected.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
+The final async-span coverage follow-up deployed to staging as API `1ee82537`
+and ingestion `6216a8bc`, then production as API `63462a00` and ingestion
+`46802de1`. Both public surfaces again exposed only the opaque request id, and
+private `request_total`, `http_request`, and `auth_total` rows landed under each
+new API version. The production ingestion deploy retained both primary and DLQ
+queue consumers.
 The outer
 request clock classifies every 4xx/5xx response as `failed`; a regression test
 pins both metric and span behavior for a 404. Search now has a parent
