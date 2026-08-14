@@ -108,12 +108,12 @@ External state is recorded here before L-3 is marked complete:
 
 | Setting | Required value | Deployed value |
 |---|---|---|
-| Dataset | `workers_trace_events` | _pending_ |
-| Workers | API and ingestion, production and staging | _pending_ |
-| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | Private `crosmos-worker-logs` bucket created 2026-08-14 in `enam`; Logpush prefixes pending |
+| Dataset | `workers_trace_events` | Account job `1838803`, enabled and reporting `Pushing` on 2026-08-14 |
+| Workers | API and ingestion, production and staging | Account-scoped job created; per-script landed-object coverage pending |
+| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | Cloudflare-managed private bucket `cloudflare-managed-9459b43b` in APAC; first object/path verification pending. The original empty `crosmos-worker-logs` bucket is retained until verification finishes. |
 | Selected fields | `Event`, `EventTimestampMs`, `Outcome`, `Exceptions`, `Logs`, `ScriptName` | _pending_ |
-| Sampling | 100% production; staging reviewed after L-1 volume measurement | _pending_ |
-| Lifecycle | Delete objects after 90 days | Enabled rule `expire-operational-logs`, verified 2026-08-14 |
+| Sampling | 100% production; staging reviewed after L-1 volume measurement | Automatic job default is unsampled; live output verification pending |
+| Lifecycle | Delete objects after 90 days | Enabled rule `expire-operational-logs` on the managed destination, verified 2026-08-14 |
 | Query credential | Read-only, bucket-scoped R2 token | _pending_ |
 
 `logpush = true` is committed for the default, staging, and production variants
@@ -142,17 +142,19 @@ bunx wrangler r2 bucket lifecycle add \
 bunx wrangler r2 bucket lifecycle list crosmos-worker-logs
 ```
 
-Next create a bucket-scoped R2 write credential for Logpush and an account API
-token with `Logs Write`. Create one enabled `workers_trace_events` Logpush job
-per deployed script, with the fields in the table above, 100% sampling, and a
-`ScriptName` equality filter:
+Cloudflare's automatic R2 setup was used after the manual destination form
+stalled in the dashboard. It created account job `1838803`, its destination,
+and the writer credential. The credential was then restricted to Object Read &
+Write on that destination bucket only. The account-level job should cover these
+deployed scripts; verify each from landed records before treating that as fact:
 
 - `crosmos-api-production`
 - `crosmos-api-staging`
 - `crosmos-ingestion-production`
 - `crosmos-ingestion-staging`
 
-Use a separate date-partitioned prefix for each script:
+If the account job does not retain `ScriptName` or cover every intended script,
+replace it with separate date-partitioned jobs using this destination shape:
 
 ```text
 r2://crosmos-worker-logs/<SCRIPT_NAME>/{DATE}?account-id=<ACCOUNT_ID>&access-key-id=<R2_WRITE_ACCESS_KEY_ID>&secret-access-key=<R2_WRITE_SECRET_ACCESS_KEY>

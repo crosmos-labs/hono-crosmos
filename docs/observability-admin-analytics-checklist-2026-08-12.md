@@ -147,6 +147,7 @@ So the real gaps are narrower than they feel:
 | 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
 | 2026-08-14 | Created the private R2 archive bucket with a verified 90-day lifecycle; deployed the admin Worker behind the Access application; configured its issuer/AUD/four-email allowlist; verified the unauthenticated redirect, issuer JWKS, a successful allowlisted `/admin/whoami` browser session, and production totals from `/admin/overview`. | — | — | `78889c96-00b8-4cef-81ca-d7853366fb38` |
+| 2026-08-14 | Enabled account Logpush job `1838803` for Workers Trace Events using Cloudflare's automatic R2 destination `cloudflare-managed-9459b43b`; restricted its writer credential to that bucket and added the verified 90-day expiry rule. First landed-object verification remains pending. | — | — | — |
 
 ---
 
@@ -1542,10 +1543,11 @@ affect request admission.
 
 ### [~] L-3. Logpush to R2
 
-_Both Workers are Logpush-eligible and the exact account configuration is
-documented. The private `crosmos-worker-logs` bucket and 90-day lifecycle were
-created and verified 2026-08-14. Jobs, credentials, landed-object, truncation,
-and cost checks remain external._
+_Both Workers are Logpush-eligible and account job `1838803` is enabled for
+Workers Trace Events. Cloudflare's automatic setup created the private
+`cloudflare-managed-9459b43b` destination; its writer was restricted to that
+bucket and its 90-day lifecycle was verified 2026-08-14. Landed-object,
+per-worker coverage, truncation, query-credential, and cost checks remain._
 
 **Why**
 
@@ -1562,9 +1564,9 @@ already holding.
 
 **Repository change**
 
-- `[external]` A Logpush job on the **Workers Trace Events** dataset for each
-  worker, delivering gzipped NDJSON to a dedicated R2 bucket, partitioned by
-  date.
+- `[external]` An account-level Logpush job on the **Workers Trace Events**
+  dataset, delivering gzipped NDJSON for the eligible workers to a dedicated
+  R2 bucket, partitioned by date and distinguishable by `ScriptName`.
 - `[external]` A 90-day lifecycle rule on that bucket (L-1).
 - Document the job configuration in `docs/log-retention.md` so it is
   reconstructible; Logpush jobs are account configuration and are not captured
