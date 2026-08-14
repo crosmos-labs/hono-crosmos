@@ -494,9 +494,11 @@ Documentation and a script; no runtime effect.
 _In progress 2026-08-14. The outermost private `request_total` metric/log/custom
 span and its boundary documentation are implemented locally. The shared stage
 recorder now creates correctly nested custom spans for timed API stages; manual
-`record(...)` sites remain metric/log-only by design. Complete timing coverage,
-ingestion span threading, Grafana trace/log export, deployment, and an
-operator-tested single-request workflow remain._
+`record(...)` sites remain metric/log-only by design. Ingestion now threads the
+same tracer through `job_total`, per-attempt `source_total`, and its timed
+pipeline stages; observed queue wait is emitted as a metric/log rather than a
+fake retroactive span. Complete timing coverage, Grafana trace/log export,
+deployment, and an operator-tested single-request workflow remain._
 
 **Why**
 

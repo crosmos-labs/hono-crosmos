@@ -149,6 +149,18 @@ describe('requeue_incomplete — healthy forward progress', () => {
       result: { outcome: 'requeue_incomplete', chunksProcessed: 3 },
     });
     expect(h.published[0]!.enqueued_at_ms).toBe(5_000);
+    expect(h.events).toContainEqual({
+      level: 'info',
+      event: 'ingestion.stage_completed',
+      fields: {
+        stage: 'queue_wait',
+        status: 'ok',
+        duration_ms: 4_000,
+        input_count: -1,
+        output_count: -1,
+        transfer_bytes: -1,
+      },
+    });
   });
 
   test('continuation_count starts at 1 and increments across hops', async () => {

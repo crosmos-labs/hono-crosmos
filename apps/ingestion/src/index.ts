@@ -1,5 +1,10 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { createLogger, createMetrics, type Logger } from '@crosmos/observability';
+import {
+  createLogger,
+  createMetrics,
+  type Logger,
+  type TraceProvider,
+} from '@crosmos/observability';
 import { systemClock } from '@crosmos/runtime';
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { Env } from './bindings';
@@ -134,6 +139,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         analytics: this.env.ANALYTICS,
         environment: this.env.ENVIRONMENT,
         version: this.env.CF_VERSION_METADATA?.id,
+        tracing: this.tracing,
       });
       // On the RPC fast path we don't own the queue message, so we can't re-queue
       // it ourselves — but `processIngestion` already reset the job to `pending`,
@@ -201,7 +207,12 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       analytics: this.env.ANALYTICS,
       environment: this.env.ENVIRONMENT,
       version: this.env.CF_VERSION_METADATA?.id,
+      tracing: this.tracing,
     };
+  }
+
+  private get tracing(): TraceProvider | undefined {
+    return (this.ctx as ExecutionContext & { tracing?: TraceProvider }).tracing;
   }
 }
 
