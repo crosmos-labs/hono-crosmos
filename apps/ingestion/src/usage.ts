@@ -7,6 +7,7 @@ import {
   recordIngestionUsage as recordUsage,
   type Database,
 } from '@crosmos/db';
+import type { Logger, StageRecorder } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 
 export async function recordIngestionUsage(
@@ -15,4 +16,22 @@ export async function recordIngestionUsage(
   input: Parameters<typeof recordUsage>[2],
 ): Promise<void> {
   await recordUsage(db, scope, input);
+}
+
+export async function recordIngestionUsageBestEffort(options: {
+  db: Database;
+  scope: TenantScope;
+  input: Parameters<typeof recordUsage>[2];
+  stages: StageRecorder;
+  logger: Logger;
+}): Promise<void> {
+  try {
+    await options.stages.time(
+      'ingestion_usage_rollup',
+      { dependency: 'database' },
+      () => recordUsage(options.db, options.scope, options.input),
+    );
+  } catch (error) {
+    options.logger.warn('ingestion.record_tokens_failed', {}, error);
+  }
 }
