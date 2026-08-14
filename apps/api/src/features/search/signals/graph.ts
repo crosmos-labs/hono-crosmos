@@ -234,6 +234,11 @@ export interface GraphSearchOptions {
   signal?: AbortSignal;
   /** Precomputed memory ANN seed from the heterogeneous Qdrant batch. */
   memorySeedMatches?: VectorMatch[];
+  /**
+   * Differential-test seam for the historical edge loader. Production callers
+   * omit this and always use the bounded UNION query above.
+   */
+  edgeLoader?: typeof getEdgesForEntities;
 }
 
 export async function graphSearchWithStore(
@@ -345,7 +350,12 @@ export async function graphSearchWithStore(
 
     // Already confidence-filtered, ordered and capped by SQL — see
     // `getEdgesForEntities`. Preserve that order; do not re-sort.
-    const hopEdges = await getEdgesForEntities(db, [...frontier], asOf, scope);
+    const hopEdges = await (options?.edgeLoader ?? getEdgesForEntities)(
+      db,
+      [...frontier],
+      asOf,
+      scope,
+    );
 
     const nextFrontier = new Set<number>();
     const nextFrontierRelevance = new Map<number, number>();
