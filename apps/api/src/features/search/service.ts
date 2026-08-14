@@ -18,6 +18,7 @@ import {
   type Logger,
   type Metrics,
   type StageRecorder,
+  type TraceProvider,
 } from '@crosmos/observability';
 import type { TenantScope } from '@crosmos/types';
 import { attachCandidateProvenance, attachSourceContent } from './candidates';
@@ -110,6 +111,8 @@ export interface RetrieveInput {
    * signal name, ok/failed, a reason enum. Never ids, never the query.
    */
   metrics?: Metrics;
+  /** Cloudflare custom-spans surface; omitted by standalone callers/tests. */
+  tracing?: TraceProvider;
   /**
    * Wall-clock reference for the time-dependent parts of scoring — recency decay
    * and persistence's intrinsic decay. Defaults to now; production never sets it.
@@ -200,6 +203,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const stages = createStageRecorder({
     logger,
     metrics: input.metrics,
+    tracing: input.tracing,
     event: 'retrieval.stage_completed',
     metric: 'api_stage',
   });
