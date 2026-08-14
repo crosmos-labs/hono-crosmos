@@ -42,6 +42,8 @@ export const organizations = pgTable(
     planPendingExpiresAt: timestamp('plan_pending_expires_at', {
       withTimezone: true,
     }),
+    grantedPlan: planType('granted_plan'),
+    grantedPlanExpiresAt: timestamp('granted_plan_expires_at', { withTimezone: true }),
     createdByUserId: integer('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -56,6 +58,9 @@ export const organizations = pgTable(
     uniqueIndex('organizations_slug_idx').on(t.slug),
     index('organizations_plan_idx').on(t.plan),
     index('organizations_created_at_idx').on(t.createdAt),
+    index('organizations_granted_plan_expiry_idx')
+      .on(t.grantedPlanExpiresAt)
+      .where(sql`granted_plan IS NOT NULL`),
   ],
 );
 

@@ -7,6 +7,7 @@ import {
   timestamp,
   unique,
   uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
 import { memorySpaces } from './memory-spaces';
@@ -51,6 +52,9 @@ export const dailyUsage = pgTable(
     date: date('date').notNull(),
     tokensIngested: integer('tokens_ingested').notNull().default(0),
     searchQueries: integer('search_queries').notNull().default(0),
+    sourcesIngested: integer('sources_ingested').notNull().default(0),
+    sourcesFailed: integer('sources_failed').notNull().default(0),
+    memoriesCreated: integer('memories_created').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -67,9 +71,43 @@ export const dailyUsage = pgTable(
     ),
     index('daily_usage_user_id_idx').on(t.userId),
     index('daily_usage_org_id_idx').on(t.orgId),
+    index('daily_usage_org_date_idx').on(t.orgId, t.date),
     index('daily_usage_user_date_idx').on(t.userId, t.date),
   ],
 );
 
 export type DailyUsage = typeof dailyUsage.$inferSelect;
 export type NewDailyUsage = typeof dailyUsage.$inferInsert;
+
+export const dailySourceContentTypes = pgTable(
+  'daily_source_content_types',
+  {
+    id: serial('id').primaryKey(),
+    uuid: uuid('uuid').notNull().unique().$defaultFn(generateUuidV7),
+    orgId: integer('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    spaceId: integer('space_id').notNull(),
+    date: date('date').notNull(),
+    contentType: varchar('content_type', { length: 50 }).notNull(),
+    count: integer('count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('uq_daily_source_content_type').on(
+      t.orgId,
+      t.userId,
+      t.spaceId,
+      t.date,
+      t.contentType,
+    ),
+    index('daily_source_content_types_org_date_idx').on(t.orgId, t.date),
+    index('daily_source_content_types_space_date_idx').on(t.spaceId, t.date),
+  ],
+);
+
+export type DailySourceContentType = typeof dailySourceContentTypes.$inferSelect;

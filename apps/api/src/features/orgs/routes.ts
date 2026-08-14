@@ -37,7 +37,7 @@ import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { removeUserFromAllGroups } from '../visibility/service';
-import { getEntitlements, getMonthlyUsage } from './entitlements';
+import { activeGrantedPlan, getEntitlements, getMonthlyUsage } from './entitlements';
 import { getMembership } from './memberships';
 import {
   countMembers,
@@ -83,6 +83,9 @@ function orgToSummaryRow(
     slug: org.slug,
     name: org.name,
     plan: org.plan,
+    active_grant: activeGrantedPlan(org) && org.grantedPlanExpiresAt
+      ? { plan: org.grantedPlan!, expires_at: org.grantedPlanExpiresAt.toISOString() }
+      : null,
     billing_email: org.billingEmail,
     created_at: org.createdAt.toISOString(),
     updated_at: org.updatedAt.toISOString(),
@@ -97,6 +100,9 @@ function orgToShallow(org: Awaited<ReturnType<typeof getOrganizationByIdOrThrow>
     slug: org.slug,
     name: org.name,
     plan: org.plan,
+    active_grant: activeGrantedPlan(org) && org.grantedPlanExpiresAt
+      ? { plan: org.grantedPlan!, expires_at: org.grantedPlanExpiresAt.toISOString() }
+      : null,
     billing_email: org.billingEmail,
     created_at: org.createdAt.toISOString(),
     updated_at: org.updatedAt.toISOString(),
@@ -950,6 +956,9 @@ orgRoutes.openapi(
     return c.json(
       {
         plan: org.plan,
+        active_grant: activeGrantedPlan(org) && org.grantedPlanExpiresAt
+          ? { plan: org.grantedPlan!, expires_at: org.grantedPlanExpiresAt.toISOString() }
+          : null,
         entitlements: ent,
         usage_this_month: {
           tokens_ingested: tokens,

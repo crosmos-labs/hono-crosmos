@@ -20,7 +20,9 @@ import { sql } from 'drizzle-orm';
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
-  'postgresql://crosmos:crosmos@localhost:5433/crosmos_test';
+  // A literal loopback address avoids Bun's multi-address `localhost`
+  // connection race leaving a broken fallback timer after a refused probe.
+  'postgresql://crosmos:crosmos@127.0.0.1:5433/crosmos_test';
 
 let cached: Database | null = null;
 let reachable: boolean | null = null;
@@ -32,19 +34,24 @@ let reachable: boolean | null = null;
 export async function getTestDb(): Promise<Database | null> {
   if (reachable === false) return null;
   if (cached !== null) return cached;
+  let candidate: Database | null = null;
   try {
-    const db = createDb(TEST_DATABASE_URL, { max: 4 });
-    await db.execute(sql`select 1`);
+    candidate = createDb(TEST_DATABASE_URL, { max: 4 });
+    await candidate.execute(sql`select 1`);
     // `truncate ... cascade` emits one NOTICE per cascaded table, which
     // postgres.js prints as a structured object — dozens of lines per test.
     // `scripts/test-db-setup.sh` sets this at the DATABASE level (a SET here
     // covers only one of the pooled connections); this is a best-effort belt on
     // a database created before that was added.
-    await db.execute(sql`set client_min_messages = warning`);
-    cached = db;
+    await candidate.execute(sql`set client_min_messages = warning`);
+    cached = candidate;
     reachable = true;
-    return db;
+    return candidate;
   } catch {
+    // postgres.js can leave a multi-address connection timeout scheduled after
+    // the initial probe rejects. Close the failed pool so that timer cannot
+    // surface later inside an unrelated Bun test.
+    await candidate?.$client.end({ timeout: 0 }).catch(() => undefined);
     reachable = false;
     return null;
   }
@@ -73,7 +80,9 @@ export async function resetTestData(db: Database): Promise<void> {
       entities,
       sources,
       ingestion_jobs,
+      daily_source_content_types,
       daily_usage,
+      admin_audit_log,
       memory_spaces,
       organization_members,
       organizations,

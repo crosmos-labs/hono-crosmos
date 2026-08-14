@@ -30,6 +30,8 @@ export interface IngestionQueueConsumerDeps {
   analytics?: AnalyticsEngineDataset;
   /** Deployment environment, used as a metrics tag. */
   environment?: string;
+  /** Cloudflare Worker version id, truncated by `createMetrics`. */
+  version?: string;
 }
 
 /**
@@ -87,6 +89,7 @@ async function continueOrRetry(
     createMetrics(deps.analytics, {
       service: 'ingestion',
       environment: deps.environment,
+      version: deps.version,
     }).count('ingestion_continuation', {
       tags: ['refused', reason],
       values: [continuationCount, chunksProcessed],
@@ -135,6 +138,7 @@ async function continueOrRetry(
   createMetrics(deps.analytics, {
     service: 'ingestion',
     environment: deps.environment,
+    version: deps.version,
   }).count('ingestion_continuation', {
     tags: ['published', 'checkpoint_advanced'],
     values: [next, chunksProcessed],
@@ -190,6 +194,7 @@ export async function handleIngestionDelivery(
       logger,
       analytics: deps.analytics,
       environment: deps.environment,
+      version: deps.version,
     });
 
     // The queue is the durable backstop behind the direct RPC fast path.

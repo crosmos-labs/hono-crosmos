@@ -70,6 +70,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
       const metrics = createMetrics(this.env.ANALYTICS, {
         service: 'ingestion',
         environment: this.env.ENVIRONMENT,
+        version: this.env.CF_VERSION_METADATA?.id,
       });
       for (const message of batch.messages) {
         const body = message.body;
@@ -132,6 +133,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         logger,
         analytics: this.env.ANALYTICS,
         environment: this.env.ENVIRONMENT,
+        version: this.env.CF_VERSION_METADATA?.id,
       });
       // On the RPC fast path we don't own the queue message, so we can't re-queue
       // it ourselves — but `processIngestion` already reset the job to `pending`,
@@ -198,6 +200,7 @@ export class IngestionWorker extends WorkerEntrypoint<Env> {
         : undefined,
       analytics: this.env.ANALYTICS,
       environment: this.env.ENVIRONMENT,
+      version: this.env.CF_VERSION_METADATA?.id,
     };
   }
 }

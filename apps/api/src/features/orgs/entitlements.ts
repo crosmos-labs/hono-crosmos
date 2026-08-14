@@ -78,8 +78,17 @@ export const PLAN_DEFAULTS: Record<string, Entitlements> = {
   enterprise: ENTERPRISE,
 };
 
-export function resolveEntitlements(org: Organization): Entitlements {
-  const base = PLAN_DEFAULTS[org.plan] ?? FREE;
+export function activeGrantedPlan(
+  org: Organization,
+  now = new Date(),
+): string | null {
+  if (!org.grantedPlan || !org.grantedPlanExpiresAt) return null;
+  return org.grantedPlanExpiresAt.getTime() > now.getTime() ? org.grantedPlan : null;
+}
+
+export function resolveEntitlements(org: Organization, now = new Date()): Entitlements {
+  const basePlan = activeGrantedPlan(org, now) ?? org.plan;
+  const base = PLAN_DEFAULTS[basePlan] ?? FREE;
   const overrides = (org.entitlements as Entitlements | null) ?? {};
   return { ...base, ...overrides };
 }

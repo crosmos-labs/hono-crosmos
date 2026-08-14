@@ -33,11 +33,11 @@ import {
   oauthServerRoutes,
 } from './features/oauth/server.routes';
 import { orgRoutes } from './features/orgs/routes';
-import { adminRoutes } from './features/admin/reembed';
 import { searchRoutes } from './features/search/routes';
 import { sourceRoutes } from './features/sources/routes';
 import { spaceRoutes } from './features/spaces/routes';
 import { usageRoutes } from './features/usage/routes';
+import { analyticsRoutes, spaceAnalyticsRoutes } from './features/analytics/routes';
 import { visibilityRoutes } from './features/visibility/routes';
 
 // Max request body, in bytes. Bounds memory/transfer abuse (the audit flagged
@@ -45,7 +45,7 @@ import { visibilityRoutes } from './features/visibility/routes';
 // ingestion while rejecting pathological payloads with a 413 before JSON.parse.
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
-const app = new OpenAPIHono<HonoEnv>({
+export const app = new OpenAPIHono<HonoEnv>({
   defaultHook: (result, c) => {
     if (!result.success) {
       return c.json(
@@ -66,6 +66,7 @@ app.use(
     origin: (origin) => origin ?? '*',
     allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Authorization', 'Content-Type'],
+    exposeHeaders: ['X-Request-Id', 'X-Crosmos-Took-Ms'],
     credentials: true,
     maxAge: 600,
   }),
@@ -130,8 +131,10 @@ app.use('*', async (c, next) => {
   createMetrics(c.env.ANALYTICS, {
     service: 'api',
     environment: c.env.ENVIRONMENT,
+    version: c.env.CF_VERSION_METADATA?.id,
   }).count('http_request', {
-    // blobs: method, path, status; doubles: duration_ms
+    // blob4 is deploy version; blob5+: method, path, status.
+    // doubles: duration_ms.
     tags: [c.req.method, new URL(c.req.url).pathname, String(c.res.status)],
     values: [durationMs(start)],
     index: 'http_request',
@@ -241,15 +244,16 @@ app.route('/api/v1/auth/oauth', oauthConsumerRoutes);
 app.route('/api/v1/orgs', orgRoutes);
 app.route('/api/v1/orgs', visibilityRoutes);
 app.route('/api/v1/spaces', spaceRoutes);
+app.route('/api/v1/spaces', spaceAnalyticsRoutes);
 app.route('/api/v1/sources', sourceRoutes);
 app.route('/api/v1/memories', memoryRoutes);
 app.route('/api/v1/entities', entityRoutes);
 app.route('/api/v1/graph', graphRoutes);
 app.route('/api/v1/search', searchRoutes);
-app.route('/api/v1/_admin', adminRoutes);
 app.route('/api/v1/conversations', conversationRoutes);
 app.route('/api/v1/jobs', jobRoutes);
 app.route('/api/v1/usage', usageRoutes);
+app.route('/api/v1/analytics', analyticsRoutes);
 app.route('/api/v1/billing', billingRoutes);
 app.route('/webhooks', billingWebhookRoutes);
 app.route('/', oauthServerRoutes);
@@ -296,7 +300,11 @@ export default {
     // deferred a sweep's whole workload to the next cron — 15 minutes for the
     // re-drive, a full day for the daily sweeps. Capacity exhaustion and every
     // unclassified error still get exactly one attempt.
-    const metrics = sweepMetrics(env.ANALYTICS, env.ENVIRONMENT);
+    const metrics = sweepMetrics(
+      env.ANALYTICS,
+      env.ENVIRONMENT,
+      env.CF_VERSION_METADATA?.id,
+    );
     const sweep = <T>(name: string, run: () => Promise<T>) =>
       runSweep(name, logger, run, { metrics });
 
@@ -337,6 +345,7 @@ export default {
         cron: controller.cron,
         subscriptions_expired: billing.value!.expired,
         checkouts_abandoned: billing.value!.abandoned,
+        grants_expired: billing.value!.grantsExpired,
         attempts: billing.attempts,
       });
     }

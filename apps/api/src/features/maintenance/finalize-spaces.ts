@@ -39,13 +39,12 @@ import {
 } from '../spaces/service';
 
 /**
- * How long a tombstone must sit before physical cleanup. Must exceed the
- * ingestion job lease (`JOB_LEASE_MS`, 5 min) so a run that claimed its job
- * before the delete has reached a stop check and released it. Doubled for
- * headroom — this delay costs nothing, whereas cleaning up too early races a
- * live writer.
+ * Product retention window for a deleted space. Thirty days gives customers
+ * an audited recovery period while bounding erasure/storage retention. It also
+ * comfortably exceeds the ingestion job lease (`JOB_LEASE_MS`, 5 min).
+ * `SPACE_FINALIZER_ENABLED` remains the independent destructive kill switch.
  */
-export const SPACE_FINALIZE_GRACE_MS = 10 * 60_000;
+export const SPACE_FINALIZE_GRACE_MS = 30 * 24 * 60 * 60_000;
 
 /** Spaces finalized per sweep. Bounded so one run cannot become unbounded work. */
 export const SPACE_FINALIZE_BATCH = 10;
@@ -90,6 +89,7 @@ export async function runSpaceFinalization(env: Env): Promise<FinalizeSpacesResu
   const metrics = createMetrics(env.ANALYTICS, {
     service: 'api',
     environment: env.ENVIRONMENT,
+    version: env.CF_VERSION_METADATA?.id,
   });
   const db = createDb(env.HYPERDRIVE.connectionString, { max: 2 });
   const vectorStore = getVectorStore(env, db);
