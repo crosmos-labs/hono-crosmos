@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **9 complete** (`[x]`);
-- **22 partial or awaiting a verification gate** (`[~]`);
+- **10 complete** (`[x]`);
+- **21 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1459,11 +1459,14 @@ deciding the number before switching the flag on rather than after.
 
 ## U — User-facing analytics
 
-### [~] U-1. Extend the daily rollups
+### [x] U-1. Extend the daily rollups
 
 _Applied and verified on the production backup and production on 2026-08-14,
 including the org/date covering index and content-type table. Historical rows
-were preserved and initialized with zero-valued new counters._
+were preserved and initialized with zero-valued new counters. A rolled-back
+10,000-row production-shaped plan check selected
+`daily_usage_org_date_idx` for the bounded org/date read (89 rows in `0.020 ms`),
+and the migrated HTTP suite verifies the existing reads and quota rollups._
 
 **Why**
 
