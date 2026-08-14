@@ -165,6 +165,7 @@ new evidence explicitly reactivates them.
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-14 | Added the bounded A-4 organization detail surface and moved entitlement resolution into the shared runtime so API and admin cannot drift. Full workspace tests/typechecks and both staging bundles passed. Staging public health and missing-credential admin denial passed; production public API smoke passed and Cloudflare Access intercepted admin requests before the Worker. Allowlisted live org-detail reconciliation remains browser-gated. | — | staging `c07aa47f-45c6-4425-a77b-49eba663a140`; production `edc63d21-2a2e-4653-9245-7e4a0f6d39f4` | staging `cb29e52d-6da5-47c2-8055-a39783899dbc`; production `339f801f-f290-48a0-a049-e5b7805c4143` |
 | 2026-08-14 | Promoted the U-3 tested fail-open rollup helper after 85 ingestion tests and a staging dry run passed. Staging deployed normally. Production accepted and activated the new version, then Wrangler received a transient Cloudflare 503 while enumerating queues; a deployment read confirmed the version at 100%, and direct consumer reads confirmed both the primary and DLQ consumers still target `crosmos-ingestion-production` with their expected limits. | staging `56ef774a-752c-41c0-88ec-55a1713b3fe1`; production `e9c94434-04ca-43d7-9326-011f31c17889` | — | — |
 | 2026-08-14 | Promoted O-4/O-7 timing coverage to production after the staging gate. The first bare ingestion deploy was rejected before upload because it selected a nonexistent development Vectorize index; the explicit production deploy then succeeded. Public smoke verified the security endpoint, opaque request ID, and absence of timing headers/OpenAPI fields. Private Analytics Engine rows under the new API version include `request_total`, `http_request`, search stages, retrieval signals, and a successful live `/api/v1/search`; exact persisted-log/trace and hosted Grafana checks remain. | `a1b686ad-21f5-40af-b19c-a43e5a57f612` | `6c547aa3-93e0-4b56-8b64-0be2a0bbe1c8` | — |
 | 2026-08-14 | Deployed O-4/O-7 private timing and span coverage to staging after the full workspace test/typecheck suite and both Worker dry-run bundles passed. Live smoke verified the security endpoint, opaque request ID, absence of public timing headers/OpenAPI fields, and a version-tagged private `request_total` Analytics Engine row. Persisted-log/custom-trace and hosted Grafana checks remain because the available Wrangler OAuth token lacks Workers Observability query permission and no authenticated browser was connected. | `5c23c3e4-e95c-42d7-b0fe-457cafcca6dd` | `4d103e8a-b44a-4476-a075-c74c5335cbb1` | — |
@@ -1247,9 +1248,14 @@ production.
 
 _Bounded platform overview, user lookup, ingestion health, failed/stuck jobs,
 and tombstones with purge-eligibility times are implemented without returning
-source or memory content. Full org-detail membership/key/job enrichment and
-live reconciliation remain. The Access-authenticated production
-`/admin/overview` totals were verified in-browser on 2026-08-14._
+source or memory content. Bounded org detail now includes resolved
+grant/entitlement state, month-to-date usage versus limits, members, spaces,
+API-key metadata, and recent job metadata with capped offset pagination.
+Migrated route tests reconcile overview and tombstone counts and assert that
+source content, source-id arrays, and key hashes are absent. The
+Access-authenticated production `/admin/overview` totals were verified
+in-browser on 2026-08-14; allowlisted live reconciliation of the new org-detail
+route remains._
 
 **Why**
 
