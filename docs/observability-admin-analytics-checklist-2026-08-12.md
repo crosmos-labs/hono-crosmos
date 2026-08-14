@@ -150,8 +150,8 @@ So the real gaps are narrower than they feel:
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
 
-- **13 complete** (`[x]`);
-- **18 partial or awaiting a verification gate** (`[~]`);
+- **14 complete** (`[x]`);
+- **17 partial or awaiting a verification gate** (`[~]`);
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
@@ -1554,12 +1554,16 @@ the difference is visible rather than silently missing.
 
 Documentation only.
 
-### [~] U-3. Write the counters at the existing site
+### [x] U-3. Write the counters at the existing site
 
 _Deployed 2026-08-14 at the existing completion/budget/cancellation sites with
 a shared DB helper and newly-failed-only accounting. A production smoke ingest
-recorded one completed source, one memory, and one content type; continuation
-and rollup-failure fault tests against real Postgres remain._
+recorded one completed source, one memory, and one content type. Migrated
+Postgres tests now prove a continuation/retry accounts its source, distinct
+memories, content type, and input tokens once; a partial job records completed
+and failed sources separately; and a forced rollup database failure is logged
+without escaping to the job caller. All three production call sites use that
+tested fail-open helper._
 
 **Why**
 
