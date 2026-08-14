@@ -146,6 +146,7 @@ So the real gaps are narrower than they feel:
 |---|---|---|---|---|
 | 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
+| 2026-08-14 | Created the private R2 archive bucket with a verified 90-day lifecycle; deployed the admin Worker behind the Access application, configured its issuer/AUD/four-email allowlist, and verified the unauthenticated redirect plus issuer JWKS. Positive browser identity verification remains. | — | — | `78889c96-00b8-4cef-81ca-d7853366fb38` |
 
 ---
 
@@ -837,9 +838,9 @@ microbenchmark—counts.
 
 ### [~] A-1. Create the `apps/admin` worker
 
-_Implemented locally with independent routes, Hyperdrive, Analytics Engine,
-KV, and rate-limiter bindings; there is no queue producer or ingestion service
-binding. Typecheck and Wrangler dry-run pass; staging deploy remains._
+_Deployed to production 2026-08-14 as version `78889c96` with independent
+Hyperdrive, Analytics Engine, KV, and rate-limiter bindings; there is no queue
+producer or ingestion service binding. Staging deploy remains._
 
 **Why**
 
@@ -876,9 +877,11 @@ Delete the worker and its route. Nothing else depends on it.
 
 ### [~] A-2. Two independent gates, neither of them a database value
 
-_Cloudflare Access JWT verification, audience/issuer/expiry checks, cached JWKS,
-the environment email allowlist, and per-IP rate limiting are implemented and
-covered by four route tests. The Access application itself remains external._
+_The production Access application protects `admin.crosmos.dev`; issuer, AUD,
+and all four exact admin emails are configured as Worker secrets. The
+unauthenticated redirect and issuer JWKS were verified on 2026-08-14. Positive
+browser identity verification remains; four route tests cover JWT, audience,
+expiry, allowlist, and per-IP enforcement._
 
 **Why**
 
@@ -1538,8 +1541,9 @@ affect request admission.
 ### [~] L-3. Logpush to R2
 
 _Both Workers are Logpush-eligible and the exact account configuration is
-documented. Bucket, jobs, lifecycle, landed-object, truncation, and cost checks
-are external and remain._
+documented. The private `crosmos-worker-logs` bucket and 90-day lifecycle were
+created and verified 2026-08-14. Jobs, credentials, landed-object, truncation,
+and cost checks remain external._
 
 **Why**
 

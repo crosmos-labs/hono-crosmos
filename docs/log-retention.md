@@ -110,10 +110,10 @@ External state is recorded here before L-3 is marked complete:
 |---|---|---|
 | Dataset | `workers_trace_events` | _pending_ |
 | Workers | API and ingestion, production and staging | _pending_ |
-| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | _pending_ |
+| Destination | Dedicated private R2 bucket, date-partitioned gzipped NDJSON | Private `crosmos-worker-logs` bucket created 2026-08-14 in `enam`; Logpush prefixes pending |
 | Selected fields | `Event`, `EventTimestampMs`, `Outcome`, `Exceptions`, `Logs`, `ScriptName` | _pending_ |
 | Sampling | 100% production; staging reviewed after L-1 volume measurement | _pending_ |
-| Lifecycle | Delete objects after 90 days | _pending_ |
+| Lifecycle | Delete objects after 90 days | Enabled rule `expire-operational-logs`, verified 2026-08-14 |
 | Query credential | Read-only, bucket-scoped R2 token | _pending_ |
 
 `logpush = true` is committed for the default, staging, and production variants
