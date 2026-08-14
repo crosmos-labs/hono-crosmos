@@ -165,6 +165,7 @@ new evidence explicitly reactivates them.
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-14 | Promoted O-4/O-7 timing coverage to production after the staging gate. The first bare ingestion deploy was rejected before upload because it selected a nonexistent development Vectorize index; the explicit production deploy then succeeded. Public smoke verified the security endpoint, opaque request ID, and absence of timing headers/OpenAPI fields. Private Analytics Engine rows under the new API version include `request_total`, `http_request`, search stages, retrieval signals, and a successful live `/api/v1/search`; exact persisted-log/trace and hosted Grafana checks remain. | `a1b686ad-21f5-40af-b19c-a43e5a57f612` | `6c547aa3-93e0-4b56-8b64-0be2a0bbe1c8` | — |
 | 2026-08-14 | Deployed O-4/O-7 private timing and span coverage to staging after the full workspace test/typecheck suite and both Worker dry-run bundles passed. Live smoke verified the security endpoint, opaque request ID, absence of public timing headers/OpenAPI fields, and a version-tagged private `request_total` Analytics Engine row. Persisted-log/custom-trace and hosted Grafana checks remain because the available Wrangler OAuth token lacks Workers Observability query permission and no authenticated browser was connected. | `5c23c3e4-e95c-42d7-b0fe-457cafcca6dd` | `4d103e8a-b44a-4476-a075-c74c5335cbb1` | — |
 | 2026-08-14 | Applied `0004_tense_speed` to the backup and production in single transactions; deployed observability, analytics, and result-preserving latency changes; completed public, authenticated retrieval, ingestion, analytics, and soft-delete smoke tests. | `3bfcc097-addf-4933-9115-b36374edf485` | `a81117b3-8901-46af-9483-03559cbbe69a` | Pending Cloudflare Access application |
 | 2026-08-14 | Backfilled analytics for 2026-04-25 through 2026-08-13 (`2,542` completed sources, `28` failures, `4,806` memories), reconciled against authoritative rows, and deployed the legacy-metadata preservation fix found by the backup rehearsal. | `511f7532-8722-4f7a-82de-881135c29402` | `561a810c-4054-41ab-9fbf-e3a5d8787590` | Pending Cloudflare Access application |
@@ -335,8 +336,11 @@ the bounded 2026-08-14 verification, but the operator subsequently decided that
 server timing is developer telemetry, not part of the public `/search`
 contract. The private `search` Analytics Engine metric and
 `retrieval.request_completed` structured log already retain the same duration.
-Header removal and a private request-id-based benchmark reader are implemented
-locally; deployment and live private-telemetry reconciliation remain._
+Header removal and a private request-id-based benchmark reader are deployed to
+staging and production. Live public-surface verification passed under API
+versions `4d103e8a` and `6c547aa3`; live private request-id reconciliation
+remains because the available operator credential cannot query Workers
+Observability._
 
 **Why**
 
@@ -504,12 +508,15 @@ the shared metric/log/span recorder. Authentication now records `auth_total`,
 API-key hashing/cache/DB resolution, JWT verification/revocation/user loading,
 principal resolution, and management limiting through the same recorder.
 Complete timing coverage, hosted panel verification, Grafana trace/log export,
-production deployment, and an operator-tested single-request workflow remain.
+and an operator-tested single-request workflow remain.
 The staging API (`4d103e8a`) and ingestion (`5c23c3e4`) deployments passed their
 public-surface smoke on 2026-08-14, and `request_total` landed privately in
 `crosmos_api_staging` with the deployed API version. Persisted-log/custom-trace
 inspection remains unverified because the available Wrangler OAuth credential
 cannot query Workers Observability and no authenticated browser was connected.
+Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
+smoke passed, and private aggregate telemetry included the three API clocks plus
+a successful live search under the new API version.
 The outer
 request clock classifies every 4xx/5xx response as `failed`; a regression test
 pins both metric and span behavior for a 404. Search now has a parent
