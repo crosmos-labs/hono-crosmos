@@ -114,9 +114,25 @@ async function main() {
       UPDATE sources
       SET meta = CASE
         WHEN extraction_status = 'completed' THEN
-          jsonb_set(coalesce(meta, '{}'::jsonb), '{analytics_completion_recorded}', 'true'::jsonb)
+          jsonb_set(
+            CASE
+              WHEN jsonb_typeof(meta) = 'object' THEN meta
+              WHEN meta IS NULL THEN '{}'::jsonb
+              ELSE jsonb_build_object('legacy_value', meta)
+            END,
+            '{analytics_completion_recorded}',
+            'true'::jsonb
+          )
         WHEN extraction_status = 'failed' THEN
-          jsonb_set(coalesce(meta, '{}'::jsonb), '{analytics_failure_recorded}', 'true'::jsonb)
+          jsonb_set(
+            CASE
+              WHEN jsonb_typeof(meta) = 'object' THEN meta
+              WHEN meta IS NULL THEN '{}'::jsonb
+              ELSE jsonb_build_object('legacy_value', meta)
+            END,
+            '{analytics_failure_recorded}',
+            'true'::jsonb
+          )
         ELSE meta
       END
       WHERE extraction_status IN ('completed', 'failed')

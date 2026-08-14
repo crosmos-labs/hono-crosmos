@@ -1,5 +1,11 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { apiKeys, organizationMembers, type Database } from '@crosmos/db';
+import {
+  apiKeys,
+  organizationMembers,
+  recordIngestionUsage,
+  sources,
+  type Database,
+} from '@crosmos/db';
 import { announceSkip, getTestDb, resetTestData, seedTenant, type Tenant } from '@crosmos/test-support';
 import { sql } from 'drizzle-orm';
 import type { HonoEnv } from '../src/bindings';
@@ -105,5 +111,35 @@ describeDb('analytics HTTP routes', () => {
     expect((await request(`/api/v1/spaces/${ownSpaceUuid}/analytics`, scopedKey)).status).toBe(200);
     expect((await request('/api/v1/analytics/summary', scopedKey)).status).toBe(403);
     expect((await request(`/api/v1/spaces/${otherSpaceUuid}/analytics`, scopedKey)).status).toBe(403);
+  });
+
+  test('rollup markers preserve legacy non-object source metadata', async () => {
+    const [source] = await db!.insert(sources).values({
+      orgId: tenant.orgId,
+      spaceId: tenant.spaceId,
+      ownerUserId: tenant.userId,
+      content: 'legacy metadata regression fixture',
+      extractionStatus: 'completed',
+      tokenCount: 4,
+      meta: ['legacy-array-value'],
+    }).returning({ id: sources.id });
+
+    await recordIngestionUsage(db!, {
+      orgId: tenant.orgId,
+      userId: tenant.userId,
+      spaceId: tenant.spaceId,
+    }, {
+      tokens: 4,
+      completedSourceIds: [source!.id],
+      failedSourceIds: [],
+    });
+
+    const [updated] = await db!.select({ meta: sources.meta })
+      .from(sources)
+      .where(sql`${sources.id} = ${source!.id}`);
+    expect(updated!.meta).toEqual({
+      analytics_completion_recorded: true,
+      legacy_value: ['legacy-array-value'],
+    });
   });
 });
