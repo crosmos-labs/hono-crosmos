@@ -123,6 +123,13 @@ beforeEach(async () => {
 
 describeDb('admin audited operations', () => {
   test('overview, lookup, and ingestion health reconcile without returning content', async () => {
+    await database!.insert(dailyUsage).values({
+      orgId: tenant.orgId,
+      userId: tenant.userId,
+      spaceId: tenant.spaceId,
+      date: sql`current_date`,
+      searchQueries: 1,
+    });
     const [overviewResponse, userResponse] = await Promise.all([
       request('/admin/overview'),
       request('/admin/users?email=owner@test.local'),
@@ -136,6 +143,11 @@ describeDb('admin audited operations', () => {
         sources: 1,
         memories: 0,
       },
+      new: { users: 2, organizations: 1, spaces: 1, sources: 1, memories: 0 },
+      previous_window_new: { users: 0, organizations: 0, spaces: 0, sources: 0, memories: 0 },
+      active: { users: 1, organizations: 1, spaces: 1 },
+      previous_window_active: { users: 0, organizations: 0, spaces: 0 },
+      deltas: { users: 2, organizations: 1, spaces: 1, sources: 1, memories: 0 },
     });
     expect(userResponse.status).toBe(200);
     expect(await userResponse.json()).toMatchObject({
