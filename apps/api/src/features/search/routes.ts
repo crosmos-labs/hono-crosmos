@@ -258,6 +258,8 @@ searchRoutes.openapi(
     // blocking the response. The worker stays alive until they settle.
     const defer = (task: Promise<unknown>) => getBackgroundTasks(c).waitUntil(task);
 
+    return stages.time('search_total', {}, async () => {
+
     // ── GATE 1: per-user overload shedding ───────────────────────────────────
     //
     // This runs FIRST, immediately after authentication has established the
@@ -577,11 +579,19 @@ searchRoutes.openapi(
       const ownerById = new Map(
         ownerRows.map((owner) => [owner.id, owner.name]),
       );
-      const response = buildResponse(
-        ownerById,
-        body.query,
-        result,
-        body.include_source,
+      const response = await stages.time(
+        'search_response_build',
+        {},
+        async () => buildResponse(
+          ownerById,
+          body.query,
+          result,
+          body.include_source,
+        ),
+        (built) => ({
+          inputCount: result.candidates.length,
+          outputCount: built.candidates.length,
+        }),
       );
       const tookMs = durationMs(t0);
       logger.info('retrieval.request_completed', {
@@ -616,7 +626,12 @@ searchRoutes.openapi(
         }),
       );
 
-      return c.json(response, 200);
+      return await stages.time(
+        'search_response_serialize',
+        {},
+        async () => c.json(response, 200),
+        { inputCount: response.candidates.length },
+      );
     } catch (err) {
       if (err instanceof TimeoutError) {
         logger.warn('retrieval.request_failed', {
@@ -720,5 +735,6 @@ searchRoutes.openapi(
       // controller is a no-op, and `release` above never throws.
       deadline.abort(new TimeoutError());
     }
+    });
   },
 );
