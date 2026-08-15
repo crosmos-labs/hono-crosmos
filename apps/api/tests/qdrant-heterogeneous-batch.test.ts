@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { QdrantStore } from '@crosmos/vector';
+import { QdrantRequestError, QdrantStore } from '@crosmos/vector';
 
 const originalFetch = globalThis.fetch;
 
@@ -122,5 +122,45 @@ describe('Qdrant heterogeneous ANN batch', () => {
       { vector: [1], scope: { orgId: 1, spaceId: 1 }, opts: { topK: 5 } },
     ]);
     expect(result).toEqual([[], [{ id: 3, score: 0.7 }]]);
+  });
+
+  test('classifies a transport failure like the legacy read path', async () => {
+    globalThis.fetch = (async () => new Response('temporarily unavailable', {
+      status: 503,
+    })) as unknown as typeof fetch;
+    const store = new QdrantStore({
+      url: 'https://qdrant.invalid', apiKey: 'test',
+      memoriesCollection: 'memories', entitiesCollection: 'entities',
+    });
+    const vector = [0.25, 0.75];
+    const scope = { orgId: 1, spaceId: 7 };
+    const capture = async (promise: Promise<unknown>) => {
+      try {
+        await promise;
+        throw new Error('Expected Qdrant request to fail');
+      } catch (error) {
+        return error;
+      }
+    };
+
+    const legacyError = await capture(
+      store.queryNearest('memories', vector, scope, { topK: 50, minScore: 0.1 }),
+    );
+    const batchError = await capture(store.queryNearestMany('memories', [
+      { vector, scope, opts: { topK: 50, minScore: 0.1 } },
+      { vector, scope, opts: { topK: 5, minScore: 0.2 } },
+    ]));
+
+    expect(legacyError).toBeInstanceOf(QdrantRequestError);
+    expect(batchError).toBeInstanceOf(QdrantRequestError);
+    expect({
+      status: (batchError as QdrantRequestError).status,
+      retryable: (batchError as QdrantRequestError).retryable,
+    }).toEqual({
+      status: (legacyError as QdrantRequestError).status,
+      retryable: (legacyError as QdrantRequestError).retryable,
+    });
+    expect((batchError as QdrantRequestError).status).toBe(503);
+    expect((batchError as QdrantRequestError).retryable).toBe(true);
   });
 });
