@@ -116,20 +116,27 @@ export function buildQuery(options: Options): string {
   // Search field and value separately: Logpush may encode the console record as
   // a nested object or as an escaped JSON string inside `Logs.Message`.
   const filters = Object.entries(options.filters).flatMap(([field, value]) => [
-    `position(lower(invocation_json), lower(${sqlString(field)})) > 0`,
-    `position(lower(invocation_json), lower(${sqlString(value)})) > 0`,
+    `position(lower(${sqlString(field)}) in lower(invocation_json)) > 0`,
+    `position(lower(${sqlString(value)}) in lower(invocation_json)) > 0`,
   ]);
   const time = `event_timestamp_ms >= ${options.from.getTime()} AND event_timestamp_ms <= ${options.to.getTime()}`;
   const projection = options.count
     ? 'count(*) AS matching_invocations'
     : 'invocation_json AS record';
   const order = options.count ? '' : ' ORDER BY event_timestamp_ms, script_name';
-  return `WITH archive AS (
+  return `SET VARIABLE crosmos_archive_files = (
+    SELECT list(file) FROM glob([${objects}])
+  );
+  WITH archive AS (
     SELECT
       coalesce(try_cast(EventTimestampMs AS BIGINT), 0) AS event_timestamp_ms,
       coalesce(try_cast(ScriptName AS VARCHAR), '') AS script_name,
       CAST(to_json(i) AS VARCHAR) AS invocation_json
-    FROM read_ndjson_auto([${objects}], union_by_name = true, filename = true) AS i
+    FROM read_ndjson_auto(
+      getvariable('crosmos_archive_files'),
+      union_by_name = true,
+      filename = true
+    ) AS i
   )
   SELECT ${projection} FROM archive
   WHERE ${time} AND ${filters.join(' AND ')}${order};`;

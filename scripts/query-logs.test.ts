@@ -21,7 +21,12 @@ describe('query-logs', () => {
     const sql = buildQuery(options);
     expect(sql).toContain('20260801/*.gz');
     expect(sql).toContain('20260802/*.gz');
+    expect(sql).toContain('SELECT list(file) FROM glob([');
+    expect(sql).toContain("read_ndjson_auto(\n      getvariable('crosmos_archive_files')");
+    expect(sql).toContain('union_by_name = true');
     expect(sql).toContain("api.o''hare");
+    expect(sql).toContain("position(lower('event') in lower(invocation_json)) > 0");
+    expect(sql).not.toContain('position(lower(invocation_json),');
     expect(sql).toContain('ORDER BY event_timestamp_ms, script_name');
   });
 

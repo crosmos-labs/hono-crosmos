@@ -1991,8 +1991,9 @@ Workers Trace Events. Cloudflare's automatic setup created the private
 `cloudflare-managed-9459b43b` destination and writer, and its 90-day lifecycle
 was verified 2026-08-14. A landed `crosmos-api-production` record has the
 required fields, no raw-IP-named field, and no truncation marker. Ingestion
-coverage, representative large-ingestion truncation, query-credential, and
-cost checks remain._
+coverage, representative large-ingestion truncation, and cost checks remain. A
+separate bucket-scoped Object Read credential was verified 2026-08-16 by
+querying the live archive without changing the managed writer._
 
 **Why**
 
@@ -2045,8 +2046,13 @@ Disable the job. Existing objects remain and expire on the lifecycle schedule.
 _The bounded DuckDB/R2 query CLI, tests, credential handling, and three worked
 examples were added 2026-08-14. On 2026-08-15 its defaults and runbook were
 corrected to target the actual Cloudflare-managed bucket and observed
-`YYYYMMDD/` layout rather than the unused manual-fallback bucket. Live archive
-and 90-day performance checks remain._
+`YYYYMMDD/` layout rather than the unused manual-fallback bucket. On 2026-08-16
+the live credential and DuckDB 1.5.5 returned 403 archived
+`retrieval.stage_completed` invocations for 2026-08-14. That run exposed and
+fixed invalid DuckDB `position()` syntax and made empty date globs non-fatal.
+A multi-day scan exceeded two minutes, so request/correlation reconstruction
+and acceptable multi-day/90-day performance remain open rather than being
+claimed complete._
 
 **Why**
 
