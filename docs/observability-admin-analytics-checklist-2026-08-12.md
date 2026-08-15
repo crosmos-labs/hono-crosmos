@@ -742,6 +742,9 @@ latency.
 _Implemented locally 2026-08-14 with per-search Qdrant batch options. Adapter
 tests prove one transport request, positional result handling, and exact
 IDs/order/scores against the legacy two-call path on a frozen response snapshot.
+An injected Qdrant `503` additionally proves the batch and legacy read paths
+surface the same retryable adapter error classification, preserving the
+essential-semantic-signal failure policy.
 Production version `6c547aa3` has 113 successful `memory_ann_batch` samples
 (p50 `20 ms`, p95 `105 ms`, p99 `268 ms`). This is a valid post-change cohort,
 but not an attributable delta: the batch commit first shipped inside the
