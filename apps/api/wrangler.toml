@@ -261,6 +261,8 @@ binding = "HYPERDRIVE"
 # crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
 # 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
 # us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
+# Query caching is disabled on this external config: auth, visibility, quota,
+# lifecycle, and read-after-write queries all share this binding.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 [[env.production.kv_namespaces]]
@@ -364,6 +366,7 @@ custom_domain = true
 # Hyperdrive → staging NeonDB (crosmos-neon-staging, ep-curly-mouse us-east-1).
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
+# Query caching is disabled, matching production freshness semantics.
 id = "930052d5e0dc40c8911417c7ef3e8c13"
 
 # KV → staging namespace (created via `wrangler kv namespace create API_KEY_CACHE_STAGING`).
