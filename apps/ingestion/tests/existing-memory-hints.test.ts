@@ -9,6 +9,85 @@ import {
 import type { SourceChunk } from '../src/ingestion/chunking';
 
 describe('batched existing-memory hints', () => {
+  test('uses one provider, ANN, and hydration call for a clean window', async () => {
+    const chunks: SourceChunk[] = [
+      { sequence: 0, content: 'zero', context: null, chunker: 'recursive' },
+      { sequence: 1, content: 'one', context: null, chunker: 'recursive' },
+      { sequence: 2, content: 'two', context: null, chunker: 'recursive' },
+    ];
+    let embeddingCalls = 0;
+    const embedder = {
+      dimensions: 2,
+      totalTokens: 0,
+      async embed() {
+        throw new Error('The bounded hint phase must use embedBatch');
+      },
+      async embedBatch(texts: string[]) {
+        embeddingCalls += 1;
+        return {
+          vectors: texts.map((_, index) => [index, 1]),
+          usage: { promptTokens: 0, totalTokens: 0 },
+        };
+      },
+    } satisfies Embedder;
+    let annCalls = 0;
+    const vectorStore = {
+      persistsInColumn: false,
+      async upsert() {},
+      async queryNearest() {
+        throw new Error('The bounded hint phase must use queryNearestBatch');
+      },
+      async queryNearestBatch() {
+        annCalls += 1;
+        return [
+          [{ id: 2, score: 0.9 }, { id: 1, score: 0.8 }],
+          [{ id: 3, score: 0.9 }],
+          [{ id: 1, score: 0.9 }, { id: 3, score: 0.8 }],
+        ];
+      },
+      async fetchVectors() { return new Map(); },
+      async deleteByIds() {},
+    } satisfies VectorStore;
+    let hydrationCalls = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: async () => {
+            hydrationCalls += 1;
+            return [
+              { id: 1, content: 'first' },
+              { id: 2, content: 'second' },
+              { id: 3, content: 'third' },
+            ];
+          },
+        }),
+      }),
+    } as unknown as Database;
+
+    const hints = await prepareExistingMemoryHints({
+      db,
+      scope: { orgId: 1, spaceId: 2, userId: 3 },
+      chunks,
+      embedder,
+      vectorStore,
+      stages: createStageRecorder({
+        event: 'ingestion.stage_completed',
+        metric: 'ingestion_stage',
+      }),
+    });
+
+    expect({ embeddingCalls, annCalls, hydrationCalls }).toEqual({
+      embeddingCalls: 1,
+      annCalls: 1,
+      hydrationCalls: 1,
+    });
+    expect([...hints]).toEqual([
+      [0, ['second', 'first']],
+      [1, ['third']],
+      [2, ['first', 'third']],
+    ]);
+  });
+
   test('splits once and gives only the failed half empty hints', async () => {
     const chunks: SourceChunk[] = [
       { sequence: 0, content: 'fail zero', context: null, chunker: 'recursive' },
