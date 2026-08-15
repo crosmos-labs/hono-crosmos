@@ -160,6 +160,16 @@ destructive deleted-space finalization, and archive-operability checks remain;
 their individual sections state the exact gate still missing. Deferred entries
 do not prevent completion unless new evidence explicitly reactivates them.
 
+The 2026-08-15 repository audit passes 135 API tests (433 assertions) and 91
+ingestion tests (494 assertions), with no failures or skips and with production
+and test typechecks clean. No partial item is promoted solely from local proof:
+O-4/O-7 still need persisted-log/trace and hosted-Grafana access; A-4/A-6 and
+U-4 need their allowlisted/staging operational gates; A-7 needs an explicit
+retention/destructive-finalization decision; L-1 through L-5 need elapsed
+lifecycle/archive/credential evidence; and P-1 through P-6 retain their stated
+isolated live-latency, plan, lock, provider, or store evidence. P-7 remains
+queued behind those measurements.
+
 ## Deployment log
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
