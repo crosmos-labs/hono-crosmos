@@ -160,8 +160,8 @@ destructive deleted-space finalization, and archive-operability checks remain;
 their individual sections state the exact gate still missing. Deferred entries
 do not prevent completion unless new evidence explicitly reactivates them.
 
-The 2026-08-15 repository audit passes 135 API tests (433 assertions) and 91
-ingestion tests (494 assertions), with no failures or skips and with production
+The 2026-08-15 repository audit passes 135 API tests (433 assertions) and 94
+ingestion tests (505 assertions), with no failures or skips and with production
 and test typechecks clean. No partial item is promoted solely from local proof:
 O-4/O-7 still need persisted-log/trace and hosted-Grafana access; A-4/A-6 and
 U-4 need their allowlisted/staging operational gates; A-7 needs an explicit
@@ -170,10 +170,56 @@ lifecycle/archive/credential evidence; and P-1 through P-6 retain their stated
 isolated live-latency, plan, lock, provider, or store evidence. P-7 remains
 queued behind those measurements.
 
+### Ingestion quality and accuracy audit — 2026-08-15
+
+The ingestion performance work is not classified as telemetry-only. It touches
+the inputs and artifacts that determine later retrieval, so its healthy path,
+partial-failure path, retry path, and historical-data exposure were audited
+separately:
+
+- **One real semantic regression was found and fixed.** The first P-3/P-4
+  rollout prepared hints and persisted facts across the whole invocation batch,
+  so a later concurrency window could not see memories written by an earlier
+  window. That could change the extraction prompt, facts, and deduplication.
+  Commit `a515033` restored the prior boundary: hints are batched only within a
+  concurrency window, and that window is persisted before the next one starts.
+- **The production exposure is bounded but cannot be declared mathematically
+  zero.** The affected production interval was `2026-08-14 06:19:46Z` through
+  `17:55:12Z`. Weighted Analytics Engine data records 98 completed jobs and zero
+  failed sources in that interval. Every sampled
+  `existing_memory_ann_batch` row had at most two input chunks, below the
+  three-chunk concurrency boundary required to reach a later window. Analytics
+  Engine samples and has no source identifier, so this is strong aggregate
+  evidence rather than proof about every historical source.
+- **The remaining batching paths are result-sensitive but intended to be
+  equivalent.** Per-chunk hint order is reconstructed after union hydration;
+  bulk entity resolution preserves normalized-name authority and result order;
+  graph extraction overlaps only work that does not consume graph output; and
+  bounded persistence explicitly maps chunk to fact to memory ID to vector.
+  The active corpus pins exact facts, temporal fields, citations, vectors,
+  entities, edges, final candidates, order, and scores. Real-Postgres fault
+  tests cover memory-vector, entity-vector, link, edge, and checkpoint recovery.
+- **Partial provider failure can still affect quality, by design, only where the
+  legacy path was already fail-soft.** A failed batched hint request splits once;
+  a healthy half keeps its ordered hints while only the failed half receives an
+  empty hint list. That can reduce dedup quality for those failed chunks, but it
+  keeps the previous fail-soft contract instead of failing the whole source.
+- **Timestamp corrections are deliberate semantic fixes.** Offset-less provider
+  `event_time`/`valid_from` values and source `session_date` values now use one
+  UTC contract. Explicit offsets remain authoritative. Existing `timestamptz`
+  rows are not reinterpreted or backfilled; only new or explicitly reingested
+  sources receive the corrected timestamp. Session time now anchors the LLM
+  reference time, deterministic relative-date fallback, and persisted
+  `recorded_at` to the same instant.
+- Speaker-role persistence can change stored artifacts but is not read by the
+  current retrieval ranker. Usage rollups, spans, logs, metrics, queue timing,
+  and admin analytics do not change extracted facts or retrieval ranking.
+
 ## Deployment log
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-15 | Removed the remaining host-timezone dependency from source/session dates by routing them through the same UTC-safe parser as provider `event_time` and `valid_from`. Extraction `reference_time`, deterministic relative-date fallback, and persisted `recorded_at` now share one instant; explicit offsets remain unchanged and invalid dates retain the existing wall-clock fallback. Targeted tests passed under Asia/Kolkata, then the full 135 API / 94 ingestion suites, typecheck, exact corpus, and both Worker bundles passed. Staging and production deployment reads report the new versions at 100%, and both primary/DLQ queue consumers retain their expected limits. No migration or backfill ran. | staging `bf7b1edd-7abe-4641-80ee-074fa4fef5eb`; production `b14df496-1759-4985-aaef-d21d53b76009` | — | — |
 | 2026-08-15 | Re-read the active Cloudflare deployment histories and audited the offset-less provider timestamp correction against temporal retrieval. The current parser produced the same `2026-06-01T00:00:00.000Z` instant under UTC, Asia/Kolkata, America/Los_Angeles, and Pacific/Kiritimati; the old host-local parse crossed into May 31 in positive-offset zones. The deterministic database corpus passed all 16 artifact/ranking gates under both UTC and Asia/Kolkata, including the temporal query with identical recorded candidates, order, and scores; the complete non-UTC suites passed with 135 API and 91 ingestion tests. The change runs only while normalizing newly extracted provider fields. Existing `timestamptz` rows are neither reparsed nor rewritten, so their current retrieval behavior is unchanged unless a source is explicitly reingested. | staging `0c961be9-85f4-4abb-9610-c8fb66655916`; production `f64934b7-246e-4dc9-838d-4cb1e11f4533` | staging `c35ffacc-863e-4524-af87-69cb304ce8b7`; production `5cd3c087-a31d-4d78-9153-9ebf87936b56` | — |
 | 2026-08-15 | Audited the live staging and production Hyperdrive configurations and found default SQL query caching enabled on the single binding shared by API, ingestion, and admin. Disabled caching on staging first and then production so freshness-sensitive authorization, quota, cancellation, lifecycle, and read-after-write queries cannot receive stale results; Hyperdrive connection pooling remains. Both configs now report `caching.disabled: true`; public API/auth smoke and the production Access redirect remained healthy. | external config `930052d5e0dc40c8911417c7ef3e8c13` / `53d75344f62e4e4da0974c2fdfcc5b0d` | same shared configs | same shared configs |
 | 2026-08-15 | Added deterministic P-2 admission-ordering and P-5 complete-traversal differential seams without changing production defaults. The isolated real-database suites passed with 133 API tests and 90 ingestion tests; production/test typechecks and staging/production API bundles passed. Staging and production public smoke returned 200 for the security endpoint, 401 for unauthenticated search, opaque request IDs, and no timing headers. A subsequent deployment-history audit corrected the recorded production version to the active version returned by Wrangler. | — | staging `c35ffacc-863e-4524-af87-69cb304ce8b7`; production `5cd3c087-a31d-4d78-9153-9ebf87936b56` | — |
