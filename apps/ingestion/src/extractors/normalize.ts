@@ -85,14 +85,20 @@ const MAX_SAFE_YEAR = 9999;
 
 export function parseIsoDate(value: string | null | undefined): Date | null {
   if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
   // Provider JSON commonly returns an ISO local timestamp without an offset.
   // `new Date("2026-06-01T00:00:00")` interprets that in the host timezone,
   // which made the capture script (Asia/Kolkata) persist May 31 UTC while
   // `bun test` interpreted the same fixture as June 1. The pipeline's temporal
   // contract is UTC, so make offset-less ISO timestamps explicit before parse.
-  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(value)
-    ? `${value}Z`
-    : value;
+  // The same parser is also used for caller-supplied session dates; accept the
+  // common SQL-style space separator without bringing host-local semantics back.
+  const offsetlessDateTime =
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(trimmed);
+  const normalized = offsetlessDateTime
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed;
   const d = new Date(normalized);
   if (Number.isNaN(d.getTime())) return null;
   const year = d.getUTCFullYear();
