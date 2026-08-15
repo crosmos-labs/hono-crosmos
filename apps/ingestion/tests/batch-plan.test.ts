@@ -1,4 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import {
+  MAX_CHUNKS_PER_INVOCATION,
+  MAX_CHUNKS_PER_SOURCE,
+  SUBREQUESTS_PER_CHUNK,
+} from '../src/constants';
 import { planBatch } from '../src/ingestion/pipeline';
 
 /**
@@ -39,6 +44,33 @@ describe('planBatch', () => {
     }
     // Every chunk processed exactly once, in order, none skipped or repeated.
     expect(covered).toEqual(Array.from({ length: total }, (_, i) => i));
+  });
+
+  test('the maximum source stays inside the per-invocation chunk/subrequest bound', () => {
+    let checkpoint = 0;
+    let invocations = 0;
+    const covered: number[] = [];
+    while (checkpoint < MAX_CHUNKS_PER_SOURCE) {
+      const plan = planBatch(
+        MAX_CHUNKS_PER_SOURCE,
+        checkpoint,
+        MAX_CHUNKS_PER_INVOCATION,
+      );
+      const windowSize = plan.end - plan.start;
+      expect(windowSize).toBeGreaterThan(0);
+      expect(windowSize).toBeLessThanOrEqual(MAX_CHUNKS_PER_INVOCATION);
+      expect(windowSize * SUBREQUESTS_PER_CHUNK).toBeLessThanOrEqual(160);
+      for (let sequence = plan.start; sequence < plan.end; sequence += 1) {
+        covered.push(sequence);
+      }
+      checkpoint = plan.end;
+      invocations += 1;
+    }
+
+    expect(invocations).toBe(63);
+    expect(covered).toEqual(
+      Array.from({ length: MAX_CHUNKS_PER_SOURCE }, (_, index) => index),
+    );
   });
 
   test('checkpoint already at the end → nothing to do, complete', () => {
