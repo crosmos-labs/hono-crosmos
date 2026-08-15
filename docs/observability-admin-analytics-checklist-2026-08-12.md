@@ -917,8 +917,10 @@ edges, external vectors, and final source metadata without duplicates or a
 residual checkpoint. A second injected failure after entity rows exist but
 before their external vector write proves retry reuses the authoritative
 entities without duplicates and reaches the same complete logical artifacts.
-Memory/entity link, edge, and checkpoint-write injection plus deployed
-latency/lock gates remain._
+Finally, fail-once memory/entity-link, edge, and checkpoint writes each recover
+to the clean logical artifacts with no duplicates, orphaned authoritative rows,
+or residual checkpoint. The maximum-sized source/provider-limit test and
+deployed latency/transaction-lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
 `persist_window` samples (p50 `65 ms`, p95 `233 ms`). This is not credited as a
