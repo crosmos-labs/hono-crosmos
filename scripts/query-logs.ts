@@ -23,8 +23,8 @@ Filters (combined with AND): --request-id, --correlation-id, --org-id, --event,
 Requires the DuckDB CLI and read-only, bucket-scoped environment variables:
   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
 Optional:
-  R2_LOG_BUCKET=crosmos-worker-logs
-  R2_LOG_OBJECT_TEMPLATE=s3://crosmos-worker-logs/*/{date}*.gz
+  R2_LOG_BUCKET=cloudflare-managed-9459b43b
+  R2_LOG_OBJECT_TEMPLATE=s3://cloudflare-managed-9459b43b/{date}/*.gz
 
 {date} is expanded as YYYYMMDD for every UTC day in the requested range.
 `;
@@ -85,10 +85,10 @@ export function parseArgs(args: string[]): Options | 'help' {
     if (value) filters[field] = value;
   }
   if (Object.keys(filters).length === 0) throw new Error('At least one log filter is required');
-  const bucket = Bun.env.R2_LOG_BUCKET?.trim() || 'crosmos-worker-logs';
+  const bucket = Bun.env.R2_LOG_BUCKET?.trim() || 'cloudflare-managed-9459b43b';
   if (!/^[a-z0-9][a-z0-9.-]*$/.test(bucket)) throw new Error('R2_LOG_BUCKET is invalid');
   const objectTemplate = Bun.env.R2_LOG_OBJECT_TEMPLATE?.trim()
-    || `s3://${bucket}/*/{date}*.gz`;
+    || `s3://${bucket}/{date}/*.gz`;
   if (!objectTemplate.startsWith(`s3://${bucket}/`) || !objectTemplate.includes('{date}')) {
     throw new Error('R2_LOG_OBJECT_TEMPLATE must target R2_LOG_BUCKET and contain {date}');
   }

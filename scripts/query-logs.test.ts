@@ -19,8 +19,8 @@ describe('query-logs', () => {
     expect(options).not.toBe('help');
     if (options === 'help') return;
     const sql = buildQuery(options);
-    expect(sql).toContain('20260801*.gz');
-    expect(sql).toContain('20260802*.gz');
+    expect(sql).toContain('20260801/*.gz');
+    expect(sql).toContain('20260802/*.gz');
     expect(sql).toContain("api.o''hare");
     expect(sql).toContain('ORDER BY event_timestamp_ms, script_name');
   });

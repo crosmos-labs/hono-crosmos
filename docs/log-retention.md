@@ -127,11 +127,13 @@ truncation marker before this archive is treated as complete.
 Never put Cloudflare, R2, database, API, or Crosmos user credentials in this
 file, shell history, captured output, or a committed `.env` file.
 
-### Account provisioning commands
+### Manual fallback provisioning commands
 
-Run these from a network-enabled operator shell authenticated to the intended
-Cloudflare account. The bucket is private and has no Worker binding because log
-delivery is server-side and application code must not read or write it.
+These commands are retained only as the fallback for replacing the managed
+destination. Do not run them for the live job: Cloudflare's automatic setup
+already created the private `cloudflare-managed-9459b43b` bucket. A replacement
+bucket must remain private and have no Worker binding because log delivery is
+server-side and application code must not read or write it.
 
 ```sh
 export WRANGLER_LOG_PATH=/tmp/crosmos-wrangler.log
@@ -174,14 +176,15 @@ verification timestamps.
 ## Querying the R2 archive
 
 Install the DuckDB CLI and create a separate R2 API token with Object Read
-permission scoped only to `crosmos-worker-logs`. Export its S3 credentials for
-the current shell; never put them in a committed env file:
+permission scoped only to the live `cloudflare-managed-9459b43b` bucket. Do not
+reuse or edit Logpush's managed writer credential. Export the separate reader's
+S3 credentials for the current shell; never put them in a committed env file:
 
 ```sh
 export R2_ACCOUNT_ID=...
 export R2_ACCESS_KEY_ID=...
 export R2_SECRET_ACCESS_KEY=...
-export R2_LOG_BUCKET=crosmos-worker-logs
+export R2_LOG_BUCKET=cloudflare-managed-9459b43b
 ```
 
 `scripts/query-logs.ts` sends the temporary DuckDB secret over stdin, so the
@@ -205,7 +208,7 @@ bun scripts/query-logs.ts \
   --event api.dependency_unavailable --level error --count
 ```
 
-The default object layout assumes Logpush expands `{DATE}` as `YYYYMMDD`. If
-the first landed object uses a different prefix, set
+The default object layout matches the observed managed-bucket prefix
+`YYYYMMDD/`. If a replacement job uses a different prefix, set
 `R2_LOG_OBJECT_TEMPLATE` to the observed read-only glob, retaining a `{date}`
-placeholder—for example `s3://crosmos-worker-logs/*/dt={date}/*.json.gz`.
+placeholder—for example `s3://replacement-bucket/*/dt={date}/*.json.gz`.
