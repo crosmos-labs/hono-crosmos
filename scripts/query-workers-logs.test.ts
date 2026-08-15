@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildQuery, parseArgs } from './query-workers-logs';
+import { buildQuery, extractEvents, parseArgs } from './query-workers-logs';
 
 describe('query-workers-logs', () => {
   test('builds a one-day request-id query', () => {
@@ -44,5 +44,15 @@ describe('query-workers-logs', () => {
 
   test('help does not require credentials', () => {
     expect(parseArgs(['--help'])).toBe('help');
+  });
+
+  test('extracts events from current and enveloped Cloudflare responses', () => {
+    const events = [{ id: 'event-1' }];
+    expect(extractEvents({ events })).toEqual(events);
+    expect(extractEvents({ events: { events } })).toEqual(events);
+    expect(extractEvents({ result: { events } })).toEqual(events);
+    expect(extractEvents({ result: { events: { events } } })).toEqual(events);
+    expect(extractEvents({ result: events })).toEqual(events);
+    expect(() => extractEvents({ result: { fields: [] } })).toThrow('unexpected response shape');
   });
 });

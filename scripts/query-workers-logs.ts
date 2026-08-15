@@ -13,10 +13,11 @@ type Options = {
 type CloudflareEnvelope = {
   success?: boolean;
   errors?: Array<{ message?: string }>;
+  events?: unknown[] | { events?: unknown[] };
   result?: {
-    events?: unknown[];
+    events?: unknown[] | { events?: unknown[] };
     [key: string]: unknown;
-  };
+  } | unknown[];
 };
 
 const USAGE = `Query persisted Cloudflare Workers Logs (the last-7-days tier).
@@ -173,6 +174,25 @@ export function buildQuery(options: Options): Record<string, unknown> {
   };
 }
 
+export function extractEvents(payload: CloudflareEnvelope): unknown[] {
+  if (Array.isArray(payload.events)) return payload.events;
+  if (payload.events && !Array.isArray(payload.events) && Array.isArray(payload.events.events)) {
+    return payload.events.events;
+  }
+  if (Array.isArray(payload.result)) return payload.result;
+  if (payload.result && !Array.isArray(payload.result)) {
+    if (Array.isArray(payload.result.events)) return payload.result.events;
+    if (
+      payload.result.events
+      && !Array.isArray(payload.result.events)
+      && Array.isArray(payload.result.events.events)
+    ) {
+      return payload.result.events.events;
+    }
+  }
+  throw new Error('Cloudflare query returned an unexpected response shape');
+}
+
 async function main(): Promise<void> {
   let options: Options | 'help';
   try {
@@ -206,7 +226,7 @@ async function main(): Promise<void> {
     throw new Error(`Cloudflare query failed (${response.status})${detail ? `: ${detail}` : ''}`);
   }
 
-  console.log(JSON.stringify(payload.result?.events ?? payload.result ?? payload, null, 2));
+  console.log(JSON.stringify(extractEvents(payload), null, 2));
 }
 
 if (import.meta.main) {

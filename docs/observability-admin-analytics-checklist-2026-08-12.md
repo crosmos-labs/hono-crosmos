@@ -405,8 +405,10 @@ contract. The private `search` Analytics Engine metric and
 Header removal and a private request-id-based benchmark reader are deployed to
 staging and production. Live public-surface verification passed under API
 versions `4d103e8a` and `6c547aa3`; live private request-id reconciliation
-remains because the available operator credential cannot query Workers
-Observability._
+was unblocked 2026-08-16 with a short-lived, account-scoped Workers
+Observability credential. The recent-log CLI reconstructed a production search
+request with private auth stages and a 604 ms `search_total`; reconciling a
+fresh benchmark response's exact request id against Analytics Engine remains._
 
 **Why**
 
@@ -580,8 +582,15 @@ trace/log export, and an operator-tested single-request workflow remain.
 The staging API (`4d103e8a`) and ingestion (`5c23c3e4`) deployments passed their
 public-surface smoke on 2026-08-14, and `request_total` landed privately in
 `crosmos_api_staging` with the deployed API version. Persisted-log/custom-trace
-inspection remains unverified because the available Wrangler OAuth credential
-cannot query Workers Observability and no authenticated browser was connected.
+inspection was initially blocked because the available Wrangler OAuth
+credential could not query Workers Observability and no authenticated browser
+was connected. A scoped account token unblocked persisted-log queries on
+2026-08-16: capped seven-day queries returned 200 API retrieval and 200
+ingestion-stage records, an API request reconstructed three private timing
+events, and an ingestion correlation id reconstructed a backstop requeue plus
+its successful purge stage. Those samples had no raw-IP-named source field and
+no truncation marker. They were too sparse for the complete request/ingestion
+waterfall, so hosted Grafana export and full-clock reconciliation remain.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
@@ -1942,7 +1951,9 @@ captured is gone permanently, which is why L-3 should not wait on this item.
 ### [~] L-2. Replace the one raw-IP log field with a rotating salted hash
 
 _Implemented, unit-tested, secret-configured in staging/production, and deployed
-to production on 2026-08-14. Captured-log verification remains._
+to production on 2026-08-14. Persisted-log access was verified 2026-08-16, but
+there were no `ratelimit.ip_exceeded` events in the seven-day window; the
+specific `ip_hash`/rotation capture gate therefore remains._
 
 **Why**
 
@@ -2101,7 +2112,11 @@ A script and documentation.
 ### [~] L-5. Stop reaching for `wrangler tail` first
 
 _The three-tier debugging workflow and tested recent/archive query CLIs are
-documented. Live API and archive examples still require external provisioning._
+documented. On 2026-08-16 the recent CLI queried capped production API and
+ingestion samples and reconstructed both a request id and an ingestion
+correlation id; the archive CLI also returned a live one-day count. The
+unfamiliar-operator exercise and performant multi-day/90-day archive query
+remain._
 
 **Why**
 
