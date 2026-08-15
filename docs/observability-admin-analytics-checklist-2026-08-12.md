@@ -914,7 +914,10 @@ and final source metadata with no residual checkpoint. The same real pipeline
 now fails its first external memory-vector upsert, retries from the unchanged
 checkpoint, and matches a clean ingest's logical memories, citations, entities,
 edges, external vectors, and final source metadata without duplicates or a
-residual checkpoint. Additional post-persistence phase injection and deployed
+residual checkpoint. A second injected failure after entity rows exist but
+before their external vector write proves retry reuses the authoritative
+entities without duplicates and reaches the same complete logical artifacts.
+Memory/entity link, edge, and checkpoint-write injection plus deployed
 latency/lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
