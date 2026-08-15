@@ -902,8 +902,12 @@ including exact facts, citations, external vectors, entities, and edges. A
 real-Postgres/provider-replay differential additionally proves that a two-call
 checkpoint continuation is exactly equal to a single invocation across
 memories and temporal fields, citations, entities, edges, external vectors,
-and final source metadata with no residual checkpoint. Broader phase injection
-and deployed latency/lock gates remain._
+and final source metadata with no residual checkpoint. The same real pipeline
+now fails its first external memory-vector upsert, retries from the unchanged
+checkpoint, and matches a clean ingest's logical memories, citations, entities,
+edges, external vectors, and final source metadata without duplicates or a
+residual checkpoint. Additional post-persistence phase injection and deployed
+latency/lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
 `persist_window` samples (p50 `65 ms`, p95 `233 ms`). This is not credited as a
