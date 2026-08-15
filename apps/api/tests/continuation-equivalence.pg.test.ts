@@ -22,11 +22,29 @@ const fixtures = database === null ? null : await FixtureStore.load(fixturePath)
 const DIMENSIONS = 1536;
 const EMBED_MODEL = `openai-${DIMENSIONS}`;
 
+class FailFirstMemoryUpsertStore extends MemoryVectorStore {
+  failures = 0;
+
+  override async upsert(
+    ...args: Parameters<MemoryVectorStore['upsert']>
+  ): Promise<void> {
+    if (args[0] === 'memories' && this.failures === 0) {
+      this.failures += 1;
+      throw new Error('forced memory vector upsert failure');
+    }
+    await super.upsert(...args);
+  }
+}
+
 afterAll(async () => {
   if (database) await resetTestData(database);
 });
 
-async function ingestFixture(chunkBudgetRemaining?: number) {
+async function ingestFixture(options: {
+  chunkBudgetRemaining?: number;
+  vectorStore?: MemoryVectorStore;
+  retryFailures?: boolean;
+} = {}) {
   await resetTestData(database!);
   const tenant = await seedTenant(database!);
   const doc = CORPUS[0]!;
@@ -40,31 +58,39 @@ async function ingestFixture(chunkBudgetRemaining?: number) {
     extractionStatus: 'processing',
     meta: { session_id: doc.sessionId, date: doc.date },
   }).returning({ id: sources.id });
-  const vectorStore = new MemoryVectorStore();
+  const vectorStore = options.vectorStore ?? new MemoryVectorStore();
   let remaining = 1;
   let invocations = 0;
+  let failedAttempts = 0;
   while (remaining > 0) {
-    const result = await ingestSource({
-      db: database!,
-      scope: {
-        orgId: tenant.orgId,
-        spaceId: tenant.spaceId,
-        userId: tenant.userId,
-      },
-      sourceId: source!.id,
-      llm: replayLLM(fixtures!) as never,
-      embedder: replayEmbedder(fixtures!, DIMENSIONS, EMBED_MODEL) as never,
-      vectorStore: vectorStore as never,
-      chunkConcurrency: 1,
-      chunkBudgetRemaining,
-    });
-    remaining = result.remainingChunkCount;
-    invocations += 1;
-    if (invocations > 10) throw new Error('Continuation fixture did not complete');
+    try {
+      const result = await ingestSource({
+        db: database!,
+        scope: {
+          orgId: tenant.orgId,
+          spaceId: tenant.spaceId,
+          userId: tenant.userId,
+        },
+        sourceId: source!.id,
+        llm: replayLLM(fixtures!) as never,
+        embedder: replayEmbedder(fixtures!, DIMENSIONS, EMBED_MODEL) as never,
+        vectorStore: vectorStore as never,
+        chunkConcurrency: 1,
+        chunkBudgetRemaining: options.chunkBudgetRemaining,
+      });
+      remaining = result.remainingChunkCount;
+      invocations += 1;
+    } catch (error) {
+      failedAttempts += 1;
+      if (!options.retryFailures) throw error;
+    }
+    if (invocations + failedAttempts > 10) {
+      throw new Error('Continuation fixture did not complete');
+    }
   }
 
-  const memoryRows = await database!.execute(sql`
-    select content, memory_type, speaker_role, importance_score,
+  const memoryRows = await database!.execute<{ id: number; [key: string]: unknown }>(sql`
+    select id, content, memory_type, speaker_role, importance_score,
            event_time::text, recorded_at::text
     from memories
     where space_id = ${tenant.spaceId}
@@ -76,8 +102,8 @@ async function ingestFixture(chunkBudgetRemaining?: number) {
     join memories m on m.id = cm.memory_id
     where c.source_id = ${source!.id}
     order by c.sequence, m.id`);
-  const entityRows = await database!.execute(sql`
-    select name, entity_type
+  const entityRows = await database!.execute<{ id: number; [key: string]: unknown }>(sql`
+    select id, name, entity_type
     from entities
     where space_id = ${tenant.spaceId}
     order by lower(name), id`);
@@ -96,6 +122,7 @@ async function ingestFixture(chunkBudgetRemaining?: number) {
 
   return {
     invocations,
+    failedAttempts,
     memoryRows,
     citations,
     entityRows,
@@ -108,7 +135,7 @@ async function ingestFixture(chunkBudgetRemaining?: number) {
 describeDb('continuation-split ingestion equivalence', () => {
   test('two checkpointed invocations produce the single-shot artifacts exactly', async () => {
     const singleShot = await ingestFixture();
-    const continued = await ingestFixture(1);
+    const continued = await ingestFixture({ chunkBudgetRemaining: 1 });
 
     expect(singleShot.invocations).toBe(1);
     expect(continued.invocations).toBe(2);
@@ -119,5 +146,30 @@ describeDb('continuation-split ingestion equivalence', () => {
     expect(continued.vectors).toEqual(singleShot.vectors);
     expect(continued.sourceMeta).toEqual(singleShot.sourceMeta);
     expect(continued.sourceMeta).not.toHaveProperty('ingest_next_sequence');
+  });
+
+  test('a failed external vector write retries to the clean logical artifacts', async () => {
+    const clean = await ingestFixture();
+    const flakyStore = new FailFirstMemoryUpsertStore();
+    const recovered = await ingestFixture({
+      vectorStore: flakyStore,
+      retryFailures: true,
+    });
+    const withoutId = <T extends { id: number }>(rows: T[]) =>
+      rows.map(({ id: _id, ...row }) => row);
+    const vectorValues = (run: typeof clean, collection: 'memories' | 'entities') =>
+      (run.vectors[collection] ?? []).map(({ id: _id, ...item }) => item);
+
+    expect(flakyStore.failures).toBe(1);
+    expect(recovered.failedAttempts).toBe(1);
+    expect(recovered.invocations).toBe(1);
+    expect(withoutId(recovered.memoryRows)).toEqual(withoutId(clean.memoryRows));
+    expect(recovered.citations).toEqual(clean.citations);
+    expect(withoutId(recovered.entityRows)).toEqual(withoutId(clean.entityRows));
+    expect(recovered.edgeRows).toEqual(clean.edgeRows);
+    expect(vectorValues(recovered, 'memories')).toEqual(vectorValues(clean, 'memories'));
+    expect(vectorValues(recovered, 'entities')).toEqual(vectorValues(clean, 'entities'));
+    expect(recovered.sourceMeta).toEqual(clean.sourceMeta);
+    expect(recovered.sourceMeta).not.toHaveProperty('ingest_next_sequence');
   });
 });
