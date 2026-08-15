@@ -50,6 +50,7 @@ import {
   attachGraphToFacts,
   DropCounter,
   normalizeBaseFacts,
+  parseIsoDate,
 } from '../extractors/normalize';
 import {
   buildNameToIdMap,
@@ -102,6 +103,33 @@ export interface IngestResult {
    * source is billed its input once, not per batch.
    */
   tokenCount: number;
+}
+
+/**
+ * Resolve a source/session timestamp once for every temporal consumer.
+ *
+ * `referenceTime` anchors relative extraction phrases, `temporalBase` anchors
+ * the deterministic fallback, and `recordedAt` is persisted on every memory.
+ * Returning them together prevents one path from reintroducing host-local date
+ * parsing while the others use UTC.
+ */
+export function resolveSessionTemporalContext(
+  sessionDate: string | null,
+  now: Date = new Date(),
+): {
+  referenceTime: string | null;
+  temporalBase: Date | null;
+  recordedAt: Date;
+} {
+  const parsedSessionDate = parseIsoDate(sessionDate);
+  const validSessionDate = isSafePgDate(parsedSessionDate)
+    ? parsedSessionDate
+    : null;
+  return {
+    referenceTime: validSessionDate ? validSessionDate.toISOString() : null,
+    temporalBase: validSessionDate,
+    recordedAt: validSessionDate ?? now,
+  };
 }
 
 /**
@@ -415,13 +443,11 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
   // Reject NaN AND degenerate years (e.g. `0000-01-01`, a valid JS year-0 Date
   // that Postgres `timestamptz` refuses) so a malformed session date falls back
   // to wall-clock `recordedAt` instead of failing the source on the DB write.
-  const parsedSessionDate = sessionDate ? new Date(sessionDate) : null;
-  const validSessionDate = isSafePgDate(parsedSessionDate)
-    ? parsedSessionDate
-    : null;
-  const referenceTime = validSessionDate ? validSessionDate.toISOString() : null;
-  const temporalBase = validSessionDate;
-  const recordedAt = validSessionDate ?? new Date();
+  // Use the same UTC contract as provider `event_time` / `valid_from` values.
+  // An offset-less session date is a calendar timestamp, not an instruction to
+  // reinterpret the source according to whichever host runs this attempt.
+  const { referenceTime, temporalBase, recordedAt } =
+    resolveSessionTemporalContext(sessionDate);
   const ownerUserId = source.ownerUserId;
   const visibility = source.visibility as 'private' | 'org';
 
