@@ -164,6 +164,7 @@ do not prevent completion unless new evidence explicitly reactivates them.
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-15 | Audited the live staging and production Hyperdrive configurations and found default SQL query caching enabled on the single binding shared by API, ingestion, and admin. Disabled caching on staging first and then production so freshness-sensitive authorization, quota, cancellation, lifecycle, and read-after-write queries cannot receive stale results; Hyperdrive connection pooling remains. Both configs now report `caching.disabled: true`; public API/auth smoke and the production Access redirect remained healthy. | external config `930052d5e0dc40c8911417c7ef3e8c13` / `53d75344f62e4e4da0974c2fdfcc5b0d` | same shared configs | same shared configs |
 | 2026-08-15 | Added deterministic P-2 admission-ordering and P-5 complete-traversal differential seams without changing production defaults. The isolated real-database suites passed with 133 API tests and 90 ingestion tests; production/test typechecks and staging/production API bundles passed. Staging and production public smoke returned 200 for the security endpoint, 401 for unauthenticated search, opaque request IDs, and no timing headers. | — | staging `c35ffacc-863e-4524-af87-69cb304ce8b7`; production `d25bf58d-6cf8-459a-928a-49de0753ec4e` | — |
 | 2026-08-14 | The activated deterministic corpus caught a P-3/P-4 semantic regression before its fixture could be blessed: batching across concurrency-window boundaries hid earlier-window memories from later extraction prompts. Restored batching within each window and persistence before advancing; normalized provider ISO timestamps without offsets to UTC, removing the former Bun script/test date divergence. The reviewed fixture replay needed zero new calls before the UTC correction; the corrected capture converged and all 16 corpus gates, 126 API tests, and 89 ingestion tests passed with no skips. Staging/production bundles passed and both queue consumers remained attached; an authenticated staging ingestion smoke was unavailable. | staging `0c961be9-85f4-4abb-9610-c8fb66655916`; production `f64934b7-246e-4dc9-838d-4cb1e11f4533` | — | — |
 | 2026-08-14 | Completed O-7 repository span coverage by wrapping every remaining manually measured async search/ingestion boundary around its real work, while retaining synchronous calculations and retroactive queue wait as metric/log-only. API (108 pass), ingestion (85 pass), and observability tests plus production/test typechecks and both environment bundles passed. Staging and production public smoke returned opaque request IDs without timing fields; version-tagged `request_total`, `http_request`, and `auth_total` rows landed in both private API datasets. Persisted trace/log inspection and hosted Tempo/Loki remain externally gated. | staging `6216a8bc-6968-42be-bf5e-840124e5e8a8`; production `46802de1-2acf-489a-af05-51d50aef118f` | staging `1ee82537-9475-4285-be59-4bf7819b8ec2`; production `63462a00-a53d-4179-890a-5c0af14658e8` | — |
@@ -1027,9 +1028,16 @@ complete.
 
 ### [~] P-6. Audit and tune Postgres, Hyperdrive, and Qdrant from evidence
 
-_U-1's covering `(org_id, date)` index is implemented. The production-shaped
-statistics/plan capture and evidence-gated Postgres/Hyperdrive/Qdrant decisions
-remain; no speculative index removal or vector tuning was performed._
+_U-1's covering `(org_id, date)` index is implemented. A live 2026-08-15 audit
+found SQL caching enabled on the one Hyperdrive configuration shared by each
+environment's API, ingestion, and admin Workers. Because those bindings serve
+freshness-sensitive auth, visibility, quota, cancellation, lifecycle, and
+read-after-write paths, caching was disabled first on staging and then on
+production while retaining connection pooling; both configurations now report
+`caching.disabled: true`, and public API/auth plus Access boundaries remained
+healthy. The production-shaped Postgres statistics/plans and evidence-gated
+index/Qdrant decisions remain; no speculative index removal or vector tuning
+was performed._
 
 **Why**
 
