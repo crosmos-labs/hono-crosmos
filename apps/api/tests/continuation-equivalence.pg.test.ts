@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { sources, type Database } from '@crosmos/db';
+import { edges, memoryEntities, sources, type Database } from '@crosmos/db';
 import {
   announceSkip,
   FixtureStore,
@@ -40,6 +40,50 @@ class FailFirstVectorUpsertStore extends MemoryVectorStore {
   }
 }
 
+function failFirstWrite(
+  databaseToWrap: Database,
+  method: 'insert' | 'update',
+  tableToFail: object,
+  label: string,
+) {
+  const state = { failures: 0 };
+  const terminal = method === 'insert' ? 'values' : 'set';
+  const wrapped = new Proxy(databaseToWrap as object, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== method || typeof value !== 'function') {
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return (table: object) => {
+        const builder = value.call(target, table) as object;
+        if (table !== tableToFail) return builder;
+        return new Proxy(builder, {
+          get(builderTarget, builderProperty, builderReceiver) {
+            const builderValue = Reflect.get(
+              builderTarget,
+              builderProperty,
+              builderReceiver,
+            );
+            if (builderProperty !== terminal || typeof builderValue !== 'function') {
+              return typeof builderValue === 'function'
+                ? builderValue.bind(builderTarget)
+                : builderValue;
+            }
+            return (...args: unknown[]) => {
+              if (state.failures === 0) {
+                state.failures += 1;
+                throw new Error(`forced ${label} write failure`);
+              }
+              return builderValue.apply(builderTarget, args);
+            };
+          },
+        });
+      };
+    },
+  }) as Database;
+  return { database: wrapped, state };
+}
+
 afterAll(async () => {
   if (database) await resetTestData(database);
 });
@@ -48,6 +92,7 @@ async function ingestFixture(options: {
   chunkBudgetRemaining?: number;
   vectorStore?: MemoryVectorStore;
   retryFailures?: boolean;
+  databaseOverride?: Database;
 } = {}) {
   await resetTestData(database!);
   const tenant = await seedTenant(database!);
@@ -69,7 +114,7 @@ async function ingestFixture(options: {
   while (remaining > 0) {
     try {
       const result = await ingestSource({
-        db: database!,
+        db: options.databaseOverride ?? database!,
         scope: {
           orgId: tenant.orgId,
           spaceId: tenant.spaceId,
@@ -197,5 +242,27 @@ describeDb('continuation-split ingestion equivalence', () => {
     expect(recovered.failedAttempts).toBe(1);
     expect(recovered.invocations).toBe(1);
     expectLogicalArtifacts(recovered, clean);
+  });
+
+  test('link, edge, and checkpoint write failures recover without orphans', async () => {
+    const clean = await ingestFixture();
+    expect(clean.edgeRows.length).toBeGreaterThan(0);
+    const phases = [
+      { method: 'insert', table: memoryEntities, label: 'memory-entity link' },
+      { method: 'insert', table: edges, label: 'edge' },
+      { method: 'update', table: sources, label: 'checkpoint' },
+    ] as const;
+
+    for (const phase of phases) {
+      const fault = failFirstWrite(database!, phase.method, phase.table, phase.label);
+      const recovered = await ingestFixture({
+        databaseOverride: fault.database,
+        retryFailures: true,
+      });
+      expect(fault.state.failures).toBe(1);
+      expect(recovered.failedAttempts).toBe(1);
+      expect(recovered.invocations).toBe(1);
+      expectLogicalArtifacts(recovered, clean);
+    }
   });
 });
