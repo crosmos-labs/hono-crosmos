@@ -919,7 +919,9 @@ before their external vector write proves retry reuses the authoritative
 entities without duplicates and reaches the same complete logical artifacts.
 Finally, fail-once memory/entity-link, edge, and checkpoint writes each recover
 to the clean logical artifacts with no duplicates, orphaned authoritative rows,
-or residual checkpoint. The maximum-sized source/provider-limit test and
+or residual checkpoint. A maximum-source planner test covers all 500 allowed
+chunks exactly once across 63 invocations, with at most eight chunks and 160
+estimated per-chunk subrequests in any invocation. Live provider-limit and
 deployed latency/transaction-lock gates remain._
 
 _Live post-change evidence: production version `4e3aaa96` recorded 54
