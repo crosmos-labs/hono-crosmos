@@ -194,6 +194,8 @@ binding = "HYPERDRIVE"
 # crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
 # 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
 # us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
+# Query caching is disabled on this shared external config so cancellation,
+# checkpoints, entity resolution, and read-after-write paths remain fresh.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 # Producer binding onto the SAME queue this Worker consumes. Used only to
@@ -290,6 +292,7 @@ binding = "AI"
 # Hyperdrive → staging NeonDB (ep-curly-mouse, same id as the API worker).
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
+# Query caching is disabled, matching production freshness semantics.
 id = "930052d5e0dc40c8911417c7ef3e8c13"
 
 # Producer binding onto the SAME queue this Worker consumes. Used only to

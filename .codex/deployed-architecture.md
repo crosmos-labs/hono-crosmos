@@ -44,16 +44,22 @@ Allowlisted operators
 
 The API worker has Smart Placement enabled so it runs close to the Hyperdrive/Neon origin for DB-heavy retrieval.
 
+The shared staging and production Hyperdrive configurations have SQL query
+caching disabled. API, ingestion, and admin all use freshness-sensitive auth,
+visibility, quota, cancellation, lifecycle, and read-after-write paths; they
+retain Hyperdrive connection pooling without serving cached SQL results. Add a
+separate cached binding only for a specifically reviewed stale-tolerant read.
+
 ## Cloudflare Bindings
 
 | Worker | Binding | Purpose |
 |---|---|---|
-| API | `HYPERDRIVE` | Neon Postgres connection pooling |
+| API | `HYPERDRIVE` | Neon Postgres connection pooling; query cache disabled |
 | API | `API_KEY_CACHE` | API-key cache, rate-limit counters, search concurrency counters |
 | API | `INGESTION_QUEUE` | Producer for ingestion jobs |
-| Ingestion | `HYPERDRIVE` | Same Neon Postgres database |
+| Ingestion | `HYPERDRIVE` | Same Neon Postgres database; query cache disabled |
 | Ingestion | queue consumer | Consumes `ingestion-jobs` in production and `ingestion-jobs-dev` in development |
-| Admin | `HYPERDRIVE` | Same Neon Postgres database, isolated in a separate Worker |
+| Admin | `HYPERDRIVE` | Same Neon Postgres database, isolated in a separate Worker; query cache disabled |
 | Admin | `API_KEY_CACHE` | API-key and entitlement cache invalidation after audited changes |
 | Admin | `ADMIN_RATE_LIMITER` | Strongly consistent per-IP admission control |
 
