@@ -840,7 +840,10 @@ single split fail-soft fallback, plus bulk conflict-safe entity resolution.
 A real-Postgres race test proves simultaneous resolvers receive the same
 authoritative IDs without duplicate normalized names. A fault-injected batch
 test proves the hint phase splits once, preserves the healthy half's ordered
-hydrated hints, and gives only the failed half empty hints. Full old/new fixture
+hydrated hints, and gives only the failed half empty hints. A clean-window
+call-count test proves one
+provider batch, one ANN batch, and one union hydration read while restoring each
+chunk's own ANN order. Full old/new fixture
 comparison exposed a semantic regression: batching hints and persistence across
 concurrency-window boundaries hid earlier-window memories from later extraction
 prompts. The pipeline now batches within each concurrency window and persists
