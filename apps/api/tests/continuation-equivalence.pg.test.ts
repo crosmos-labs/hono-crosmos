@@ -22,15 +22,19 @@ const fixtures = database === null ? null : await FixtureStore.load(fixturePath)
 const DIMENSIONS = 1536;
 const EMBED_MODEL = `openai-${DIMENSIONS}`;
 
-class FailFirstMemoryUpsertStore extends MemoryVectorStore {
+class FailFirstVectorUpsertStore extends MemoryVectorStore {
   failures = 0;
+
+  constructor(private readonly collectionToFail: 'memories' | 'entities') {
+    super();
+  }
 
   override async upsert(
     ...args: Parameters<MemoryVectorStore['upsert']>
   ): Promise<void> {
-    if (args[0] === 'memories' && this.failures === 0) {
+    if (args[0] === this.collectionToFail && this.failures === 0) {
       this.failures += 1;
-      throw new Error('forced memory vector upsert failure');
+      throw new Error(`forced ${this.collectionToFail} vector upsert failure`);
     }
     await super.upsert(...args);
   }
@@ -133,6 +137,26 @@ async function ingestFixture(options: {
 }
 
 describeDb('continuation-split ingestion equivalence', () => {
+  const withoutId = <T extends { id: number }>(rows: T[]) =>
+    rows.map(({ id: _id, ...row }) => row);
+  const vectorValues = (
+    run: Awaited<ReturnType<typeof ingestFixture>>,
+    collection: 'memories' | 'entities',
+  ) => (run.vectors[collection] ?? []).map(({ id: _id, ...item }) => item);
+  const expectLogicalArtifacts = (
+    recovered: Awaited<ReturnType<typeof ingestFixture>>,
+    clean: Awaited<ReturnType<typeof ingestFixture>>,
+  ) => {
+    expect(withoutId(recovered.memoryRows)).toEqual(withoutId(clean.memoryRows));
+    expect(recovered.citations).toEqual(clean.citations);
+    expect(withoutId(recovered.entityRows)).toEqual(withoutId(clean.entityRows));
+    expect(recovered.edgeRows).toEqual(clean.edgeRows);
+    expect(vectorValues(recovered, 'memories')).toEqual(vectorValues(clean, 'memories'));
+    expect(vectorValues(recovered, 'entities')).toEqual(vectorValues(clean, 'entities'));
+    expect(recovered.sourceMeta).toEqual(clean.sourceMeta);
+    expect(recovered.sourceMeta).not.toHaveProperty('ingest_next_sequence');
+  };
+
   test('two checkpointed invocations produce the single-shot artifacts exactly', async () => {
     const singleShot = await ingestFixture();
     const continued = await ingestFixture({ chunkBudgetRemaining: 1 });
@@ -150,26 +174,28 @@ describeDb('continuation-split ingestion equivalence', () => {
 
   test('a failed external vector write retries to the clean logical artifacts', async () => {
     const clean = await ingestFixture();
-    const flakyStore = new FailFirstMemoryUpsertStore();
+    const flakyStore = new FailFirstVectorUpsertStore('memories');
     const recovered = await ingestFixture({
       vectorStore: flakyStore,
       retryFailures: true,
     });
-    const withoutId = <T extends { id: number }>(rows: T[]) =>
-      rows.map(({ id: _id, ...row }) => row);
-    const vectorValues = (run: typeof clean, collection: 'memories' | 'entities') =>
-      (run.vectors[collection] ?? []).map(({ id: _id, ...item }) => item);
+    expect(flakyStore.failures).toBe(1);
+    expect(recovered.failedAttempts).toBe(1);
+    expect(recovered.invocations).toBe(1);
+    expectLogicalArtifacts(recovered, clean);
+  });
+
+  test('a post-persistence entity-vector failure reuses rows without duplicates', async () => {
+    const clean = await ingestFixture();
+    const flakyStore = new FailFirstVectorUpsertStore('entities');
+    const recovered = await ingestFixture({
+      vectorStore: flakyStore,
+      retryFailures: true,
+    });
 
     expect(flakyStore.failures).toBe(1);
     expect(recovered.failedAttempts).toBe(1);
     expect(recovered.invocations).toBe(1);
-    expect(withoutId(recovered.memoryRows)).toEqual(withoutId(clean.memoryRows));
-    expect(recovered.citations).toEqual(clean.citations);
-    expect(withoutId(recovered.entityRows)).toEqual(withoutId(clean.entityRows));
-    expect(recovered.edgeRows).toEqual(clean.edgeRows);
-    expect(vectorValues(recovered, 'memories')).toEqual(vectorValues(clean, 'memories'));
-    expect(vectorValues(recovered, 'entities')).toEqual(vectorValues(clean, 'entities'));
-    expect(recovered.sourceMeta).toEqual(clean.sourceMeta);
-    expect(recovered.sourceMeta).not.toHaveProperty('ingest_next_sequence');
+    expectLogicalArtifacts(recovered, clean);
   });
 });
