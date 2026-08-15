@@ -2043,8 +2043,10 @@ Disable the job. Existing objects remain and expire on the lifecycle schedule.
 ### [~] L-4. Make the archive queryable by an agent
 
 _The bounded DuckDB/R2 query CLI, tests, credential handling, and three worked
-examples were added 2026-08-14. Live archive and 90-day performance checks
-remain._
+examples were added 2026-08-14. On 2026-08-15 its defaults and runbook were
+corrected to target the actual Cloudflare-managed bucket and observed
+`YYYYMMDD/` layout rather than the unused manual-fallback bucket. Live archive
+and 90-day performance checks remain._
 
 **Why**
 
