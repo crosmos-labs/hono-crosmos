@@ -2014,7 +2014,11 @@ captured is gone permanently, which is why L-3 should not wait on this item.
 _Implemented, unit-tested, secret-configured in staging/production, and deployed
 to production on 2026-08-14. Persisted-log access was verified 2026-08-16, but
 there were no `ratelimit.ip_exceeded` events in the seven-day window; the
-specific `ip_hash`/rotation capture gate therefore remains._
+specific `ip_hash`/rotation capture gate therefore remains. A production sample
+also corrected the scope of this item: Crosmos application records contain no
+raw IP, while Cloudflare's separate automatic seven-day invocation envelope can
+retain connecting-IP request headers. The selected R2 archive record excludes
+that header container._
 
 **Why**
 
@@ -2044,8 +2048,11 @@ requiring a materially stronger justification.
 
 **Acceptance gate**
 
-- No log record in any environment contains a raw IP address; verified by
-  grepping a captured production log sample, not by reading the code.
+- No Crosmos application-emitted log record or selected R2 archive field
+  contains a raw IP address; verify a captured production sample rather than
+  relying on code inspection. Cloudflare's platform-managed seven-day
+  invocation envelope is documented separately and is outside the application
+  allowlist.
 - Per-IP rate limiting behaves identically before and after, including across a
   salt rotation.
 - Two requests from the same IP within one salt window produce the same
@@ -2062,7 +2069,10 @@ _Both Workers are Logpush-eligible and account job `1838803` is enabled for
 Workers Trace Events. Cloudflare's automatic setup created the private
 `cloudflare-managed-9459b43b` destination and writer, and its 90-day lifecycle
 was verified 2026-08-14. A landed `crosmos-api-production` record has the
-required fields, no raw-IP-named field, and no truncation marker. Ingestion
+required fields and no truncation marker. A second production fetch record was
+inspected structurally on 2026-08-16: `Event.Request` retained only `Method` and
+`URL`, with no header container, raw-IP-named path,
+authorization/cookie/API-key path, or exception. Ingestion
 coverage, representative large-ingestion truncation, and cost checks remain. A
 separate bucket-scoped Object Read credential was verified 2026-08-16 by
 querying the live archive without changing the managed writer._
