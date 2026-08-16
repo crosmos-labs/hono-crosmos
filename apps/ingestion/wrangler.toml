@@ -265,7 +265,10 @@ destinations = ["grafana-traces"]
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
-LLM_PROVIDER = "openrouter"
+# Match production's direct extraction path. OpenRouter is no longer the
+# production provider and leaving staging on it makes quality/cost comparisons
+# non-representative (and fails outright when that obsolete secret is absent).
+LLM_PROVIDER = "openai"
 EMBEDDINGS_PROVIDER = "openai"
 VECTOR_STORE = "qdrant"
 EMBEDDING_DIMENSIONS = "1536"
