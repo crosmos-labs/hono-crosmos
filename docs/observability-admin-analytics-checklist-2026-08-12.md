@@ -635,7 +635,12 @@ stack. Production API `554c1bad` and ingestion `05e3c0d2` now export logs and
 traces to the existing Grafana destinations while retaining 100% Cloudflare
 persistence. The config change does not touch retrieval, extraction,
 embeddings, ranking, database writes, or user data. Volume/retention
-measurement and the hosted production waterfall remain.
+measurement and the hosted production waterfall remain. An unsampled 24-hour
+production baseline counted 22,086 log rows and 23,079 spans, projecting to
+662,580 logs and 692,370 spans per 30 days. This is 3.31% of the Workers Logs
+allowance and less than 7% of each separate OTLP allowance, so production
+sampling remains at 100%. Grafana's actual first-day bytes remain to be read
+from its usage page.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
@@ -1946,7 +1951,8 @@ Tests only.
 ### [~] L-1. Establish the retention policy, and measure what it costs
 
 _The 7/90-day policy and security-questionnaire wording are documented. Live
-event volume, lifecycle expiry observation, and first-month cost remain._
+production event volume and monthly headroom are now measured; lifecycle expiry
+observation and Grafana's first full-day byte reading remain._
 
 **Why**
 
@@ -1987,6 +1993,16 @@ finished.
   staging, not by reading the configuration.
 - `docs/log-retention.md` answers, in plain language: what is retained, for how
   long, why, and what personal data it contains.
+
+**Production measurement — 2026-08-16:** The latest unsampled 24-hour window
+contained 18,858 API log rows and 3,228 ingestion log rows, or 22,086 total.
+Linear projection gives 662,580 rows/month: 3.31% of 20 million, leaving
+19,337,420 rows (96.69%) of monthly headroom. The same window contained 23,079
+spans, projecting to 692,370/month. Separate OTLP projections use 6.63% of the
+10-million log-event allowance and 6.92% of the 10-million trace-event
+allowance. All calculation groups reported `sampleInterval = 1`; no sampling
+correction was needed. This closes the event-count/headroom gate, not Grafana's
+byte/cost gate or the R2 elapsed-expiry gate.
 
 **Rollback**
 
