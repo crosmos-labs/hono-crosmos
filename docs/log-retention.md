@@ -2,11 +2,12 @@
 
 ## Retention policy
 
-Crosmos keeps operational Worker logs in two tiers:
+Crosmos keeps operational Worker telemetry in three tiers:
 
 | Tier | Retention | Purpose |
 |---|---:|---|
 | Cloudflare Workers Logs | 7 days | Interactive incident response and recent-request debugging |
+| Grafana Cloud Loki/Tempo | 14 days on Free; 30 days on Pro | Hosted log/trace correlation and request waterfalls; not the long-term archive |
 | Dedicated R2 archive | 90 days | Post-incident review, regression investigation, and quarterly operational comparisons |
 
 The R2 period is enforced by a bucket lifecycle rule, not by a manual deletion
@@ -22,6 +23,35 @@ customer report or a quarter-long regression and short enough to avoid keeping
 operational identifiers indefinitely. Access is restricted to operators with a
 debugging need. Archived objects are not a product analytics or customer audit
 API.
+
+Grafana was still in its time-limited trial during the 2026-08-16 rollout. The
+policy assumes the documented Free-plan fallback after the trial: 14-day log
+and trace retention with 50 GB/month included for each signal. If the stack is
+upgraded to Pro, the default becomes 30 days. The Grafana billing/usage page is
+the authority for actual bytes received; event counts below are sizing inputs,
+not a substitute for that reading.
+
+### Production volume baseline
+
+At `2026-08-16T10:50:25Z`, an unsampled Workers Observability calculation over
+the preceding 24 hours produced:
+
+| Production service | Log rows | Span rows |
+|---|---:|---:|
+| `crosmos-api-production` | 18,858 | 19,861 |
+| `crosmos-ingestion-production` | 3,228 | 3,218 |
+| **Total** | **22,086** | **23,079** |
+
+The log count is the sum of structured `cf-worker` rows and automatic
+`cf-worker-event` invocation rows. Every group reported `sampleInterval = 1`.
+A simple 30-day projection is 662,580 log rows and 692,370 spans. That uses
+about 3.31% of the 20-million-event Workers Logs monthly allowance, leaving
+about 19.34 million events of headroom. For Cloudflare OTLP export's separate
+10-million-event included allowances, the same projection is about 6.63% for
+logs and 6.92% for traces. Keep 100% production capture unless a later full-day
+Grafana byte measurement or sustained traffic growth provides contrary
+evidence; reducing production sampling would directly reduce diagnostic
+accuracy in both persisted Cloudflare telemetry and Grafana.
 
 Rate-limit events persist only a 16-hex-character HMAC prefix in `ip_hash`.
 The raw address is used ephemerally as the Durable Object limiter key and is
