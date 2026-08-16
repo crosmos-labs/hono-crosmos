@@ -186,11 +186,13 @@ enabled = true
 head_sampling_rate = 1
 persist = true
 invocation_logs = true
+destinations = ["grafana-logs"]
 
 [env.production.observability.traces]
 enabled = true
 persist = true
 head_sampling_rate = 1
+destinations = ["grafana-traces"]
 
 [env.production.vars]
 ENVIRONMENT = "production"
@@ -307,13 +309,11 @@ enabled = true
 head_sampling_rate = 1
 persist = true
 invocation_logs = true
-destinations = ["grafana-logs"]
 
 [env.staging.observability.traces]
 enabled = true
 persist = true
 head_sampling_rate = 1
-destinations = ["grafana-traces"]
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
