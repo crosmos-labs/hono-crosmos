@@ -6,16 +6,16 @@ describe('session temporal context', () => {
     const context = resolveSessionTemporalContext('2026-06-01T00:00:00');
 
     expect(context.referenceTime).toBe('2026-06-01T00:00:00.000Z');
-    expect(context.temporalBase?.toISOString()).toBe(context.referenceTime);
-    expect(context.recordedAt.toISOString()).toBe(context.referenceTime);
+    expect(context.temporalBase?.toISOString()).toBe('2026-06-01T00:00:00.000Z');
+    expect(context.recordedAt.toISOString()).toBe('2026-06-01T00:00:00.000Z');
   });
 
   test('preserves an explicit caller offset', () => {
     const context = resolveSessionTemporalContext('2026-06-01T00:00:00+05:30');
 
     expect(context.referenceTime).toBe('2026-05-31T18:30:00.000Z');
-    expect(context.temporalBase?.toISOString()).toBe(context.referenceTime);
-    expect(context.recordedAt.toISOString()).toBe(context.referenceTime);
+    expect(context.temporalBase?.toISOString()).toBe('2026-05-31T18:30:00.000Z');
+    expect(context.recordedAt.toISOString()).toBe('2026-05-31T18:30:00.000Z');
   });
 
   test('falls back consistently when the session date is invalid', () => {
