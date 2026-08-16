@@ -609,7 +609,9 @@ production incident. The operator opened the controlled security-endpoint trace
 and verified its 200 response, 128 ms duration, exact staging deploy version,
 Cloudflare resource attributes, and one child span. This proves trace rendering
 but is intentionally not credited as the meaningful authenticated-search
-waterfall.
+waterfall. The same invocation was then selected in Loki by its bounded
+`faas.invocation_id`; its structured metadata contained the exact Tempo
+`trace_id`, completing trace-to-log correlation for the controlled request.
 The remaining hosted gate is opening one authenticated search waterfall and
 correlating it to Loki, followed by staging-schema reconciliation,
 volume/retention measurement, and an explicit sampled production policy;
