@@ -24,6 +24,17 @@ operational identifiers indefinitely. Access is restricted to operators with a
 debugging need. Archived objects are not a product analytics or customer audit
 API.
 
+Cloudflare's own automatic invocation envelope is distinct from Crosmos's
+structured application record. In the seven-day Workers Logs tier, that
+platform-managed envelope can include the connecting address inside request
+headers, plus coarse geography and user-agent metadata. Crosmos does not copy
+those request headers into its application logger. The selected 90-day Logpush
+shape was checked against a landed production fetch on 2026-08-16: its
+`Event.Request` contained only `Method` and `URL`, with no header container,
+raw-IP-named path, authorization/cookie/API-key path, or exception. This
+short-lived Cloudflare platform field is therefore not part of the Crosmos R2
+archive, but operators should still treat the seven-day tier as personal data.
+
 Grafana was still in its time-limited trial during the 2026-08-16 rollout. The
 policy assumes the documented Free-plan fallback after the trial: 14-day log
 and trace retention with 50 GB/month included for each signal. If the stack is
