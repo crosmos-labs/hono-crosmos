@@ -601,8 +601,11 @@ Loki and Tempo deliveries at `08:32:27Z` and `08:32:47Z`, respectively. The
 operator then rendered 37 staging log lines in Loki Explore and found the
 expected `crosmos-api-staging` scheduled/GET traces with IDs and durations in
 Tempo, proving both hosted search paths. That inspection exposed a staging
-`ingestion_redrive` cron failure:
-the connected database lacks `memory_spaces.deleted_at` from migration `0003`.
+`ingestion_redrive` cron failure: the connected database lacks
+`memory_spaces.deleted_at` from migration `0003`. A capped seven-day Workers
+Logs check found repeated matching staging failures and zero matching production
+failures, confirming this as a staging-schema problem rather than a current
+production incident.
 The remaining hosted gate is opening one request waterfall and correlating it
 to Loki, followed by staging-schema reconciliation,
 volume/retention measurement, and an explicit sampled production policy;
