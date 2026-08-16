@@ -221,6 +221,7 @@ separately:
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-16 | Exercised a real isolated staging conversation after schema repair. The first job exposed that staging still selected obsolete OpenRouter extraction without an `OPENROUTER_API_KEY`; production already uses OpenAI directly. Aligned staging to production's OpenAI extraction provider, installed its missing staging secret without exposing it, and passed 94 ingestion tests (505 assertions), production/test typechecks, and the staging bundle before deploy. The fresh job reached extraction but then proved the configured staging Qdrant hostname is stale: it returns plain 404 even for `/healthz`, so collection persistence and authenticated retrieval remain externally blocked. No production config, secret, collection, data, or request behavior changed. | staging `85a75575-7fef-4454-80da-74ddb7e1ddf2` | — | — |
 | 2026-08-16 | Reconciled the empty staging Neon branch after Grafana exposed its repeated `ingestion_redrive` missing-column failure. Preflight confirmed the intended endpoint/owner, zero `memory_spaces`/`daily_usage` rows, and a 10 MB database; full custom and schema-only backups completed before DDL. Applied committed migrations `0003` and `0004`, plus the missing additive `plan_pending_expires_at`, `speaker_role`, and scoped-API-key changes under a three-second lock budget. Every new index is ready/valid. A semantic catalog comparison now matches all 451 column/index/FK definitions from the migration-built reference; only the equivalent legacy `source_memories_id_seq` name remains. The next scheduled redrive completed on its first attempt at `10:30:17Z` with zero candidates/jobs, and no post-repair sweep failure landed. Production had zero matching sweep failures in the prior seven days and was not changed. | — | staging database only | — |
 | 2026-08-16 | Created least-privilege Grafana Cloud OTLP destinations in Cloudflare and deployed destination references to staging only at 100% sampling. Both staging bundles passed before deploy; five public security-file requests returned 200. Cloudflare then reported successful, error-free delivery to Loki at `08:32:27Z` and Tempo at `08:32:47Z`; the operator subsequently rendered 37 staging log lines in Loki Explore and a Tempo search returned the expected `crosmos-api-staging` scheduled/GET traces with trace IDs and durations. That first visual inspection also exposed a pre-existing staging `ingestion_redrive` sweep failure because its database lacks `memory_spaces.deleted_at` from migration `0003`; schema reconciliation is now a promotion gate. Production destination references remain intentionally absent until one trace waterfall is correlated to Loki, the staging schema is repaired, and the first-volume gate establishes an explicit sampling policy. | staging `b184f9e8-fb27-4621-9d70-41aa03813515` | staging `9719db35-c8f1-45ce-9e19-ac8c538c2574` | — |
 | 2026-08-15 | Removed the remaining host-timezone dependency from source/session dates by routing them through the same UTC-safe parser as provider `event_time` and `valid_from`. Extraction `reference_time`, deterministic relative-date fallback, and persisted `recorded_at` now share one instant; explicit offsets remain unchanged and invalid dates retain the existing wall-clock fallback. Targeted tests passed under Asia/Kolkata, then the full 135 API / 94 ingestion suites, typecheck, exact corpus, and both Worker bundles passed. Staging and production deployment reads report the new versions at 100%, and both primary/DLQ queue consumers retain their expected limits. No migration or backfill ran. | staging `bf7b1edd-7abe-4641-80ee-074fa4fef5eb`; production `b14df496-1759-4985-aaef-d21d53b76009` | — | — |
@@ -620,9 +621,14 @@ waterfall. The same invocation was then selected in Loki by its bounded
 `faas.invocation_id`; its structured metadata contained the exact Tempo
 `trace_id`, completing trace-to-log correlation for the controlled request.
 The remaining hosted gate is opening one authenticated search waterfall and
-correlating it to Loki, followed by staging-schema reconciliation,
-volume/retention measurement, and an explicit sampled production policy;
-production export is not enabled yet.
+correlating it to Loki. The first real staging ingestion attempt exposed and
+removed an obsolete OpenRouter-vs-production provider mismatch; after the
+OpenAI-aligned staging deploy passed 94 tests and both typechecks, a fresh job
+reached extraction but failed against the configured staging Qdrant hostname,
+which returns plain 404 even for `/healthz`. A live isolated staging Qdrant
+endpoint/credential and the two 1536-dimensional Cosine collections are now the
+external dependency. Volume/retention measurement and an explicit sampled
+production policy follow that gate; production export is not enabled yet.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
