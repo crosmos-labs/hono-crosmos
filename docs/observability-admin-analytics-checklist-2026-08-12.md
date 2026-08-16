@@ -143,7 +143,7 @@ So the real gaps are narrower than they feel:
   evidence.
 - `[external]` — required outside this repository.
 
-### Current completion snapshot — 2026-08-15
+### Current completion snapshot — 2026-08-16
 
 This checklist is **not complete**. After the live deployment audit and the
 addition of O-7 below, the top-level items are:
@@ -153,8 +153,10 @@ addition of O-7 below, the top-level items are:
 - **1 not started** (`[ ]`), the guarded experiment queue;
 - **11 deliberately deferred** (`[-]`).
 
-O-7 repository instrumentation is complete; its remaining work is the external
-trace/log/Grafana workflow. The next repository work is the remaining P-1
+O-7 repository instrumentation is complete, and staging OTLP delivery to
+Grafana Tempo/Loki is now proven; its remaining external work is the visual
+single-request correlation, volume/retention measurement, and a deliberately
+sampled production rollout. The next repository work is the remaining P-1
 through P-6 differential/fault coverage. Admin/user-analytics live gates,
 destructive deleted-space finalization, and archive-operability checks remain;
 their individual sections state the exact gate still missing. Deferred entries
@@ -163,7 +165,7 @@ do not prevent completion unless new evidence explicitly reactivates them.
 The 2026-08-15 repository audit passes 135 API tests (433 assertions) and 94
 ingestion tests (505 assertions), with no failures or skips and with production
 and test typechecks clean. No partial item is promoted solely from local proof:
-O-4/O-7 still need persisted-log/trace and hosted-Grafana access; A-4/A-6 and
+O-4/O-7 still need the hosted-Grafana single-request reconciliation; A-4/A-6 and
 U-4 need their allowlisted/staging operational gates; A-7 needs an explicit
 retention/destructive-finalization decision; L-1 through L-5 need elapsed
 lifecycle/archive/credential evidence; and P-1 through P-6 retain their stated
@@ -219,6 +221,7 @@ separately:
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-16 | Created least-privilege Grafana Cloud OTLP destinations in Cloudflare and deployed destination references to staging only at 100% sampling. Both staging bundles passed before deploy; five public security-file requests returned 200. Cloudflare then reported successful, error-free delivery to Loki at `08:32:27Z` and Tempo at `08:32:47Z`. Production destination references remain intentionally absent until the Grafana Explore correlation and first-volume gate establish an explicit sampling policy. | staging `b184f9e8-fb27-4621-9d70-41aa03813515` | staging `9719db35-c8f1-45ce-9e19-ac8c538c2574` | — |
 | 2026-08-15 | Removed the remaining host-timezone dependency from source/session dates by routing them through the same UTC-safe parser as provider `event_time` and `valid_from`. Extraction `reference_time`, deterministic relative-date fallback, and persisted `recorded_at` now share one instant; explicit offsets remain unchanged and invalid dates retain the existing wall-clock fallback. Targeted tests passed under Asia/Kolkata, then the full 135 API / 94 ingestion suites, typecheck, exact corpus, and both Worker bundles passed. Staging and production deployment reads report the new versions at 100%, and both primary/DLQ queue consumers retain their expected limits. No migration or backfill ran. | staging `bf7b1edd-7abe-4641-80ee-074fa4fef5eb`; production `b14df496-1759-4985-aaef-d21d53b76009` | — | — |
 | 2026-08-15 | Re-read the active Cloudflare deployment histories and audited the offset-less provider timestamp correction against temporal retrieval. The current parser produced the same `2026-06-01T00:00:00.000Z` instant under UTC, Asia/Kolkata, America/Los_Angeles, and Pacific/Kiritimati; the old host-local parse crossed into May 31 in positive-offset zones. The deterministic database corpus passed all 16 artifact/ranking gates under both UTC and Asia/Kolkata, including the temporal query with identical recorded candidates, order, and scores; the complete non-UTC suites passed with 135 API and 91 ingestion tests. The change runs only while normalizing newly extracted provider fields. Existing `timestamptz` rows are neither reparsed nor rewritten, so their current retrieval behavior is unchanged unless a source is explicitly reingested. | staging `0c961be9-85f4-4abb-9610-c8fb66655916`; production `f64934b7-246e-4dc9-838d-4cb1e11f4533` | staging `c35ffacc-863e-4524-af87-69cb304ce8b7`; production `5cd3c087-a31d-4d78-9153-9ebf87936b56` | — |
 | 2026-08-15 | Audited the live staging and production Hyperdrive configurations and found default SQL query caching enabled on the single binding shared by API, ingestion, and admin. Disabled caching on staging first and then production so freshness-sensitive authorization, quota, cancellation, lifecycle, and read-after-write queries cannot receive stale results; Hyperdrive connection pooling remains. Both configs now report `caching.disabled: true`; public API/auth smoke and the production Access redirect remained healthy. | external config `930052d5e0dc40c8911417c7ef3e8c13` / `53d75344f62e4e4da0974c2fdfcc5b0d` | same shared configs | same shared configs |
@@ -590,7 +593,14 @@ ingestion-stage records, an API request reconstructed three private timing
 events, and an ingestion correlation id reconstructed a backstop requeue plus
 its successful purge stage. Those samples had no raw-IP-named source field and
 no truncation marker. They were too sparse for the complete request/ingestion
-waterfall, so hosted Grafana export and full-clock reconciliation remain.
+waterfall, so full-clock reconciliation remains. On 2026-08-16 the API and
+ingestion staging configs were deployed with the `grafana-logs` and
+`grafana-traces` destination names at 100% sampling. Five controlled staging
+requests returned 200, after which Cloudflare reported successful, error-free
+Loki and Tempo deliveries at `08:32:27Z` and `08:32:47Z`, respectively. The
+remaining hosted gate is visual correlation of one request in Grafana Explore,
+followed by volume/retention measurement and an explicit sampled production
+policy; production export is not enabled yet.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
