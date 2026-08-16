@@ -154,9 +154,10 @@ addition of O-7 below, the top-level items are:
 - **11 deliberately deferred** (`[-]`).
 
 O-7 repository instrumentation is complete, and staging OTLP delivery to
-Grafana Tempo/Loki is now proven; its remaining external work is the visual
-single-request correlation, volume/retention measurement, and a deliberately
-sampled production rollout. The next repository work is the remaining P-1
+Grafana Tempo/Loki is proven. Production API and ingestion export are now live
+at the existing 100% persisted sampling rate; its remaining external work is
+the visual production single-request correlation and volume/retention
+measurement. The next repository work is the remaining P-1
 through P-6 differential/fault coverage. Admin/user-analytics live gates,
 destructive deleted-space finalization, and archive-operability checks remain;
 their individual sections state the exact gate still missing. Deferred entries
@@ -221,6 +222,7 @@ separately:
 
 | Date | Change | Ingestion Worker | API Worker | Admin Worker |
 |---|---|---|---|---|
+| 2026-08-16 | Moved the existing Grafana Loki/Tempo destination references from repository staging config to production without changing `head_sampling_rate = 1`, `persist = true`, providers, models, vector stores, database bindings, or runtime code. API (135 pass, 433 assertions), ingestion (94 pass, 505 assertions), both production/test typechecks, and both production dry-run bundles passed. Deployed ingestion first and confirmed its primary and DLQ queue consumers remained attached, then deployed API; both versions are active at 100%. Five production security-file requests returned 200, and recent persisted telemetry contains the new production API version, structured request clocks, and custom spans. External OTLP delivery and the production Grafana view remain the next gate. | production `05e3c0d2-a4d4-4a05-97a1-f597fc1b88b3` | production `554c1bad-c200-4537-aedc-d4fc583c337c` | — |
 | 2026-08-16 | Exercised a real isolated staging conversation after schema repair. The first job exposed that staging still selected obsolete OpenRouter extraction without an `OPENROUTER_API_KEY`; production already uses OpenAI directly. Aligned staging to production's OpenAI extraction provider, installed its missing staging secret without exposing it, and passed 94 ingestion tests (505 assertions), production/test typechecks, and the staging bundle before deploy. The fresh job reached extraction but then proved the configured staging Qdrant hostname is stale: it returns plain 404 even for `/healthz`, so collection persistence and authenticated retrieval remain externally blocked. No production config, secret, collection, data, or request behavior changed. | staging `85a75575-7fef-4454-80da-74ddb7e1ddf2` | — | — |
 | 2026-08-16 | Reconciled the empty staging Neon branch after Grafana exposed its repeated `ingestion_redrive` missing-column failure. Preflight confirmed the intended endpoint/owner, zero `memory_spaces`/`daily_usage` rows, and a 10 MB database; full custom and schema-only backups completed before DDL. Applied committed migrations `0003` and `0004`, plus the missing additive `plan_pending_expires_at`, `speaker_role`, and scoped-API-key changes under a three-second lock budget. Every new index is ready/valid. A semantic catalog comparison now matches all 451 column/index/FK definitions from the migration-built reference; only the equivalent legacy `source_memories_id_seq` name remains. The next scheduled redrive completed on its first attempt at `10:30:17Z` with zero candidates/jobs, and no post-repair sweep failure landed. Production had zero matching sweep failures in the prior seven days and was not changed. | — | staging database only | — |
 | 2026-08-16 | Created least-privilege Grafana Cloud OTLP destinations in Cloudflare and deployed destination references to staging only at 100% sampling. Both staging bundles passed before deploy; five public security-file requests returned 200. Cloudflare then reported successful, error-free delivery to Loki at `08:32:27Z` and Tempo at `08:32:47Z`; the operator subsequently rendered 37 staging log lines in Loki Explore and a Tempo search returned the expected `crosmos-api-staging` scheduled/GET traces with trace IDs and durations. That first visual inspection also exposed a pre-existing staging `ingestion_redrive` sweep failure because its database lacks `memory_spaces.deleted_at` from migration `0003`; schema reconciliation is now a promotion gate. Production destination references remain intentionally absent until one trace waterfall is correlated to Loki, the staging schema is repaired, and the first-volume gate establishes an explicit sampling policy. | staging `b184f9e8-fb27-4621-9d70-41aa03813515` | staging `9719db35-c8f1-45ce-9e19-ac8c538c2574` | — |
@@ -620,15 +622,20 @@ but is intentionally not credited as the meaningful authenticated-search
 waterfall. The same invocation was then selected in Loki by its bounded
 `faas.invocation_id`; its structured metadata contained the exact Tempo
 `trace_id`, completing trace-to-log correlation for the controlled request.
-The remaining hosted gate is opening one authenticated search waterfall and
-correlating it to Loki. The first real staging ingestion attempt exposed and
+The remaining hosted gate is opening one authenticated production search
+waterfall and correlating it to Loki. The first real staging ingestion attempt exposed and
 removed an obsolete OpenRouter-vs-production provider mismatch; after the
 OpenAI-aligned staging deploy passed 94 tests and both typechecks, a fresh job
 reached extraction but failed against the configured staging Qdrant hostname,
 which returns plain 404 even for `/healthz`. A live isolated staging Qdrant
 endpoint/credential and the two 1536-dimensional Cosine collections are now the
-external dependency. Volume/retention measurement and an explicit sampled
-production policy follow that gate; production export is not enabled yet.
+external dependency. At the operator's direction, the remaining rollout then
+moved to production instead of provisioning the behind-production staging
+stack. Production API `554c1bad` and ingestion `05e3c0d2` now export logs and
+traces to the existing Grafana destinations while retaining 100% Cloudflare
+persistence. The config change does not touch retrieval, extraction,
+embeddings, ranking, database writes, or user data. Volume/retention
+measurement and the hosted production waterfall remain.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
 smoke passed, and private aggregate telemetry included the three API clocks plus
 a successful live search under the new API version.
