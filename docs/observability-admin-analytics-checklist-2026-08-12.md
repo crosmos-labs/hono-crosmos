@@ -605,9 +605,13 @@ Tempo, proving both hosted search paths. That inspection exposed a staging
 `memory_spaces.deleted_at` from migration `0003`. A capped seven-day Workers
 Logs check found repeated matching staging failures and zero matching production
 failures, confirming this as a staging-schema problem rather than a current
-production incident.
-The remaining hosted gate is opening one request waterfall and correlating it
-to Loki, followed by staging-schema reconciliation,
+production incident. The operator opened the controlled security-endpoint trace
+and verified its 200 response, 128 ms duration, exact staging deploy version,
+Cloudflare resource attributes, and one child span. This proves trace rendering
+but is intentionally not credited as the meaningful authenticated-search
+waterfall.
+The remaining hosted gate is opening one authenticated search waterfall and
+correlating it to Loki, followed by staging-schema reconciliation,
 volume/retention measurement, and an explicit sampled production policy;
 production export is not enabled yet.
 Production API `6c547aa3` and ingestion `a1b686ad` were then deployed; public
