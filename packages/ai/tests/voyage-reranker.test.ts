@@ -53,6 +53,64 @@ describe('VoyageReranker', () => {
     expect(body?.model).toBe('rerank-2.5-lite');
   });
 
+  test('falls back from 2.5 to 2.5-lite exactly once on HTTP 429', async () => {
+    const models: string[] = [];
+    const fallbacks: Array<{ primaryModel: string; fallbackModel: string }> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      models.push(body.model);
+      if (models.length === 1) return new Response('rate limited', { status: 429 });
+      return Response.json({ results: [{ index: 0, relevance_score: 0.8 }] });
+    }) as typeof fetch;
+
+    const result = await new VoyageReranker({
+      apiKey: 'k',
+      rateLimitFallbackModel: 'rerank-2.5-lite',
+      onRateLimitFallback: (event) => fallbacks.push(event),
+    }).rerank('q', ['doc']);
+
+    expect(models).toEqual(['rerank-2.5', 'rerank-2.5-lite']);
+    expect(fallbacks).toEqual([{
+      primaryModel: 'rerank-2.5',
+      fallbackModel: 'rerank-2.5-lite',
+    }]);
+    expect(result).toEqual([{ index: 0, score: 0.8 }]);
+  });
+
+  test('does not fall back on non-rate-limit provider errors', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response('unavailable', { status: 503 });
+    }) as typeof fetch;
+
+    const error = await new VoyageReranker({
+      apiKey: 'k',
+      rateLimitFallbackModel: 'rerank-2.5-lite',
+    }).rerank('q', ['doc']).catch((caught) => caught);
+
+    expect(calls).toBe(1);
+    expect(error).toBeInstanceOf(RerankerRequestError);
+    expect((error as RerankerRequestError).status).toBe(503);
+  });
+
+  test('a 429 from the lite fallback is surfaced without a retry loop', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response('rate limited', { status: 429 });
+    }) as typeof fetch;
+
+    const error = await new VoyageReranker({
+      apiKey: 'k',
+      rateLimitFallbackModel: 'rerank-2.5-lite',
+    }).rerank('q', ['doc']).catch((caught) => caught);
+
+    expect(calls).toBe(2);
+    expect(error).toBeInstanceOf(RerankerRequestError);
+    expect((error as RerankerRequestError).status).toBe(429);
+  });
+
   test('propagates caller cancellation without blaming Voyage', async () => {
     const caller = new AbortController();
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>

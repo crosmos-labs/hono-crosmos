@@ -47,9 +47,22 @@ export function getReranker(env: Env): Reranker | null {
       });
       return null;
     }
+    const logger = createLogger({
+      service: 'api',
+      environment: env.ENVIRONMENT,
+    });
     return new VoyageReranker({
       apiKey: env.VOYAGE_API_KEY,
       model: env.VOYAGE_RERANKER_MODEL,
+      rateLimitFallbackModel: 'rerank-2.5-lite',
+      onRateLimitFallback: ({ primaryModel, fallbackModel }) =>
+        logger.warn('retrieval.reranker_rate_limit_fallback', {
+          stage: 'rerank',
+          provider: 'voyage',
+          primary_model: primaryModel,
+          fallback_model: fallbackModel,
+          reason: 'rate_limit',
+        }),
     });
   }
 
