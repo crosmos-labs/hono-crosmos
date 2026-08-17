@@ -168,6 +168,7 @@ VECTOR_STORE = "vectorize"
 #   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small; dim = EMBEDDING_DIMENSIONS, prod 1536)
 #   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small; dim = EMBEDDING_DIMENSIONS)
 #   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
+#   VOYAGE_API_KEY       — only if RERANKER_PROVIDER=voyage (rerank-2.5)
 
 [env.production]
 # No *.workers.dev for prod — only the api.crosmos.dev custom domain route.
