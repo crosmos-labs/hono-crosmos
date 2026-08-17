@@ -1,4 +1,4 @@
-import { WorkersAiReranker, ZeroEntropyReranker } from '@crosmos/ai';
+import { VoyageReranker, WorkersAiReranker, ZeroEntropyReranker } from '@crosmos/ai';
 import type { Reranker } from '@crosmos/ai';
 import { createLogger } from '@crosmos/observability';
 import type { Env } from '../../bindings';
@@ -15,6 +15,8 @@ export type { Reranker } from '@crosmos/ai';
  *   - `zeroentropy` — ZeroEntropy `zerank-2` over HTTP. Requires
  *     `ZEROENTROPY_API_KEY`; if missing we return `null` (logged) rather than
  *     throwing — retrieval still works via the RRF rank-remap fallback.
+ *   - `voyage` — Voyage `rerank-2.5` (or the latency-oriented 2.5-lite) over
+ *     HTTP. Requires `VOYAGE_API_KEY`.
  *
  * The outer `RETRIEVAL_RERANKER_ENABLED` toggle gates construction entirely
  * (mirrors Python's `dependencies.py`).
@@ -32,6 +34,23 @@ export function getReranker(env: Env): Reranker | null {
       return null;
     }
     return new ZeroEntropyReranker({ apiKey: env.ZEROENTROPY_API_KEY });
+  }
+
+  if (provider === 'voyage') {
+    if (!env.VOYAGE_API_KEY) {
+      createLogger({
+        service: 'api',
+        environment: env.ENVIRONMENT,
+      }).warn('retrieval.reranker_missing_api_key', {
+        stage: 'reranker_init',
+        provider: 'voyage',
+      });
+      return null;
+    }
+    return new VoyageReranker({
+      apiKey: env.VOYAGE_API_KEY,
+      model: env.VOYAGE_RERANKER_MODEL,
+    });
   }
 
   if (!env.AI) {

@@ -73,7 +73,8 @@ export interface Env {
   // and [env.production.vars] in wrangler.toml). The Workers AI + Vectorize bindings
   // are declared but DORMANT in prod — these vars route around them.
   EMBEDDINGS_PROVIDER?: 'workers-ai' | 'openai' | 'openrouter';
-  RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy';
+  RERANKER_PROVIDER?: 'workers-ai' | 'zeroentropy' | 'voyage';
+  VOYAGE_RERANKER_MODEL?: 'rerank-2.5' | 'rerank-2.5-lite';
   VECTOR_STORE?: 'vectorize' | 'pg' | 'qdrant';
   // Qdrant config (only needed when VECTOR_STORE=qdrant). Collection names
   // default to crosmos-memories/crosmos-entities if unset.
@@ -89,6 +90,7 @@ export interface Env {
   OPENAI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   ZEROENTROPY_API_KEY?: string;
+  VOYAGE_API_KEY?: string;
   // Toggles the cross-encoder reranker. Anything other than "false" keeps it
   // on (default on). Mirrors Python's RETRIEVAL_RERANKER_ENABLED.
   RETRIEVAL_RERANKER_ENABLED?: string;
