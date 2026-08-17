@@ -10,6 +10,13 @@ export interface VoyageRerankerConfig {
   apiKey: string;
   /** Defaults to Voyage's quality-oriented `rerank-2.5`. */
   model?: 'rerank-2.5' | 'rerank-2.5-lite';
+  /** Optional one-shot fallback used only when the primary returns HTTP 429. */
+  rateLimitFallbackModel?: 'rerank-2.5-lite';
+  /** Observability hook; exceptions are ignored and never affect retrieval. */
+  onRateLimitFallback?: (event: {
+    primaryModel: string;
+    fallbackModel: string;
+  }) => void;
 }
 
 interface VoyageRerankResponse {
@@ -39,6 +46,46 @@ export class VoyageReranker implements Reranker {
   ): Promise<RerankResult[]> {
     if (documents.length === 0) return [];
 
+    const primaryModel = opts?.model ?? this.defaultModel;
+    let res = await this.request(query, documents, primaryModel, opts);
+    const fallbackModel = this.config.rateLimitFallbackModel;
+    if (
+      res.status === 429
+      && primaryModel === 'rerank-2.5'
+      && fallbackModel !== undefined
+    ) {
+      // We do not need the primary error body and should free its connection
+      // before issuing the fallback request.
+      await res.body?.cancel().catch(() => undefined);
+      try {
+        this.config.onRateLimitFallback?.({ primaryModel, fallbackModel });
+      } catch {
+        // Logging/metrics hooks must never turn a successful degradation into a
+        // retrieval failure.
+      }
+      res = await this.request(query, documents, fallbackModel, opts);
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new RerankerRequestError(
+        `Voyage ${res.status}: ${text || res.statusText}`,
+        res.status,
+      );
+    }
+
+    const json = (await res.json()) as VoyageRerankResponse;
+    return json.results
+      .map((result) => ({ index: result.index, score: result.relevance_score }))
+      .sort((a, b) => b.score - a.score);
+  }
+
+  private async request(
+    query: string,
+    documents: string[],
+    model: string,
+    opts?: RerankOptions,
+  ): Promise<Response> {
     let res: Response;
     try {
       res = await fetch(VOYAGE_RERANK_URL, {
@@ -48,7 +95,7 @@ export class VoyageReranker implements Reranker {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: opts?.model ?? this.defaultModel,
+          model,
           query,
           documents,
           return_documents: false,
@@ -69,18 +116,6 @@ export class VoyageReranker implements Reranker {
         504,
       );
     }
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new RerankerRequestError(
-        `Voyage ${res.status}: ${text || res.statusText}`,
-        res.status,
-      );
-    }
-
-    const json = (await res.json()) as VoyageRerankResponse;
-    return json.results
-      .map((result) => ({ index: result.index, score: result.relevance_score }))
-      .sort((a, b) => b.score - a.score);
+    return res;
   }
 }
