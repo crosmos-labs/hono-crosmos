@@ -328,6 +328,30 @@ searchRoutes.openapi(
       });
     }
 
+    // Start the only query-dependent provider call as soon as overload
+    // shedding admits the request. Authorization, entitlement, quota and the
+    // global AI throttle still gate the response below, but their I/O now
+    // overlaps the embedding instead of sitting wholly in front of it. The
+    // request-wide controller is aborted in `finally`, so a later gate failure
+    // cancels an embedding that is still in flight.
+    //
+    // Deliberate tradeoff: a request rejected by a later 404/429 can consume one
+    // embedding call. Authentication and the per-user concurrency shield have
+    // already passed, bounding that exposure; no retrieval result or protected
+    // data is available to the embedder.
+    const embedder = getEmbedder(c.env);
+    const embedPromise = stages.span(
+      'retrieval_query_embedding',
+      () => embedder.embed(body.query, {
+        mode: 'search',
+        signal: deadline.signal,
+      }),
+    );
+    // retrieve() awaits this on the success path. Guard the pre-await window so
+    // provider rejection while admission is running is not reported as an
+    // unhandled promise rejection.
+    embedPromise.catch(() => {});
+
     // Wall-clock for the RETRIEVAL phase only. Reassigned once the gates are
     // done so `retrieval.request_completed.duration_ms` keeps exactly the
     // meaning it had before admission was reordered — otherwise the before/after
@@ -475,22 +499,6 @@ searchRoutes.openapi(
           ),
         });
       }
-
-      // EARLY EMBED — kick the query embedding off NOW so the external call
-      // (~370ms, OpenAI) overlaps the visibility + working-set DB round-trips
-      // below instead of running after them inside retrieve(). The signals then
-      // find the vector already resolved. Quality-neutral (same vector).
-      const embedder = getEmbedder(c.env);
-      const embedPromise = stages.span(
-        'retrieval_query_embedding',
-        () => embedder.embed(body.query, {
-          mode: 'search',
-          signal: deadline.signal,
-        }),
-      );
-      // retrieve() awaits this; guard the pre-await window so a rejection here
-      // isn't reported as an unhandled rejection.
-      embedPromise.catch(() => {});
 
       const visibleUserIds = await stages.time('visibility_scope', {
         space_id: space.id,
