@@ -6,12 +6,12 @@
  * `apps/api/src/integrations/job-store/pg.ts` so cross-app coupling stays
  * minimal (we'd promote to `packages/db/` only if drift becomes a problem).
  */
-import { ingestionJobs, memorySpaces, type Database } from '@crosmos/db';
+import { ingestionJobs, memorySpaces, sql, type Database } from '@crosmos/db';
 import type {
   IngestionJobResult,
   IngestionJobStatus,
 } from '@crosmos/types';
-import { and, eq, isNull, lt, notInArray, or } from 'drizzle-orm';
+import { and, eq, isNull, notInArray } from 'drizzle-orm';
 
 export interface UpdateStatusOptions {
   result?: IngestionJobResult;
@@ -60,29 +60,39 @@ export async function claimJob(
 ): Promise<ClaimResult> {
   const now = new Date();
   const leaseCutoff = new Date(now.getTime() - leaseMs);
-  const rows = await db
-    .update(ingestionJobs)
-    .set({ status: 'processing', startedAt: now })
-    .where(
-      and(
-        eq(ingestionJobs.id, jobId),
-        or(
-          eq(ingestionJobs.status, 'pending'),
-          and(
-            eq(ingestionJobs.status, 'processing'),
-            lt(ingestionJobs.startedAt, leaseCutoff),
-          ),
-        ),
-      ),
+  // Return the claim result AND the failed-CAS classification from one
+  // statement. Queue-backstop deliveries normally lose this CAS to the RPC
+  // fast path; the old implementation then paid a second Postgres round trip
+  // merely to learn `in_flight`. The data-modifying CTE keeps the same atomic
+  // UPDATE predicate while making every outcome one trip.
+  const rows = await db.execute<{ outcome: ClaimResult }>(sql`
+    WITH claimed AS (
+      UPDATE ${ingestionJobs}
+      SET status = 'processing', started_at = ${now.toISOString()}::timestamptz
+      WHERE ${ingestionJobs.id} = ${jobId}::uuid
+        AND (
+          ${ingestionJobs.status} = 'pending'
+          OR (
+            ${ingestionJobs.status} = 'processing'
+            AND ${ingestionJobs.startedAt} < ${leaseCutoff.toISOString()}::timestamptz
+          )
+        )
+      RETURNING 1
     )
-    .returning({ id: ingestionJobs.id });
-  if (rows.length > 0) return 'claimed';
-
-  // CAS failed — disambiguate for the caller's ack/retry decision and logs.
-  const status = await getJobStatus(db, jobId);
-  if (status === null) return 'not_found';
-  if (TERMINAL_STATUSES.has(status)) return 'terminal';
-  return 'in_flight';
+    SELECT 'claimed'::text AS outcome
+    FROM claimed
+    UNION ALL
+    SELECT CASE
+      WHEN ${ingestionJobs.status} IN ('completed', 'partial', 'failed', 'cancelled')
+        THEN 'terminal'::text
+      ELSE 'in_flight'::text
+    END AS outcome
+    FROM ${ingestionJobs}
+    WHERE ${ingestionJobs.id} = ${jobId}::uuid
+      AND NOT EXISTS (SELECT 1 FROM claimed)
+    LIMIT 1
+  `);
+  return rows[0]?.outcome ?? 'not_found';
 }
 
 export async function getJobStatus(

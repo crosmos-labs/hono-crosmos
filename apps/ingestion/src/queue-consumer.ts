@@ -170,6 +170,7 @@ export async function handleIngestionDelivery(
     org_id: body.org_id,
     space_id: body.space_id,
     user_id: body.user_id,
+    trigger: 'queue',
   });
   const queueDelayMs =
     typeof body.enqueued_at_ms === 'number'
