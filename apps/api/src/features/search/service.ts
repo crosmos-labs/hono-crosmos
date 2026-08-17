@@ -42,6 +42,7 @@ import {
 import {
   computePersistence,
   computeRecency,
+  computeRevisionAdjustment,
   mmrRerank,
   rankRemap,
   reciprocalRankFusion,
@@ -628,6 +629,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     } else {
       totalBoost = recencyFactor;
     }
+    totalBoost += computeRevisionAdjustment(query.text, ranked.content);
     totalBoost = clamp(totalBoost, BOOST_MIN, BOOST_MAX);
     const finalScore = base * (1.0 + totalBoost);
 

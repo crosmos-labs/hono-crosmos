@@ -22,7 +22,12 @@ const SEC_PER_DAY = 86400;
 const CURRENT_INFORMATION_QUERY =
   /\b(current|currently|latest|now|most recent|still|today)\b/i;
 const EXPLICIT_UPDATE_MEMORY =
-  /\b(changed?|correct(?:ed|s)?|no longer|now|replac(?:ed|es)|remain(?:s|ed)|instead|updat(?:ed|es?))\b/i;
+  /\b(changed?|correct(?:ed|s)?|no longer|now|replac(?:ed|es)|remain(?:s|ed)|still|instead|updat(?:ed|es?))\b/i;
+const STILL_CONFIRMATION_QUERY =
+  /^(?:am|are|can|could|did|do|does|has|have|is|was|were|will|would)\b.*\bstill\b/i;
+
+const EXPLICIT_REVISION_BONUS = 0.15;
+const UNREVISED_CONFIRMATION_PENALTY = -0.25;
 
 /**
  * Recorded dates are useful evidence only when both sides establish temporal
@@ -31,6 +36,19 @@ const EXPLICIT_UPDATE_MEMORY =
  */
 export function shouldUseRecordedRecency(query: string, content: string): boolean {
   return CURRENT_INFORMATION_QUERY.test(query) && EXPLICIT_UPDATE_MEMORY.test(content);
+}
+
+/**
+ * A yes/no “still?” query is asking whether an older proposition survived.
+ * Exact lexical matching otherwise favors the old proposition itself. Prefer
+ * memories that explicitly revise or reaffirm it, and demote bare historical
+ * assertions. The narrow query shape keeps this out of ordinary fact lookup.
+ */
+export function computeRevisionAdjustment(query: string, content: string): number {
+  if (!STILL_CONFIRMATION_QUERY.test(query)) return 0;
+  return EXPLICIT_UPDATE_MEMORY.test(content)
+    ? EXPLICIT_REVISION_BONUS
+    : UNREVISED_CONFIRMATION_PENALTY;
 }
 
 /**
