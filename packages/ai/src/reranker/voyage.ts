@@ -20,8 +20,8 @@ export interface VoyageRerankerConfig {
 }
 
 interface VoyageRerankResponse {
-  results: Array<{ index: number; relevance_score: number }>;
-  total_tokens?: number;
+  data?: Array<{ index?: number; relevance_score?: number }>;
+  usage?: { total_tokens?: number };
 }
 
 /**
@@ -74,10 +74,36 @@ export class VoyageReranker implements Reranker {
       );
     }
 
-    const json = (await res.json()) as VoyageRerankResponse;
-    return json.results
-      .map((result) => ({ index: result.index, score: result.relevance_score }))
-      .sort((a, b) => b.score - a.score);
+    let json: VoyageRerankResponse;
+    try {
+      json = (await res.json()) as VoyageRerankResponse;
+    } catch {
+      throw new RerankerRequestError('Voyage returned invalid JSON', 502);
+    }
+
+    // The REST response follows Voyage's OpenAI-style envelope: rerank rows
+    // live under `data` (not ZeroEntropy's `results`). Validate the optional
+    // SDK fields at this boundary so a provider contract drift degrades through
+    // the normal reranker error path instead of surfacing as an untyped
+    // `undefined.map` exception.
+    if (!Array.isArray(json.data)) {
+      throw new RerankerRequestError('Voyage response is missing rerank data', 502);
+    }
+
+    const reranked: RerankResult[] = [];
+    for (const result of json.data) {
+      if (
+        !Number.isInteger(result.index)
+        || result.index! < 0
+        || result.index! >= documents.length
+        || typeof result.relevance_score !== 'number'
+        || !Number.isFinite(result.relevance_score)
+      ) {
+        throw new RerankerRequestError('Voyage returned invalid rerank data', 502);
+      }
+      reranked.push({ index: result.index!, score: result.relevance_score });
+    }
+    return reranked.sort((a, b) => b.score - a.score);
   }
 
   private async request(

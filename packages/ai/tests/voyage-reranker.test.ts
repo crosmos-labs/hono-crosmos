@@ -14,11 +14,13 @@ describe('VoyageReranker', () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       request = new Request(input, init);
       return Response.json({
-        results: [
+        object: 'list',
+        data: [
           { index: 0, relevance_score: 0.25 },
           { index: 1, relevance_score: 0.9 },
         ],
-        total_tokens: 12,
+        model: 'rerank-2.5',
+        usage: { total_tokens: 12 },
       });
     }) as typeof fetch;
 
@@ -45,7 +47,7 @@ describe('VoyageReranker', () => {
     let body: Record<string, unknown> | undefined;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       body = JSON.parse(String(init?.body));
-      return Response.json({ results: [] });
+      return Response.json({ data: [] });
     }) as typeof fetch;
 
     await new VoyageReranker({ apiKey: 'k', model: 'rerank-2.5-lite' })
@@ -60,7 +62,7 @@ describe('VoyageReranker', () => {
       const body = JSON.parse(String(init?.body)) as { model: string };
       models.push(body.model);
       if (models.length === 1) return new Response('rate limited', { status: 429 });
-      return Response.json({ results: [{ index: 0, relevance_score: 0.8 }] });
+      return Response.json({ data: [{ index: 0, relevance_score: 0.8 }] });
     }) as typeof fetch;
 
     const result = await new VoyageReranker({
@@ -139,11 +141,22 @@ describe('VoyageReranker', () => {
     expect((error as RerankerRequestError).retryable).toBe(true);
   });
 
+  test('maps a malformed success envelope to a shared provider error', async () => {
+    globalThis.fetch = (async () => Response.json({ results: [] })) as typeof fetch;
+
+    const error = await new VoyageReranker({ apiKey: 'k' })
+      .rerank('q', ['doc'])
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(RerankerRequestError);
+    expect((error as RerankerRequestError).status).toBe(502);
+  });
+
   test('does not call Voyage for an empty candidate set', async () => {
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;
-      return Response.json({ results: [] });
+      return Response.json({ data: [] });
     }) as typeof fetch;
 
     expect(await new VoyageReranker({ apiKey: 'k' }).rerank('q', [])).toEqual([]);
