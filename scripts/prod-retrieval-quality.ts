@@ -13,6 +13,13 @@ const API_KEY = process.env.CROSMOS_API_KEY;
 if (!API_KEY) throw new Error('set CROSMOS_API_KEY');
 
 const REQUEST_INTERVAL_MS = Number(process.env.QUALITY_REQUEST_INTERVAL_MS ?? 6_500);
+const EXISTING_SPACE_ID = process.env.QUALITY_SPACE_ID?.trim() || null;
+const SELECTED_VARIANTS = new Set(
+  (process.env.QUALITY_VARIANTS ?? 'default,no-rerank,no-graph,no-recency,diversify')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
 const TOP_K = 10;
 const headers = {
   Authorization: `Bearer ${API_KEY}`,
@@ -149,8 +156,8 @@ const queries: Query[] = [
   { id: 'graph-location', category: 'graph', text: 'Where is the database used by Kestrel Relay\'s dependency hosted?', gold: [{ all: ['pulsar archive', 'dublin'] }] },
   { id: 'graph-rotation', category: 'graph', text: 'Who rotated the encryption key for the database behind Kestrel Relay, and what was the ticket?', gold: [{ all: ['dario chen'] }, { all: ['pa-882'] }] },
   { id: 'aggregate-books', category: 'aggregation', text: 'Which three books have I finished this year?', gold: [{ all: ['left hand of darkness'] }, { all: ['piranesi'] }, { all: ['sea of tranquility'] }] },
-  { id: 'multilingual-es-en', category: 'multilingual', text: 'What is my favorite restaurant in Madrid and what do I order there?', gold: [{ all: ['casa lucero'] }, { all: ['croquetas de setas'] }] },
-  { id: 'multilingual-fr-en', category: 'multilingual', text: 'When is our anniversary and where did we reserve dinner?', gold: [{ all: ['12 novembre'] }, { all: ['églantine'] }] },
+  { id: 'multilingual-es-en', category: 'multilingual', text: 'What is my favorite restaurant in Madrid and what do I order there?', gold: [{ all: ['casa lucero'] }, { all: ['mushroom croquettes'] }] },
+  { id: 'multilingual-fr-en', category: 'multilingual', text: 'When is our anniversary and where did we reserve dinner?', gold: [{ all: ['november 12'] }, { all: ['églantine'] }] },
   { id: 'exact-invoice', category: 'exact-identifier', text: 'What is the Zenith invoice code?', gold: [{ all: ['invoice', 'zx-4107'] }] },
   { id: 'exact-shipment', category: 'exact-identifier', text: 'What is the Zenith shipment code?', gold: [{ all: ['shipment', 'zx-4170'] }] },
   { id: 'exact-backup', category: 'exact-identifier', text: 'What is the nightly backup label?', gold: [{ all: ['backup', 'zx-4017'] }] },
@@ -241,18 +248,20 @@ function evaluate(query: Query, candidates: Candidate[]) {
 
 async function main() {
   const runId = `quality-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
-  const space = await jsonOrThrow<{ id: string }>(await api('/api/v1/spaces', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: `codex-${runId}`,
-      description: 'Temporary labeled Voyage production retrieval evaluation',
-      meta: { purpose: 'retrieval-quality-eval', run_id: runId },
-    }),
-  }));
-  console.error(`space=${space.id} sessions=${sessions.length} queries=${queries.length}`);
+  const space = EXISTING_SPACE_ID
+    ? { id: EXISTING_SPACE_ID }
+    : await jsonOrThrow<{ id: string }>(await api('/api/v1/spaces', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: `codex-${runId}`,
+        description: 'Temporary labeled Voyage production retrieval evaluation',
+        meta: { purpose: 'retrieval-quality-eval', run_id: runId },
+      }),
+    }));
+  console.error(`space=${space.id} sessions=${EXISTING_SPACE_ID ? 0 : sessions.length} queries=${queries.length}`);
 
   const jobs: string[] = [];
-  for (const [index, session] of sessions.entries()) {
+  for (const [index, session] of (EXISTING_SPACE_ID ? [] : sessions).entries()) {
     await paceAiRequest();
     const started = performance.now();
     const result = await jsonOrThrow<{ job_id: string }>(await api('/api/v1/conversations', {
@@ -295,17 +304,23 @@ async function main() {
 
   const cases: Array<{ variant: string; query: Query; options: SearchOptions }> = [];
   for (const query of queries) {
-    cases.push({ variant: 'default', query, options: {} });
-    cases.push({ variant: 'no-rerank', query, options: { rerank: false } });
+    if (SELECTED_VARIANTS.has('default')) cases.push({ variant: 'default', query, options: {} });
+    if (SELECTED_VARIANTS.has('no-rerank')) cases.push({ variant: 'no-rerank', query, options: { rerank: false } });
   }
-  for (const query of queries.filter((item) => item.category === 'graph')) {
-    cases.push({ variant: 'no-graph', query, options: { graph: false } });
+  if (SELECTED_VARIANTS.has('no-graph')) {
+    for (const query of queries.filter((item) => item.category === 'graph')) {
+      cases.push({ variant: 'no-graph', query, options: { graph: false } });
+    }
   }
-  for (const query of queries.filter((item) => ['temporal', 'knowledge-update'].includes(item.category))) {
-    cases.push({ variant: 'no-recency', query, options: { recency_bias: 0 } });
+  if (SELECTED_VARIANTS.has('no-recency')) {
+    for (const query of queries.filter((item) => ['temporal', 'knowledge-update'].includes(item.category))) {
+      cases.push({ variant: 'no-recency', query, options: { recency_bias: 0 } });
+    }
   }
-  for (const query of queries.filter((item) => ['aggregation', 'single-session'].includes(item.category))) {
-    cases.push({ variant: 'diversify', query, options: { diversify: true } });
+  if (SELECTED_VARIANTS.has('diversify')) {
+    for (const query of queries.filter((item) => ['aggregation', 'single-session'].includes(item.category))) {
+      cases.push({ variant: 'diversify', query, options: { diversify: true } });
+    }
   }
 
   const results: Array<{
@@ -315,6 +330,7 @@ async function main() {
     latency_ms: number;
     evaluation: ReturnType<typeof evaluate>;
     top: Candidate[];
+    candidates: Candidate[];
   }> = [];
 
   for (const [index, item] of cases.entries()) {
@@ -342,6 +358,7 @@ async function main() {
       latency_ms: latencyMs,
       evaluation: evaluate(item.query, response.candidates),
       top: response.candidates.slice(0, 5),
+      candidates: response.candidates,
     });
     console.error(`search ${index + 1}/${cases.length} ${item.variant}/${item.query.id} ${latencyMs.toFixed(0)}ms`);
   }
@@ -387,7 +404,7 @@ async function main() {
     run_id: runId,
     space_id: space.id,
     production_base_url: BASE_URL,
-    corpus: { sessions: sessions.length, queries: queries.length },
+    corpus: { sessions: EXISTING_SPACE_ID ? 0 : sessions.length, queries: queries.length },
     ingestion_latency_ms: {
       p50: percentile(jobStats, 0.5),
       p95: percentile(jobStats, 0.95),
