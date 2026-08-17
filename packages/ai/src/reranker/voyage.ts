@@ -16,6 +16,7 @@ export interface VoyageRerankerConfig {
   onRateLimitFallback?: (event: {
     primaryModel: string;
     fallbackModel: string;
+    retryAfterSeconds?: number;
   }) => void;
 }
 
@@ -54,11 +55,18 @@ export class VoyageReranker implements Reranker {
       && primaryModel === 'rerank-2.5'
       && fallbackModel !== undefined
     ) {
+      const retryAfterSeconds = parseRetryAfterSeconds(
+        res.headers.get('retry-after'),
+      );
       // We do not need the primary error body and should free its connection
       // before issuing the fallback request.
       await res.body?.cancel().catch(() => undefined);
       try {
-        this.config.onRateLimitFallback?.({ primaryModel, fallbackModel });
+        this.config.onRateLimitFallback?.({
+          primaryModel,
+          fallbackModel,
+          ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+        });
       } catch {
         // Logging/metrics hooks must never turn a successful degradation into a
         // retrieval failure.
@@ -144,4 +152,14 @@ export class VoyageReranker implements Reranker {
     }
     return res;
   }
+}
+
+function parseRetryAfterSeconds(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return undefined;
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }

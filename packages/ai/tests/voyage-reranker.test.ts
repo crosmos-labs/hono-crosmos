@@ -57,11 +57,20 @@ describe('VoyageReranker', () => {
 
   test('falls back from 2.5 to 2.5-lite exactly once on HTTP 429', async () => {
     const models: string[] = [];
-    const fallbacks: Array<{ primaryModel: string; fallbackModel: string }> = [];
+    const fallbacks: Array<{
+      primaryModel: string;
+      fallbackModel: string;
+      retryAfterSeconds?: number;
+    }> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { model: string };
       models.push(body.model);
-      if (models.length === 1) return new Response('rate limited', { status: 429 });
+      if (models.length === 1) {
+        return new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '2' },
+        });
+      }
       return Response.json({ data: [{ index: 0, relevance_score: 0.8 }] });
     }) as typeof fetch;
 
@@ -75,6 +84,7 @@ describe('VoyageReranker', () => {
     expect(fallbacks).toEqual([{
       primaryModel: 'rerank-2.5',
       fallbackModel: 'rerank-2.5-lite',
+      retryAfterSeconds: 2,
     }]);
     expect(result).toEqual([{ index: 0, score: 0.8 }]);
   });

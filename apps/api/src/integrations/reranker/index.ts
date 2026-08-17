@@ -55,13 +55,16 @@ export function getReranker(env: Env): Reranker | null {
       apiKey: env.VOYAGE_API_KEY,
       model: env.VOYAGE_RERANKER_MODEL,
       rateLimitFallbackModel: 'rerank-2.5-lite',
-      onRateLimitFallback: ({ primaryModel, fallbackModel }) =>
+      onRateLimitFallback: ({ fallbackModel, retryAfterSeconds }) =>
         logger.warn('retrieval.reranker_rate_limit_fallback', {
           stage: 'rerank',
           provider: 'voyage',
-          primary_model: primaryModel,
-          fallback_model: fallbackModel,
+          model: fallbackModel,
           reason: 'rate_limit',
+          status_code: 429,
+          ...(retryAfterSeconds === undefined
+            ? {}
+            : { retry_after_seconds: retryAfterSeconds }),
         }),
     });
   }
