@@ -19,6 +19,19 @@ import type { CandidateMemory, RankedCandidate, SourceSignal } from './types';
 import { cosineSimilarity } from './vector';
 
 const SEC_PER_DAY = 86400;
+const CURRENT_INFORMATION_QUERY =
+  /\b(current|currently|latest|now|most recent|still|today)\b/i;
+const EXPLICIT_UPDATE_MEMORY =
+  /\b(changed?|correct(?:ed|s)?|no longer|now|replac(?:ed|es)|remain(?:s|ed)|instead|updat(?:ed|es?))\b/i;
+
+/**
+ * Recorded dates are useful evidence only when both sides establish temporal
+ * intent: the query asks for the current value and the memory describes an
+ * explicit update. This avoids making newly imported, old facts look fresh.
+ */
+export function shouldUseRecordedRecency(query: string, content: string): boolean {
+  return CURRENT_INFORMATION_QUERY.test(query) && EXPLICIT_UPDATE_MEMORY.test(content);
+}
 
 /**
  * Reciprocal Rank Fusion — candidate selector. `ranked_lists` is an ordered
@@ -59,18 +72,21 @@ export function rankRemap(fallbackFused: Array<[number, number]>): Map<number, n
 }
 
 /**
- * Linear recency decay over 365 days. Uses `event_time` ONLY — memories
- * without it get neutral 0.5 (deliberate: an undated stale fact ingested today
- * must not look maximally recent). Floor 0.2, ceil 1.0.
+ * Linear recency decay over 365 days. Uses `event_time` by default. A caller
+ * may explicitly opt an update memory into its recorded date for a current-
+ * information query; all other undated memories remain neutral at 0.5.
+ * Floor 0.2, ceil 1.0.
  */
 export function computeRecency(
   _createdAt: Date,
-  _recordedAt: Date | null,
+  recordedAt: Date | null,
   eventTime: Date | null,
   now: Date = new Date(),
+  useRecordedAt = false,
 ): number {
-  if (eventTime !== null) {
-    const ageDays = (now.getTime() - eventTime.getTime()) / 1000 / SEC_PER_DAY;
+  const reference = eventTime ?? (useRecordedAt ? recordedAt : null);
+  if (reference !== null) {
+    const ageDays = (now.getTime() - reference.getTime()) / 1000 / SEC_PER_DAY;
     return Math.max(RECENCY_FLOOR, Math.min(1.0, 1.0 - ageDays / 365.0));
   }
   return 0.5;

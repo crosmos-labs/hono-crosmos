@@ -45,6 +45,7 @@ import {
   mmrRerank,
   rankRemap,
   reciprocalRankFusion,
+  shouldUseRecordedRecency,
 } from './fusion';
 import { type Entitlements, getEntitlements } from '../orgs/entitlements';
 import { rerankCandidates } from './reranker';
@@ -611,6 +612,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       ranked.recordedAt,
       ranked.eventTime,
       scoringNow,
+      shouldUseRecordedRecency(query.text, ranked.content),
     );
     const recencyFactor = recencyAlpha * (recency - RECENCY_CENTER);
 
