@@ -17,6 +17,10 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+const CURRENT_INFORMATION_QUERY = /\b(current|currently|latest|now|most recent|still|today)\b/i;
+const CURRENT_INFORMATION_INSTRUCTION =
+  'Instruction: For current or latest information, prefer a document with a later [Recorded: ...] date when it explicitly updates, replaces, or corrects an older fact. Do not prefer a document merely because it is newer.';
+
 function formatDate(date: Date): string {
   const yyyy = date.getUTCFullYear();
   const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -45,6 +49,17 @@ export function formatDoc(
   return parts.join(' ');
 }
 
+/** Add Voyage's supported natural-language ranking instruction when needed. */
+export function formatQuery(reranker: Reranker, query: string): string {
+  if (
+    reranker.defaultModel.startsWith('rerank-2.5')
+    && CURRENT_INFORMATION_QUERY.test(query)
+  ) {
+    return `${CURRENT_INFORMATION_INSTRUCTION}\nQuery: ${query}`;
+  }
+  return query;
+}
+
 /** Score candidates with the cross-encoder → `{memoryId: clamped score}`. */
 export async function rerankCandidates(
   reranker: Reranker,
@@ -57,7 +72,7 @@ export async function rerankCandidates(
 
   const includeRecordedAt = reranker.defaultModel.startsWith('rerank-2.5');
   const documents = candidates.map((candidate) => formatDoc(candidate, includeRecordedAt));
-  const results = await reranker.rerank(query, documents, { signal });
+  const results = await reranker.rerank(formatQuery(reranker, query), documents, { signal });
 
   for (const { index, score } of results) {
     const candidate = candidates[index];

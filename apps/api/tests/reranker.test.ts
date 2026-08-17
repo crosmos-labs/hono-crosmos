@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Reranker } from '@crosmos/ai';
-import { formatDoc, rerankCandidates } from '../src/features/search/reranker';
+import { formatDoc, formatQuery, rerankCandidates } from '../src/features/search/reranker';
 import { SourceSignal, type RankedCandidate } from '../src/features/search/types';
 
 function candidate(overrides: Partial<RankedCandidate> = {}): RankedCandidate {
@@ -54,5 +54,20 @@ describe('search reranker document formatting', () => {
     expect(calls[0]?.documents[0]).toStartWith('[Recorded: April 18, 2026 (2026-04-18)]');
     expect(calls[1]?.documents[0]).toStartWith('[Recorded: April 18, 2026 (2026-04-18)]');
     expect(calls[2]?.documents[0]).toBe(item.content);
+  });
+
+  test('scopes Voyage freshness instructions to current-information queries', () => {
+    const voyage = { defaultModel: 'rerank-2.5' } as Reranker;
+    const legacy = { defaultModel: 'zerank-2' } as Reranker;
+
+    expect(formatQuery(voyage, 'Who currently leads Cedar Phoenix?')).toContain(
+      'prefer a document with a later [Recorded: ...] date',
+    );
+    expect(formatQuery(voyage, 'Who owns Borealis Ledger?')).toBe(
+      'Who owns Borealis Ledger?',
+    );
+    expect(formatQuery(legacy, 'Who currently leads Cedar Phoenix?')).toBe(
+      'Who currently leads Cedar Phoenix?',
+    );
   });
 });
