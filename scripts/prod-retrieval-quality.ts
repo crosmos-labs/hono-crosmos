@@ -20,6 +20,12 @@ const SELECTED_VARIANTS = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 );
+const SELECTED_QUERY_IDS = new Set(
+  (process.env.QUALITY_QUERY_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
 const TOP_K = 10;
 const headers = {
   Authorization: `Bearer ${API_KEY}`,
@@ -268,6 +274,11 @@ function evaluate(query: Query, candidates: Candidate[]) {
 }
 
 async function main() {
+  const selectedQueries = SELECTED_QUERY_IDS.size === 0
+    ? queries
+    : queries.filter((query) => SELECTED_QUERY_IDS.has(query.id));
+  if (selectedQueries.length === 0) throw new Error('QUALITY_QUERY_IDS selected no queries');
+
   const runId = `quality-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
   const space = EXISTING_SPACE_ID
     ? { id: EXISTING_SPACE_ID }
@@ -279,7 +290,7 @@ async function main() {
         meta: { purpose: 'retrieval-quality-eval', run_id: runId },
       }),
     }));
-  console.error(`space=${space.id} sessions=${EXISTING_SPACE_ID ? 0 : sessions.length} queries=${queries.length}`);
+  console.error(`space=${space.id} sessions=${EXISTING_SPACE_ID ? 0 : sessions.length} queries=${selectedQueries.length}`);
 
   const jobs: string[] = [];
   for (const [index, session] of (EXISTING_SPACE_ID ? [] : sessions).entries()) {
@@ -324,22 +335,22 @@ async function main() {
   }
 
   const cases: Array<{ variant: string; query: Query; options: SearchOptions }> = [];
-  for (const query of queries) {
+  for (const query of selectedQueries) {
     if (SELECTED_VARIANTS.has('default')) cases.push({ variant: 'default', query, options: {} });
     if (SELECTED_VARIANTS.has('no-rerank')) cases.push({ variant: 'no-rerank', query, options: { rerank: false } });
   }
   if (SELECTED_VARIANTS.has('no-graph')) {
-    for (const query of queries.filter((item) => item.category === 'graph')) {
+    for (const query of selectedQueries.filter((item) => item.category === 'graph')) {
       cases.push({ variant: 'no-graph', query, options: { graph: false } });
     }
   }
   if (SELECTED_VARIANTS.has('no-recency')) {
-    for (const query of queries.filter((item) => ['temporal', 'knowledge-update'].includes(item.category))) {
+    for (const query of selectedQueries.filter((item) => ['temporal', 'knowledge-update'].includes(item.category))) {
       cases.push({ variant: 'no-recency', query, options: { recency_bias: 0 } });
     }
   }
   if (SELECTED_VARIANTS.has('diversify')) {
-    for (const query of queries.filter((item) => ['aggregation', 'single-session'].includes(item.category))) {
+    for (const query of selectedQueries.filter((item) => ['aggregation', 'single-session'].includes(item.category))) {
       cases.push({ variant: 'diversify', query, options: { diversify: true } });
     }
   }
@@ -350,6 +361,7 @@ async function main() {
     category: string;
     latency_ms: number;
     evaluation: ReturnType<typeof evaluate>;
+    recall_id: string;
     top: Candidate[];
     candidates: Candidate[];
   }> = [];
@@ -357,6 +369,7 @@ async function main() {
   for (const [index, item] of cases.entries()) {
     await paceAiRequest();
     const started = performance.now();
+    const recallId = crypto.randomUUID();
     const response = await jsonOrThrow<{ candidates: Candidate[] }>(await api('/api/v1/search', {
       method: 'POST',
       body: JSON.stringify({
@@ -368,7 +381,7 @@ async function main() {
         diversify: item.options.diversify ?? false,
         include_source: false,
         recency_bias: item.options.recency_bias ?? null,
-        recall_id: crypto.randomUUID(),
+        recall_id: recallId,
       }),
     }));
     const latencyMs = performance.now() - started;
@@ -378,6 +391,7 @@ async function main() {
       category: item.query.category,
       latency_ms: latencyMs,
       evaluation: evaluate(item.query, response.candidates),
+      recall_id: recallId,
       top: response.candidates.slice(0, 5),
       candidates: response.candidates,
     });
@@ -425,7 +439,7 @@ async function main() {
     run_id: runId,
     space_id: space.id,
     production_base_url: BASE_URL,
-    corpus: { sessions: EXISTING_SPACE_ID ? 0 : sessions.length, queries: queries.length },
+    corpus: { sessions: EXISTING_SPACE_ID ? 0 : sessions.length, queries: selectedQueries.length },
     ingestion_latency_ms: {
       p50: percentile(jobStats, 0.5),
       p95: percentile(jobStats, 0.95),
