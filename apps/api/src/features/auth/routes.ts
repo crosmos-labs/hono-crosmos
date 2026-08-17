@@ -358,8 +358,8 @@ authRoutes.openapi(
     }
     // Drop the KV cache entry so revocation takes effect immediately. Awaited
     // (not fire-and-forget) so the 204 only returns once we've attempted the
-    // invalidation; on a KV error we log and still return success — the now-60s
-    // cache TTL is the bounded backstop so a revoked key can't linger for long.
+    // invalidation; on a KV error we log and still return success — the cache
+    // TTL is the bounded backstop so a revoked key cannot linger indefinitely.
     try {
       await invalidateApiKeyCacheByHash(c.env, revoked.keyHash);
     } catch (err) {

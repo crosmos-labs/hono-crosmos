@@ -32,11 +32,12 @@ import { getUserById } from './users';
 type AuthContext = Context<HonoEnv>;
 
 // API-key auth caches the resolved key in KV to avoid a DB lookup per request.
-// The TTL is also the worst-case revocation lag: if the cache-invalidation on
-// revoke is ever lost (KV blip), a revoked key keeps working until the entry
-// TTLs out. 60s keeps that window tight (was 5 min) while still cutting almost
-// all DB lookups. Revoke also actively invalidates the entry (see routes.ts).
-const API_KEY_CACHE_TTL_SECONDS = 60;
+// Revocation actively and synchronously invalidates this entry; expiry is also
+// checked from the cached `expiresAt` on every hit. Five minutes keeps active
+// keys warm at the current low request rate without weakening either normal
+// path. It remains the worst-case backstop if a revocation-time KV delete fails
+// (the failure is logged); see routes.ts DELETE /keys/:uuid.
+const API_KEY_CACHE_TTL_SECONDS = 300;
 
 /**
  * Reject a request as unauthenticated, emitting a structured `auth.failed` log
