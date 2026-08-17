@@ -15,17 +15,18 @@
  * emitted from, a memory the caller cannot see — the final hydration is the
  * visibility gate.
  */
-import { type Database, edges } from '@crosmos/db';
+import { type Database, edges, memories, memoryEntities } from '@crosmos/db';
 import type { VectorMatch, VectorStore } from '@crosmos/vector';
 import type { TenantScope } from '@crosmos/types';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { graphEdgeVisibilityClause } from '../../../lib/scope';
+import { graphEdgeVisibilityClause, scopeMemories } from '../../../lib/scope';
 import {
   getEntitiesByNameTokens,
   getEntitiesForMemories,
   getEntityIdsLinkedToVisibleMemories,
   getMemoriesForEntities,
   hydrateMemories,
+  retrievalMemoryColumns,
 } from '../candidates';
 import {
   DEPTH_DECAY,
@@ -41,7 +42,12 @@ import {
 } from '../constants';
 import { toRankedCandidate } from '../mapping';
 import { intersectionSize, tokenize } from '../tokenize';
-import { type RankedCandidate, type RetrievalEntityRow, SourceSignal } from '../types';
+import {
+  type RankedCandidate,
+  type RetrievalEntityRow,
+  type RetrievalMemoryRow,
+  SourceSignal,
+} from '../types';
 
 const SEC_PER_DAY = 86400;
 
@@ -53,6 +59,313 @@ interface EdgeRow {
   confidence: number | null;
   validFrom: Date | null;
   recordedAt: Date;
+}
+
+interface TraversalLoad {
+  seedLinks: Map<number, number[]>;
+  edgesByDepth: Map<number, EdgeRow[]>;
+  memories: Map<number, RetrievalMemoryRow>;
+}
+
+interface TraversalSqlRow {
+  [key: string]: unknown;
+  kind: 'seed' | 'edge' | 'memory';
+  depth: number | null;
+  ordinal: number | string | null;
+  entity_id: number | null;
+  memory_id: number | null;
+  edge_id: number | null;
+  source_entity_id: number | null;
+  target_entity_id: number | null;
+  confidence: number | null;
+  valid_from: Date | string | null;
+  edge_recorded_at: Date | string | null;
+  uuid: string | null;
+  content: string | null;
+  memory_type: RetrievalMemoryRow['memoryType'] | null;
+  owner_user_id: number | null;
+  org_id: number | null;
+  space_id: number | null;
+  importance_score: number | null;
+  created_at: Date | string | null;
+  memory_recorded_at: Date | string | null;
+  access_frequency: number | null;
+  last_accessed_at: Date | string | null;
+  event_time: Date | string | null;
+  forgotten_at: Date | string | null;
+}
+
+function sqlDate(value: Date | string | null): Date | null {
+  if (value === null || value instanceof Date) return value;
+  return new Date(value);
+}
+
+/**
+ * Load the complete bounded BFS input and every potentially reached visible
+ * memory in ONE Postgres round trip. Scoring stays in JavaScript below, so this
+ * changes transport cost rather than ranking semantics.
+ *
+ * The recursive CTE carries only frontier membership and visited ids. Those are
+ * independent of relevance scores: scores affect candidate ordering, while
+ * membership is determined solely by the globally ordered/capped edge set at
+ * each hop. Each hop preserves the existing `effective_time DESC, id DESC`
+ * order and the source-endpoint precedence used when both endpoints are in the
+ * frontier. We may prefetch a later hop that JS ultimately skips after hitting
+ * `GRAPH_MEMORY_BUDGET`; the bounded extra rows are ignored by the unchanged
+ * stop check and cannot affect output.
+ */
+async function loadTraversal(
+  db: Database,
+  seedEntityIds: number[],
+  asOf: Date | null,
+  scope: TenantScope,
+  maxDepth: number,
+): Promise<TraversalLoad> {
+  if (seedEntityIds.length === 0) {
+    return { seedLinks: new Map(), edgesByDepth: new Map(), memories: new Map() };
+  }
+
+  const seedArray = sql.join(seedEntityIds.map((id) => sql`${id}`), sql`, `);
+  const edgeVisibility = graphEdgeVisibilityClause(scope);
+  const edgeVisibilitySql = edgeVisibility === undefined ? sql`true` : edgeVisibility;
+  const asOfSql = asOf === null
+    ? sql`true`
+    : sql`coalesce(${edges.validFrom}, ${edges.recordedAt}) <= ${asOf.toISOString()}::timestamptz`;
+
+  const rows = await db.execute<TraversalSqlRow>(sql`
+    WITH RECURSIVE
+    seed_entities(entity_id) AS (
+      SELECT unnest(ARRAY[${seedArray}]::integer[])
+    ),
+    initial_links AS MATERIALIZED (
+      SELECT ${memoryEntities.entityId} AS entity_id,
+             ${memoryEntities.memoryId} AS memory_id
+      FROM ${memoryEntities}
+      INNER JOIN ${memories} ON ${memories.id} = ${memoryEntities.memoryId}
+      WHERE ${scopeMemories(scope)}
+        AND ${memories.forgottenAt} IS NULL
+        AND ${memoryEntities.entityId} = ANY(ARRAY[${seedArray}]::integer[])
+      ORDER BY ${memoryEntities.entityId}, ${memoryEntities.memoryId}
+    ),
+    walk(depth, frontier, visited, edge_ids) AS (
+      SELECT 0,
+             ARRAY[${seedArray}]::integer[],
+             ARRAY[${seedArray}]::integer[],
+             ARRAY[]::integer[]
+      UNION ALL
+      SELECT walk.depth + 1,
+             hop.next_frontier,
+             walk.visited || hop.next_frontier,
+             hop.edge_ids
+      FROM walk
+      CROSS JOIN LATERAL (
+        WITH edge_candidates AS MATERIALIZED (
+          SELECT ${edges.id} AS id,
+                 ${edges.sourceEntityId} AS source_entity_id,
+                 ${edges.targetEntityId} AS target_entity_id,
+                 coalesce(${edges.validFrom}, ${edges.recordedAt}) AS effective_time
+          FROM ${edges}
+          WHERE ${edges.forgottenAt} IS NULL
+            AND ${edges.orgId} = ${scope.orgId}
+            AND ${edges.spaceId} = ${scope.spaceId}
+            AND ${edgeVisibilitySql}
+            AND coalesce(${edges.confidence}, 1.0) >= ${GRAPH_MIN_CONFIDENCE}::double precision
+            AND ${asOfSql}
+            AND (
+              ${edges.sourceEntityId} = ANY(walk.frontier)
+              OR ${edges.targetEntityId} = ANY(walk.frontier)
+            )
+          ORDER BY coalesce(${edges.validFrom}, ${edges.recordedAt}) DESC,
+                   ${edges.id} DESC
+          LIMIT ${GRAPH_MAX_EDGES_PER_HOP}
+        ),
+        steps AS (
+          SELECT id,
+                 row_number() OVER (ORDER BY effective_time DESC, id DESC) AS ordinal,
+                 CASE
+                   WHEN source_entity_id = ANY(walk.frontier) THEN target_entity_id
+                   ELSE source_entity_id
+                 END AS other
+          FROM edge_candidates
+        ),
+        next_entities AS (
+          SELECT other, min(ordinal) AS first_ordinal
+          FROM steps
+          WHERE NOT (other = ANY(walk.visited))
+          GROUP BY other
+        )
+        SELECT coalesce(
+                 (SELECT array_agg(id ORDER BY ordinal) FROM steps),
+                 ARRAY[]::integer[]
+               ) AS edge_ids,
+               coalesce(
+                 (SELECT array_agg(other ORDER BY first_ordinal) FROM next_entities),
+                 ARRAY[]::integer[]
+               ) AS next_frontier
+      ) AS hop
+      WHERE walk.depth < ${maxDepth}
+        AND cardinality(walk.frontier) > 0
+    ),
+    walk_edges AS MATERIALIZED (
+      SELECT walk.depth,
+             expanded.ordinality AS ordinal,
+             expanded.edge_id
+      FROM walk
+      CROSS JOIN LATERAL unnest(walk.edge_ids)
+        WITH ORDINALITY AS expanded(edge_id, ordinality)
+      WHERE walk.depth > 0
+    ),
+    all_memory_ids AS MATERIALIZED (
+      SELECT memory_id FROM initial_links
+      UNION
+      SELECT ${edges.memoryId}
+      FROM walk_edges
+      INNER JOIN ${edges} ON ${edges.id} = walk_edges.edge_id
+      WHERE ${edges.memoryId} IS NOT NULL
+    )
+    SELECT 'seed'::text AS kind,
+           NULL::integer AS depth,
+           NULL::bigint AS ordinal,
+           initial_links.entity_id,
+           initial_links.memory_id,
+           NULL::integer AS edge_id,
+           NULL::integer AS source_entity_id,
+           NULL::integer AS target_entity_id,
+           NULL::double precision AS confidence,
+           NULL::timestamptz AS valid_from,
+           NULL::timestamptz AS edge_recorded_at,
+           NULL::uuid AS uuid,
+           NULL::text AS content,
+           NULL::memory_type AS memory_type,
+           NULL::integer AS owner_user_id,
+           NULL::integer AS org_id,
+           NULL::integer AS space_id,
+           NULL::double precision AS importance_score,
+           NULL::timestamptz AS created_at,
+           NULL::timestamptz AS memory_recorded_at,
+           NULL::integer AS access_frequency,
+           NULL::timestamptz AS last_accessed_at,
+           NULL::timestamptz AS event_time,
+           NULL::timestamptz AS forgotten_at
+    FROM initial_links
+
+    UNION ALL
+
+    SELECT 'edge',
+           walk_edges.depth,
+           walk_edges.ordinal,
+           NULL,
+           ${edges.memoryId},
+           ${edges.id},
+           ${edges.sourceEntityId},
+           ${edges.targetEntityId},
+           ${edges.confidence},
+           ${edges.validFrom},
+           ${edges.recordedAt},
+           NULL, NULL, NULL::memory_type, NULL, NULL, NULL, NULL, NULL,
+           NULL, NULL, NULL, NULL, NULL
+    FROM walk_edges
+    INNER JOIN ${edges} ON ${edges.id} = walk_edges.edge_id
+
+    UNION ALL
+
+    SELECT 'memory',
+           NULL,
+           NULL,
+           NULL,
+           ${retrievalMemoryColumns.id},
+           NULL, NULL, NULL, NULL, NULL, NULL,
+           ${retrievalMemoryColumns.uuid},
+           ${retrievalMemoryColumns.content},
+           ${retrievalMemoryColumns.memoryType},
+           ${retrievalMemoryColumns.ownerUserId},
+           ${retrievalMemoryColumns.orgId},
+           ${retrievalMemoryColumns.spaceId},
+           ${retrievalMemoryColumns.importanceScore},
+           ${retrievalMemoryColumns.createdAt},
+           ${retrievalMemoryColumns.recordedAt},
+           ${retrievalMemoryColumns.accessFrequency},
+           ${retrievalMemoryColumns.lastAccessedAt},
+           ${retrievalMemoryColumns.eventTime},
+           ${retrievalMemoryColumns.forgottenAt}
+    FROM ${memories}
+    INNER JOIN all_memory_ids ON all_memory_ids.memory_id = ${memories.id}
+    WHERE ${scopeMemories(scope)}
+      AND ${memories.forgottenAt} IS NULL
+  `);
+
+  const seedLinks = new Map<number, number[]>();
+  const edgesByDepth = new Map<number, Array<EdgeRow & { ordinal: number }>>();
+  const memoryRows = new Map<number, RetrievalMemoryRow>();
+
+  for (const row of rows) {
+    if (row.kind === 'seed' && row.entity_id !== null && row.memory_id !== null) {
+      const links = seedLinks.get(row.entity_id);
+      if (links) links.push(row.memory_id);
+      else seedLinks.set(row.entity_id, [row.memory_id]);
+      continue;
+    }
+    if (
+      row.kind === 'edge'
+      && row.depth !== null
+      && row.ordinal !== null
+      && row.edge_id !== null
+      && row.source_entity_id !== null
+      && row.target_entity_id !== null
+      && row.edge_recorded_at !== null
+    ) {
+      const list = edgesByDepth.get(row.depth) ?? [];
+      list.push({
+        ordinal: Number(row.ordinal),
+        id: row.edge_id,
+        sourceEntityId: row.source_entity_id,
+        targetEntityId: row.target_entity_id,
+        memoryId: row.memory_id,
+        confidence: row.confidence,
+        validFrom: sqlDate(row.valid_from),
+        recordedAt: sqlDate(row.edge_recorded_at)!,
+      });
+      edgesByDepth.set(row.depth, list);
+      continue;
+    }
+    if (
+      row.kind === 'memory'
+      && row.memory_id !== null
+      && row.uuid !== null
+      && row.content !== null
+      && row.memory_type !== null
+      && row.org_id !== null
+      && row.space_id !== null
+      && row.created_at !== null
+      && row.memory_recorded_at !== null
+      && row.access_frequency !== null
+      && row.last_accessed_at !== null
+    ) {
+      memoryRows.set(row.memory_id, {
+        id: row.memory_id,
+        uuid: row.uuid,
+        content: row.content,
+        memoryType: row.memory_type,
+        ownerUserId: row.owner_user_id,
+        orgId: row.org_id,
+        spaceId: row.space_id,
+        importanceScore: row.importance_score,
+        createdAt: sqlDate(row.created_at)!,
+        recordedAt: sqlDate(row.memory_recorded_at)!,
+        accessFrequency: row.access_frequency,
+        lastAccessedAt: sqlDate(row.last_accessed_at)!,
+        eventTime: sqlDate(row.event_time),
+        forgottenAt: sqlDate(row.forgotten_at),
+      });
+    }
+  }
+
+  const orderedEdges = new Map<number, EdgeRow[]>();
+  for (const [depth, depthEdges] of edgesByDepth) {
+    depthEdges.sort((a, b) => a.ordinal - b.ordinal);
+    orderedEdges.set(depth, depthEdges.map(({ ordinal: _ordinal, ...edge }) => edge));
+  }
+  return { seedLinks, edgesByDepth: orderedEdges, memories: memoryRows };
 }
 
 /**
@@ -312,10 +625,15 @@ export async function graphSearchWithStore(
     .slice(0, GRAPH_MAX_SEED_ENTITIES)
     .map(([eid]) => eid);
 
-  // Initial memory scores: max relevance among a memory's seed entities. Fetch
-  // only the (visible) memories linked to the seed entities — bounded by the ≤10
-  // seed entities, not the space.
-  const seedEntityMemLinks = await getMemoriesForEntities(db, scope, seedEntityIds);
+  // Production collapses seed-memory expansion, every bounded BFS hop and final
+  // visible-memory hydration into one recursive SQL round trip. The injectable
+  // edge loader keeps the historical multi-query path solely as a differential
+  // test oracle; production callers never pass it.
+  const traversal = options?.edgeLoader === undefined
+    ? await loadTraversal(db, seedEntityIds, asOf, scope, effectiveMaxDepth)
+    : null;
+  const seedEntityMemLinks = traversal?.seedLinks
+    ?? await getMemoriesForEntities(db, scope, seedEntityIds);
   const memoryToSeedEntities = new Map<number, number[]>();
   for (const [eid, mids] of seedEntityMemLinks) {
     for (const mid of mids) {
@@ -350,12 +668,9 @@ export async function graphSearchWithStore(
 
     // Already confidence-filtered, ordered and capped by SQL — see
     // `getEdgesForEntities`. Preserve that order; do not re-sort.
-    const hopEdges = await (options?.edgeLoader ?? getEdgesForEntities)(
-      db,
-      [...frontier],
-      asOf,
-      scope,
-    );
+    const hopEdges = traversal
+      ? traversal.edgesByDepth.get(depth) ?? []
+      : await options!.edgeLoader!(db, [...frontier], asOf, scope);
 
     const nextFrontier = new Set<number>();
     const nextFrontierRelevance = new Map<number, number>();
@@ -409,7 +724,8 @@ export async function graphSearchWithStore(
   // never reach the candidate list — and are excluded BEFORE normalization so
   // the max is taken over the visible set (parity with the old visible-only
   // `scores` map).
-  const rows = await hydrateMemories(db, scope, [...scores.keys()]);
+  const rows = traversal?.memories
+    ?? await hydrateMemories(db, scope, [...scores.keys()]);
   const visibleScores = new Map<number, number>();
   for (const [mid, s] of scores) {
     if (rows.has(mid)) visibleScores.set(mid, s);
