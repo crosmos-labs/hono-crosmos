@@ -431,6 +431,13 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   }
 
   let ceEnabled = reranker !== null && ceAllowed && query.rerank;
+  // The 0.02 precision floor was calibrated against zerank-2 specifically.
+  // Voyage and Workers AI expose provider-native score distributions; applying
+  // a ZeroEntropy threshold to them would silently change recall even when the
+  // reranked ordering is good. Keep their scores for ordering/boosting, but do
+  // not perform absolute-score filtering until a benchmark calibrates a model-
+  // specific threshold.
+  const calibratedRerankFloor = reranker?.defaultModel === 'zerank-2';
 
   const selectorFused = reciprocalRankFusion(rankedLists);
   const fallbackFused = selectorFused;
@@ -531,6 +538,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       );
       if (baseScores.size === 0) ceEnabled = false;
       stages.record('rerank', 'ok', durationMs(rerankStart), {
+        model: reranker!.defaultModel,
         candidate_count: selection.length,
         result_count: baseScores.size,
         ce_enabled: ceEnabled,
@@ -655,7 +663,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // relevant candidates so the reader sees only on-topic memories. Always keep
   // at least the single best candidate — a weak query returns fewer, never zero.
   let selectable = scored;
-  if (ceEnabled && scored.length > 0) {
+  if (ceEnabled && calibratedRerankFloor && scored.length > 0) {
     const aboveFloor = scored.filter((c) => c.rerankScore >= RERANK_RELEVANCE_FLOOR);
     selectable = aboveFloor.length > 0 ? aboveFloor : scored.slice(0, 1);
     if (selectable.length !== scored.length) {
