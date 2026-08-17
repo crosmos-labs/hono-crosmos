@@ -17,21 +17,29 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+function formatDate(date: Date): string {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${MONTHS[date.getUTCMonth()]} ${dd}, ${yyyy} (${yyyy}-${mm}-${dd})`;
+}
+
 /**
- * Build the document string for a candidate. If `event_time` is set, prefix
- * `"[Date: {Month DD, YYYY} ({YYYY-MM-DD})] "` (timezone-naive → UTC). Matches
- * Python's `strftime("%B %d, %Y")` / `strftime("%Y-%m-%d")` exactly.
+ * Build the document string for a candidate. Event dates retain the legacy
+ * Python format. Voyage additionally receives the source's recorded date so
+ * it can distinguish later corrections from older, otherwise-equivalent
+ * memories when the query asks for current information.
  */
-export function formatDoc(candidate: RankedCandidate): string {
+export function formatDoc(
+  candidate: RankedCandidate,
+  includeRecordedAt = false,
+): string {
   const parts: string[] = [];
-  const date = candidate.eventTime;
-  if (date !== null) {
-    const yyyy = date.getUTCFullYear();
-    const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(date.getUTCDate()).padStart(2, '0');
-    const iso = `${yyyy}-${mm}-${dd}`;
-    const readable = `${MONTHS[date.getUTCMonth()]} ${dd}, ${yyyy}`;
-    parts.push(`[Date: ${readable} (${iso})]`);
+  if (candidate.eventTime !== null) {
+    parts.push(`[Date: ${formatDate(candidate.eventTime)}]`);
+  }
+  if (includeRecordedAt) {
+    parts.push(`[Recorded: ${formatDate(candidate.recordedAt)}]`);
   }
   parts.push(candidate.content);
   return parts.join(' ');
@@ -47,7 +55,8 @@ export async function rerankCandidates(
   const result = new Map<number, number>();
   if (candidates.length === 0) return result;
 
-  const documents = candidates.map(formatDoc);
+  const includeRecordedAt = reranker.defaultModel.startsWith('rerank-2.5');
+  const documents = candidates.map((candidate) => formatDoc(candidate, includeRecordedAt));
   const results = await reranker.rerank(query, documents, { signal });
 
   for (const { index, score } of results) {
