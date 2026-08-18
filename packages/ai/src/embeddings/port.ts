@@ -2,10 +2,8 @@
  * Embedding provider — the interface callers use for memory, entity, and
  * query vectors.
  *
- * The default provider (Cloudflare `@cf/baai/bge-m3`) returns 1024-dim vectors,
- * matching `vector(1024)` on `memories.embedding` and `entities.embedding`. If
- * you switch to a model with a different dimension (e.g. the OpenAI fallback at
- * 1536), the DB columns / Vectorize index dimension must change too.
+ * Query and document vectors must use the same provider/model/dimension. The
+ * worker configuration owns provider selection; this port has no default.
  *
  * `mode` distinguishes asymmetric retrieval models (one vector space for
  * documents, another for queries). For both bge-m3 and OpenAI

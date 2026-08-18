@@ -116,17 +116,3 @@ export interface RetrievalResult {
   query: RetrievalQuery;
   candidates: CandidateMemory[]; // length ≤ topK
 }
-
-/** Intent classifier types (`intent.py`). Not wired into ranking — see intent.ts. */
-export enum QueryIntent {
-  PERSONAL = 'personal',
-  PREFERENCE = 'preference',
-  ENTITY_LOOKUP = 'entity_lookup',
-  FACTUAL = 'factual',
-}
-
-export interface IntentAnalysis {
-  intent: QueryIntent;
-  confidence: number;
-  matchedText: string | null;
-}

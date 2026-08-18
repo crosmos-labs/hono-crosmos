@@ -10,7 +10,7 @@
  *     convert via `pyWeekday`.
  *
  * The `dateparser` fallback (step 17) returns null in v1 — matching Python
- * when the lib is unavailable (`_dateparser_search is None`). See decisions.md §6.
+ * when the optional parser is unavailable.
  */
 import { type Database, memories } from '@crosmos/db';
 import type { TenantScope } from '@crosmos/types';
@@ -326,7 +326,7 @@ function extractPeriod(lowered: string, now: Date): TemporalRange | null {
     ];
   }
 
-  // 17. dateparser fallback — v1 returns null (decisions.md §6).
+  // The optional natural-language parser is not part of this worker.
   return null;
 }
 

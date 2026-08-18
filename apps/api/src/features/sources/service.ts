@@ -104,7 +104,7 @@ export async function getSourceByUuid(
  * already been handed an `(orgId, spaceId)` via the queue payload set by
  * the authenticated producer). API routes must use `getSourceByUuid`.
  *
- * Mirrors Python's `get_source_by_id` — see tenancy.md.
+ * Reads a source through the tenant scope supplied by the authenticated caller.
  */
 export async function getSourceByIdUnscoped(
   db: Database,

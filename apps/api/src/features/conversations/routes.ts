@@ -1,4 +1,4 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import {
   createLogger,
@@ -6,7 +6,6 @@ import {
   createStageRecorder,
   type TraceProvider,
 } from '@crosmos/observability';
-import type { HonoEnv } from '../../bindings';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';

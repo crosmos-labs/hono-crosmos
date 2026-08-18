@@ -1,5 +1,5 @@
 import { InvalidTokenError } from '../auth/jwt';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { Hono } from 'hono';

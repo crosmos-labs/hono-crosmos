@@ -1,4 +1,4 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';

@@ -10,7 +10,6 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { generateUuidV7 } from './_shared';
-import { memorySpaces } from './memory-spaces';
 import { organizations } from './organizations';
 import { users } from './users';
 

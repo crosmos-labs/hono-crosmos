@@ -61,7 +61,3 @@ export const MAX_SOURCES_PER_JOB = 10;
 
 /** Producer-side ceiling on conversation request shape. Matches Python `IngestConversationRequest`. */
 export const MAX_CONVERSATION_MESSAGES = 500;
-
-/** Session segmentation — multi-turn ingestion. Matches `ingestion/sessions.py`. */
-export const SEGMENT_SIZE = 4;
-export const LOOKBACK_WINDOW = 4;

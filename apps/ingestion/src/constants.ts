@@ -8,7 +8,6 @@
  */
 
 // Extraction
-export const MODEL_NAME = 'openai/gpt-4.1-mini';
 // NOTE: the embedding dimension is intentionally NOT a constant here. It is a
 // property of the configured embedder (`embedder.dimensions`, derived from
 // EMBEDDING_DIMENSIONS env via `getEmbedder`/`assertEmbeddingSpace`). The
@@ -28,7 +27,6 @@ export const MIN_FACT_WORDS = 3;
 export const EXTRACTION_MAX_TOKENS = 4_000;
 
 // Entity name shape
-export const ENTITY_NAME_MAX_LENGTH = 80;
 export const ENTITY_NAME_MAX_WORDS = 5;
 export const DEFAULT_ENTITY_TYPE = 'object';
 
@@ -60,7 +58,6 @@ export const MAX_PENDING_JOBS_PER_USER = 5_000;
 // slow-but-alive job; and `max_retries(15) × BACKSTOP_RETRY_DELAY_SECONDS(60)`
 // = 15 min still outlasts it (see the invariant on BACKSTOP_RETRY_DELAY_SECONDS).
 export const STUCK_JOB_TIMEOUT_MINUTES = 5;
-export const MONITOR_INTERVAL_SECONDS = 60;
 
 // Job lease (claim) — a job is claimed by transitioning pending -> processing
 // with a fresh `started_at`. A second trigger may only re-claim a `processing`
@@ -102,7 +99,6 @@ export const MAX_JOB_CONTINUATIONS = 800;
 
 // Session ingestion
 export const SESSION_SEGMENT_SIZE = 4;
-export const SESSION_LOOKBACK_WINDOW = 4;
 
 // Text / markdown chunking (issue #7). Until the full chonkie port lands, a
 // recursive character splitter keeps text/markdown sources from being a single

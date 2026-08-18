@@ -88,23 +88,3 @@ export class QuotaExceededError extends Error {
     this.name = 'QuotaExceededError';
   }
 }
-
-/**
- * Mirrors `check_count_quota` in app/services/entitlements/guard.py.
- * `limit == -1` means unlimited (no-op). Otherwise raises when
- * `current_count >= limit`.
- */
-export async function checkCountQuota(
-  db: Database,
-  orgId: number,
-  key: string,
-  currentCount: number,
-): Promise<void> {
-  const ent = await getEntitlements(db, orgId);
-  const raw = ent[key];
-  const limit = typeof raw === 'number' ? raw : -1;
-  if (limit === -1) return;
-  if (currentCount >= limit) {
-    throw new QuotaExceededError(key, limit, currentCount);
-  }
-}

@@ -6,7 +6,7 @@ import {
   type Entity,
   type Memory,
 } from '@crosmos/db';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { and, asc, count, desc, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import type { Context } from 'hono';

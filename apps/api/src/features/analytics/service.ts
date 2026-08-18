@@ -4,7 +4,7 @@ import {
   memorySpaces,
   type Database,
 } from '@crosmos/db';
-import { and, eq, gte, lt, lte, sql, sum } from 'drizzle-orm';
+import { and, eq, gte, lte, sum } from 'drizzle-orm';
 import { activeSpace } from '../spaces/service';
 
 type Totals = {

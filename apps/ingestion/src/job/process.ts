@@ -1,8 +1,7 @@
 /**
  * `processIngestion` — top-level consumer routine for one ingestion job.
  *
- * Mirrors `app/worker/tasks.py:process_ingestion`. Defensive idempotency
- * gates (decisions.md §5) come first: terminal jobs and non-pending sources
+ * Defensive idempotency gates come first: terminal jobs and non-pending sources
  * are skipped so a redelivered queue message never re-runs work.
  *
  * Errors are scoped tightly: an AI failure on one source doesn't poison the
@@ -24,7 +23,6 @@ import type {
   TenantScope,
 } from '@crosmos/types';
 import {
-  BACKSTOP_RETRY_DELAY_SECONDS,
   CHUNK_HEARTBEAT_INTERVAL_MS,
   JOB_LEASE_MS,
   MAX_CHUNKS_PER_INVOCATION,

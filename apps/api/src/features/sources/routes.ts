@@ -5,7 +5,7 @@ import {
   createStageRecorder,
   type TraceProvider,
 } from '@crosmos/observability';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { Context } from 'hono';

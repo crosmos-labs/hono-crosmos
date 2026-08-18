@@ -2,7 +2,7 @@
  * Hand-written vector ops — port of `app/engine/helpers.py` (`normalize`,
  * `cosine_similarity`) and the numpy cosine seeding in `graph.py`. No external
  * libs; these are small loops over 1536-dim vectors. The zero-norm guards must
- * match Python exactly (decisions.md §7).
+ * preserve deterministic ranking behavior.
  */
 
 export function dot(a: number[], b: number[]): number {

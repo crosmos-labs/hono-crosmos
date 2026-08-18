@@ -132,57 +132,6 @@ function fuzzyResolve(
 }
 
 /**
- * Stage C: race-safe upsert by (space_id, lower(name)). Returns the resulting
- * row and whether it was just inserted.
- */
-async function getOrCreateEntity(
-  db: Database,
-  scope: TenantScope,
-  name: string,
-  entityType: string,
-  embedding: number[] | null,
-): Promise<{ entityId: number; isNew: boolean }> {
-  // The entities table has exactly one unique constraint — the partial
-  // expression index `uq_entity_space_name` on (space_id, lower(name)).
-  // Drizzle's `target` option doesn't support functional/expression indexes,
-  // so we omit `target`: any unique conflict (only this one exists) is
-  // swallowed, then we fall back to a case-insensitive SELECT to fetch the
-  // existing row.
-  const inserted = await db
-    .insert(entities)
-    .values({
-      orgId: scope.orgId,
-      spaceId: scope.spaceId,
-      name,
-      entityType,
-      embedding,
-    })
-    .onConflictDoNothing()
-    .returning({ id: entities.id });
-  if (inserted.length > 0) return { entityId: inserted[0]!.id, isNew: true };
-
-  // Conflict — fetch the existing row (case-insensitive name match within scope)
-  const existing = await db
-    .select({ id: entities.id })
-    .from(entities)
-    .where(
-      and(
-        eq(entities.orgId, scope.orgId),
-        eq(entities.spaceId, scope.spaceId),
-        sql`lower(${entities.name}) = ${name.toLowerCase()}`,
-      ),
-    )
-    .limit(1);
-  if (existing.length === 0) {
-    // Unreachable: the unique index is on (space_id, lower(name)).
-    throw new Error(
-      `Entity upsert conflicted but no row found for name=${name} in space=${scope.spaceId}`,
-    );
-  }
-  return { entityId: existing[0]!.id, isNew: false };
-}
-
-/**
  * Resolve a batch of extracted entities to DB rows. One embedding round-trip
  * for the whole batch.
  */

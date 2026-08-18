@@ -12,11 +12,10 @@ import {
   OAuthCallbackResponseSchema,
   OAuthProvidersSchema,
 } from './schemas';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { errorEnvelope } from '../../lib/errors';
 import { getEmailSender } from '../../integrations/email';

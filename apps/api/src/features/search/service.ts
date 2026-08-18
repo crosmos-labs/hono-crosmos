@@ -753,7 +753,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // selection needs, so it cannot be deferred past selection. Starting it here
   // (instead of awaiting before rerank) hides the citation round-trip behind the
   // rerank. Non-fatal and never rejects: on failure candidates keep
-  // source=null (worker.md error-parity table). Awaited just before Stage 8.
+  // source=null. Awaited just before Stage 8.
   //
   // Full source TEXT is deliberately not loaded here — see `attachSourceContent`,
   // which runs after selection over only the returned candidates.

@@ -2,7 +2,7 @@
  * Cross-encoder reranking — port of `app/engine/retrieval/reranker.py`, bridged
  * to our `@crosmos/ai` `Reranker` interface.
  *
- * Two contract differences from Python (decisions.md §3):
+ * Two adapter contract details:
  *   - Python's `predict(pairs) -> list[float]` returns scores in INPUT order;
  *     our `rerank(query, docs) -> {index, score}[]` returns sorted by score.
  *     We map results back by `index` — never assume order.

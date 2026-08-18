@@ -1,7 +1,7 @@
 /**
  * Per-user concurrency limiter — port of Python's `ConcurrencyLimiter`
  * (Redis-backed) onto Cloudflare KV. Bounds concurrent `/search` requests per
- * user (decisions.md §4 + worker.md). KV is eventually consistent, so the cap
+ * user. KV is eventually consistent, so the cap
  * is approximate (±1–2) — acceptable; it's an abuse guard, not a billing gate.
  *
  * The TTL is a self-healing net: a request that dies without releasing has its

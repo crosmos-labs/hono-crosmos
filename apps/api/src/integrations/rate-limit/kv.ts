@@ -32,7 +32,7 @@ export type DeferFn = (task: Promise<unknown>) => void;
  * **Tradeoffs.** KV has no atomic increment, so we read-then-write. Two
  * concurrent requests can both read the same N, both write N+1, and we'll
  * undercount by 1. Region replication adds a similar fuzz factor. Per
- * decisions.md §7 we accepted ±1–2 noise on the boundary — the limits we
+ * The limiter accepts small boundary noise; the limits we
  * enforce are coarse (10 RPM on free, 300 RPM on pro). When precise
  * enforcement matters (paid-tier abuse), swap to a Durable Object counter.
  *

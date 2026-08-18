@@ -1,4 +1,4 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
@@ -11,7 +11,6 @@ import {
 } from '@crosmos/observability';
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { getApiConfig } from '../../config';
 import { getDb } from '../../db';
 import {
@@ -166,7 +165,7 @@ function buildResponse(
   return { query: queryText, candidates };
 }
 
-// POST /api/v1/search — hybrid retrieval, run inline (decisions.md §1).
+// POST /api/v1/search — hybrid retrieval, run inline.
 searchRoutes.openapi(
   createRoute({
     method: 'post',
@@ -403,7 +402,7 @@ searchRoutes.openapi(
       // the priority. The reads (edge-cached, fast) still gate synchronously. The
       // `planRateLimitEnforced` guard stays for idempotency. Tradeoff: under high
       // concurrency the per-org cap can admit a few extra requests at the boundary
-      // (the ±1-2 fuzz the KV limiter design accepts, decisions.md §7); the coarse
+      // (the small boundary noise the KV limiter design accepts); the coarse
       // per-org RPM cap (10 free / 300 pro) doesn't need exact enforcement, and the
       // global-AI throttle below is what actually bounds aggregate AI cost.
       const shouldEnforcePlan = !c.var.planRateLimitEnforced;

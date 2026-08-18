@@ -11,7 +11,7 @@ import type { IngestionJobMessage } from '@crosmos/types';
  *  1. `inFlightJobCount` doesn't exist natively on Cloudflare Queues — every
  *     backend that wants to enforce backpressure has to source the number
  *     from somewhere. The port hides that choice (DB count vs Durable
- *     Object counter, see decisions.md §4) from the routes.
+ *     Object counter) from the routes.
  *  2. Tests want a `NoopQueueService` that records calls in memory.
  *  3. The producer doesn't care that the wire format is JSON over the CF
  *     Queues API — it just knows it's submitting an `IngestionJobMessage`.

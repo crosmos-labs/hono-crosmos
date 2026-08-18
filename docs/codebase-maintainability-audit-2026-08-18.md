@@ -523,7 +523,11 @@ Some variation is required: OAuth protocol endpoints should retain OAuth-standar
 
 ## Priority 2: comment, dead-code, and repository sanitation
 
-### [ ] COMMENT-1 — Adopt a short, enforceable comment policy
+### [x] COMMENT-1 — Adopt a short, enforceable comment policy
+
+Completed 2026-08-19. `docs/code-comment-policy.md` defines the permitted
+invariants, review rule, length expectation, and material that belongs in ADRs,
+runbooks, or dated evidence instead of production source.
 
 Use comments for:
 
@@ -557,7 +561,11 @@ A useful local shape is one sentence stating the invariant, followed by a stable
 - Private functions do not carry historical essays.
 - Long comments that remain explain a current invariant and are backed by a test, ADR, or external platform constraint.
 
-### [ ] COMMENT-2 — Perform a targeted stale-comment sweep
+### [x] COMMENT-2 — Perform a targeted stale-comment sweep
+
+Completed 2026-08-19. The confirmed embedding dimension, placement, provider
+default, OpenRouter parity, missing-document, timeout-incident, and Wrangler
+narratives were corrected or removed without changing executable settings.
 
 Start with these confirmed contradictions:
 
@@ -572,7 +580,12 @@ Start with these confirmed contradictions:
 
 Do not mass-delete comments by line count. Review each comment against the policy above.
 
-### [ ] DEAD-1 — Remove confirmed non-adapter dead code and stale imports
+### [x] DEAD-1 — Remove confirmed non-adapter dead code and stale imports
+
+Completed 2026-08-19. The unwired intent classifier, duplicate unused entity
+ontology, zero-consumer constants/helpers, stale route imports, and accidental
+empty root file were removed. Production compiles with unused locals and
+parameters enabled; all provider adapters remain available.
 
 The following are confirmed by repository-wide reference search or compiler diagnostics and should be removed after one final dynamic-entrypoint check:
 

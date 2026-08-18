@@ -141,19 +141,13 @@ export const TEMPORAL_PROXIMITY_ALPHA = 0.3;
 export const BOOST_MIN = -0.3;
 export const BOOST_MAX = 0.3;
 
-// asyncio.Semaphore bound in Python. On Workers/Hyperdrive connection pooling
-// is handled by Hyperdrive, so this maps to nothing today — kept for parity
-// reference (.codex/pipelines.md).
-export const RETRIEVAL_CONNECTION_LIMIT = 20;
-
 export const MMR_LAMBDA = 0.6;
 export const MMR_MIN_RELEVANCE = 0.3;
 
-// RRF `k` is a default arg in fusion.py (never overridden by callers), not in
-// constants.py — but it is a constant.
+// RRF dampening constant; callers never override it.
 export const RRF_K = 60;
 
-// Source-signal fusion weights — all 1.0 (constants.py:SOURCE_WEIGHTS).
+// Source-signal fusion weights.
 export const SOURCE_WEIGHTS = {
   semantic: 1.0,
   keyword: 1.0,
@@ -161,38 +155,11 @@ export const SOURCE_WEIGHTS = {
   temporal: 1.0,
 } as const;
 
-// from worker/constants.py (the RETRIEVAL_* block)
-//
-// NOTE: unlike the ranking constants above, this block is OPERATIONAL — it
+// Unlike the ranking constants above, this block is operational: it
 // tunes admission/backpressure, not results. These are the compile-time
 // defaults; each is overridable per-env via `getOperationalLimits` (lib/limits.ts)
-// so an incident can be shed without a redeploy.
-export const RETRIEVAL_MAX_QUEUE_DEPTH = 500;
-
-/**
- * Server-side ceiling on retrieval work, in seconds.
- *
- * **Was 30s, which was the primary amplifier of the 2026-07-25 incident.**
- *
- * The Crosmos client sends `x-stainless-timeout: 3`, so it abandons a recall at
- * three seconds. The server, however, kept working for up to thirty — and held
- * the caller's concurrency slot for the entire time (the slot is released in the
- * route's `finally`). With `RETRIEVAL_MAX_CONCURRENT_PER_USER = 10`, a user's
- * sustainable throughput was therefore bounded at 10 slots / 30s ≈ 0.33 req/s.
- * Every request above that rate got a concurrency 429 no matter how healthy the
- * backend was, which is why that single class was 52.98% of all search
- * invocations during the incident.
- *
- * Six seconds covers the observed successful p99 (4.388s) with margin. Work that
- * runs longer than this is work nobody is waiting for: the client gave up at
- * three seconds, so completing it at, say, 10.4s (the observed max) produces a
- * response that is discarded while still holding a slot another request needs.
- * Cutting the ceiling raises the per-user throughput bound ~5x and shortens the
- * window in which an abandoned request can starve its own retries.
- *
- * Workers cannot cancel in-flight subrequests, so this bounds when the ROUTE
- * stops waiting and frees the slot — the underlying fetches may run on briefly.
- */
+// so capacity can be shed without a redeploy.
+/** Server-side retrieval deadline; downstream adapters receive its abort signal. */
 export const RETRIEVAL_RESULT_TIMEOUT_SECONDS = 6;
 
 export const RETRIEVAL_MAX_CONCURRENT_PER_USER = 10;
@@ -207,16 +174,7 @@ export const RETRIEVAL_RETRY_AFTER_SECONDS = 3;
  */
 export const RETRIEVAL_SLOT_TTL_GRACE_SECONDS = 4;
 
-/**
- * TTL on a per-user concurrency slot — the self-healing net for a request that
- * dies without releasing (e.g. a Cloudflare isolate termination, which kills the
- * `finally`/`waitUntil` release).
- *
- * Was a flat 30s, matching the old retrieval timeout. Now derived from the
- * timeout so the two can never drift apart again: a leaked slot self-heals in
- * ~10s instead of ~30s, so a burst of terminated requests can no longer hold a
- * user at their cap for half a minute.
- */
+/** Self-healing TTL for a concurrency lease whose request dies before release. */
 export const RETRIEVAL_USER_COUNTER_TTL_SECONDS =
   RETRIEVAL_RESULT_TIMEOUT_SECONDS + RETRIEVAL_SLOT_TTL_GRACE_SECONDS;
 

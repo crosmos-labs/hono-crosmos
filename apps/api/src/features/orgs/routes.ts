@@ -15,14 +15,13 @@ import {
   UpdateMemberRoleSchema,
   UpdateOrganizationSchema,
 } from './schemas';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { PaginationQuerySchema } from '../../lib/zod-common';
 import { HTTPException } from 'hono/http-exception';
 import { createLogger } from '@crosmos/observability';
 import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
 import { organizationInvites, organizationMembers, organizations, users } from '@crosmos/db';
-import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getEmailSender } from '../../integrations/email';
 import {

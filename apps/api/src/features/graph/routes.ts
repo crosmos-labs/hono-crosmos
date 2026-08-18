@@ -1,5 +1,5 @@
 import { edges, entities, type Edge, type Entity } from '@crosmos/db';
-import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
+import { createRoute } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { and, asc, count, desc, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context } from 'hono';

@@ -1,7 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { UuidSchema } from '../../lib/zod-common';

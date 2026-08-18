@@ -9,7 +9,7 @@
  * Token accounting: every implementation accumulates `totalTokens` across
  * the lifetime of the instance. The worker creates one `LLM` per job and
  * sums `llm.totalTokens + embedder.totalTokens` into `daily_usage` once at
- * job completion (see worker.md §Token accumulation).
+ * job completion.
  */
 export interface LLMUsage {
   promptTokens: number;

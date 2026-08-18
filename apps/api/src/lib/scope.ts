@@ -1,7 +1,6 @@
 import {
   edges,
   entities,
-  ingestionJobs,
   memories,
   sources,
 } from '@crosmos/db';
@@ -82,12 +81,5 @@ export function scopeEdges(scope: TenantScope): SQL {
     eq(edges.orgId, scope.orgId),
     eq(edges.spaceId, scope.spaceId),
     edgeVisibilityClause(scope),
-  )!;
-}
-
-export function scopeIngestionJobs(scope: TenantScope): SQL {
-  return and(
-    eq(ingestionJobs.orgId, scope.orgId),
-    eq(ingestionJobs.spaceId, scope.spaceId),
   )!;
 }

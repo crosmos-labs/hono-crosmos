@@ -54,23 +54,3 @@ export const RELATION_TYPES: Readonly<Record<string, RelationTypeMeta>> = {
   MET: { description: 'Met or encountered a person', inverse: null, category: 'social' },
   WITH: { description: 'Accompanied by or together with someone', inverse: null, category: 'social' },
 } as const;
-
-/**
- * Canonical relations exposed to the LLM. For every inverse pair we expose
- * only one side (the "active" direction) so the LLM doesn't fragment the
- * graph by choosing direction. Matches Python's `_canonical_relations_block`.
- *
- * Suppressed inverses: USED_BY, OWNED_BY, EMPLOYS, MANAGED_BY, HAS_PART, CONTAINS.
- */
-const SUPPRESSED_INVERSES = new Set([
-  'USED_BY',
-  'OWNED_BY',
-  'EMPLOYS',
-  'MANAGED_BY',
-  'HAS_PART',
-  'CONTAINS',
-]);
-
-export const CANONICAL_RELATIONS: readonly string[] = Object.keys(
-  RELATION_TYPES,
-).filter((name) => !SUPPRESSED_INVERSES.has(name));

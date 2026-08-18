@@ -25,11 +25,11 @@ import { users } from './users';
  * The embedding column is ONLY populated by the `pg` vector-store adapter
  * (`persistsInColumn=true`). Production runs VECTOR_STORE=qdrant (vectors live in
  * Qdrant) and VECTOR_STORE=vectorize leaves it null too — in both the dimension
- * here is irrelevant. It is `vector(1024)` (bge-m3 default). The `pg` adapter is
+ * here is irrelevant. It is `vector(1024)`. The `pg` adapter is
  * therefore only usable with a 1024-dim embedder unless this column is migrated
  * to the deployed embedder's dimension (e.g. 1536 for OpenAI text-embedding-3);
  * the runtime validates vectors against `embedder.dimensions`, so a mismatch is
- * caught, not silently mis-stored. See issue #3.
+ * caught rather than silently mis-stored.
  *
  * See .codex/code-architecture.md.
  */

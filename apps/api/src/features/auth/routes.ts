@@ -19,12 +19,11 @@ import {
   UpdateUserSchema,
   UserSchema,
 } from './schemas';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { PaginationQuerySchema } from '../../lib/zod-common';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { perIpRateLimit } from '../../integrations/rate-limit/ip';
 import { invalidateApiKeyCacheByHash, requireAuth } from './middleware';

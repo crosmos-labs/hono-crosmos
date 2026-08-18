@@ -1,9 +1,8 @@
 import { edges, memories, type Memory } from '@crosmos/db';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getCachedSpaceByUuid } from '../../lib/gate-cache';

@@ -7,11 +7,10 @@ import {
   SpaceUsageResponseSchema,
 } from './schemas';
 import type { MemorySpace } from '@crosmos/db';
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
-import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
 import { invalidateSpace } from '../../lib/gate-cache';
@@ -361,4 +360,3 @@ spaceRoutes.openapi(
     return c.body(null, 204);
   },
 );
-
