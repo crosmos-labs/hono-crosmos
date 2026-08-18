@@ -1,5 +1,5 @@
 /**
- * `daily_usage` upsert — recorded once per job at the terminal transition.
+ * `daily_usage` upsert recorded once per job at the terminal transition.
  * Mirrors Python's `record_ingestion_tokens` and the producer-side copy in
  * `apps/api/src/features/usage/service.ts`.
  */

@@ -30,23 +30,23 @@ import {
   MAX_CHUNKS_PER_INVOCATION,
   SOURCE_RETRY_ATTEMPTS,
   SOURCE_RETRY_DELAY_MS,
-} from './constants';
+} from '../constants';
 import { VectorStoreError, type VectorStore } from '@crosmos/vector';
-import type { Embedder } from './integrations/embeddings';
-import { EmbeddingRequestError } from './integrations/embeddings';
-import type { LLM } from './integrations/llm';
-import { LLMRequestError } from './integrations/llm';
+import type { Embedder } from '../integrations/embeddings';
+import { EmbeddingRequestError } from '../integrations/embeddings';
+import type { LLM } from '../integrations/llm';
+import { LLMRequestError } from '../integrations/llm';
 import {
   ingestSource,
   type IngestResult,
-} from './ingestion/pipeline';
+} from '../ingestion/pipeline';
 import {
   claimJob,
   isJobCancelled,
   isSpaceActive,
   resetJobForRetry,
   updateJobStatus,
-} from './job-store';
+} from './store';
 import {
   getSourceExtractionStatus,
   markSourcesFailed,

@@ -1,5 +1,5 @@
 /**
- * Consumer-side slice of the `JobStore` port. The API worker owns the full
+ * Consumer-side job lifecycle persistence.
  * port (create, get, countActive, cancel*) — the ingestion worker only needs
  * the subset used inside the queue handler: status reads, status writes,
  * cancellation checks. Mirroring the relevant operations from

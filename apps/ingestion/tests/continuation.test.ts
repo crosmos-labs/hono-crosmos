@@ -17,11 +17,11 @@ import { describe, expect, mock, test } from 'bun:test';
 import type { Logger } from '@crosmos/observability';
 import type { IngestionJobMessage } from '@crosmos/types';
 import { MAX_JOB_CONTINUATIONS } from '../src/constants';
-import type { IngestionRunResult } from '../src/process-ingestion';
+import type { IngestionRunResult } from '../src/job/process';
 import {
   handleIngestionDelivery,
   type IngestionQueueConsumerDeps,
-} from '../src/queue-consumer';
+} from '../src/delivery/queue-consumer';
 
 const BASE_MESSAGE: IngestionJobMessage = {
   task: 'process_ingestion',
@@ -73,7 +73,7 @@ async function deliver(options: {
 }): Promise<Harness> {
   const harness: Harness = { acks: 0, retries: [], published: [], events: [] };
 
-  await mock.module('../src/process-ingestion', () => ({
+  await mock.module('../src/job/process', () => ({
     processIngestion: async () => {
       if (options.processThrows) throw options.processThrows;
       return options.result;

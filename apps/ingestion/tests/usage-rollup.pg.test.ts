@@ -18,7 +18,7 @@ import {
   type Tenant,
 } from '@crosmos/test-support';
 import { eq } from 'drizzle-orm';
-import { recordIngestionUsageBestEffort } from '../src/usage';
+import { recordIngestionUsageBestEffort } from '../src/job/usage';
 
 const database: Database | null = await getTestDb();
 if (database === null) announceSkip('usage-rollup.pg.test.ts');

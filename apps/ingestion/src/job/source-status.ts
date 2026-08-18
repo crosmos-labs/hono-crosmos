@@ -1,5 +1,5 @@
 /**
- * Source status helpers used by the queue consumer. Mirror Python's `mark_*`
+ * Source status helpers used by ingestion job processing.
  * variants — all scoped on (org_id, space_id) so a stray queue message
  * cannot mutate a source outside its claimed scope (defense-in-depth on top
  * of the producer-side authorization).

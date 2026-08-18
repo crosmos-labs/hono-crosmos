@@ -11,10 +11,10 @@ import type { VectorStore } from '@crosmos/vector';
 import {
   BACKSTOP_RETRY_DELAY_SECONDS,
   MAX_JOB_CONTINUATIONS,
-} from './constants';
-import type { Embedder } from './integrations/embeddings';
-import type { LLM } from './integrations/llm';
-import { processIngestion } from './process-ingestion';
+} from '../constants';
+import type { Embedder } from '../integrations/embeddings';
+import type { LLM } from '../integrations/llm';
+import { processIngestion } from '../job/process';
 
 export interface IngestionQueueConsumerDeps {
   db: Database;

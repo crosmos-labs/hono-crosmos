@@ -30,7 +30,7 @@ import {
   isSpaceActive,
   resetJobForRetry,
   updateJobStatus,
-} from '../src/job-store';
+} from '../src/job/store';
 
 const db: Database | null = await getTestDb();
 if (db === null) announceSkip('job-store.pg.test.ts');

@@ -12,12 +12,12 @@ import { getDb } from './db';
 import { getEmbedder } from './integrations/embeddings';
 import { getLLM } from './integrations/llm';
 import { getVectorStore } from './integrations/vector-store';
-import { processIngestion } from './process-ingestion';
+import { processIngestion } from './job/process';
 import {
   handleIngestionDelivery,
   type IngestionQueueConsumerDeps,
-} from './queue-consumer';
-import { resetJobForRetry } from './job-store';
+} from './delivery/queue-consumer';
+import { resetJobForRetry } from './job/store';
 
 /**
  * Ingestion Worker.
