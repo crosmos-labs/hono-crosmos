@@ -1,9 +1,13 @@
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { DeploymentEnvironment } from '@crosmos/runtime';
+import type {
+  AnalyticsDataset,
+  WorkerVersionMetadata,
+} from '@crosmos/observability';
 
 export interface Env {
   // Bindings
-  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
   HYPERDRIVE: Hyperdrive;
   /**
    * Producer binding onto the SAME queue this worker consumes. Used only to
@@ -28,7 +32,7 @@ export interface Env {
   // in every deployed environment since 2026-08-11; still optional because
   // `bun test` and direct library use have no binding, where `createMetrics`
   // degrades to a silent no-op. See docs/metrics-runbook.md.
-  ANALYTICS?: AnalyticsEngineDataset;
+  ANALYTICS?: AnalyticsDataset;
 
   // Vars
   ENVIRONMENT: DeploymentEnvironment;

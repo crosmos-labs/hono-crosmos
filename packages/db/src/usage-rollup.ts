@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { chunks, chunkMemories, dailySourceContentTypes, dailyUsage, sources } from './schema/index';
-import type { Database } from './index';
+import type { Database } from './client';
 
 export interface UsageScope {
   orgId: number;

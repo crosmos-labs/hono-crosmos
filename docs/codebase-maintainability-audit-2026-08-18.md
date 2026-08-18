@@ -378,7 +378,11 @@ The compact operations docs recommend `db:migrate`, while the migration README s
 - `db:generate` followed by `git status` always exposes every required artifact.
 - No documentation suggests an unsafe production migration command without the manual-review warning.
 
-### [ ] ARCH-1 — Break the `@crosmos/db` barrel cycle
+### [x] ARCH-1 — Break the `@crosmos/db` barrel cycle
+
+Completed 2026-08-19. Database construction and the `Database` type now live in
+the `client` leaf module; usage rollups import that leaf while the package barrel
+remains a public-only facade.
 
 **Finding**
 
@@ -646,7 +650,12 @@ API tests emit large volumes of production-shaped structured logs. This makes fa
 - A normal successful test run is concise.
 - Parallel workspace tests cannot operate on the same database accidentally.
 
-### [ ] OBS-1 — Split the observability package by responsibility
+### [x] OBS-1 — Split the observability package by responsibility
+
+Completed 2026-08-19. Logging/PII filtering, metrics, stage recording, tracing
+contracts, error serialization, timing, and public types now have separate leaf
+modules behind the unchanged package root. All Workers use the same structural
+analytics/version types, with focused privacy and serialization tests.
 
 **Finding**
 

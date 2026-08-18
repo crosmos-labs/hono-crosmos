@@ -1,5 +1,9 @@
 import type { IngestionJobMessage } from '@crosmos/types';
 import type { DeploymentEnvironment } from '@crosmos/runtime';
+import type {
+  AnalyticsDataset,
+  WorkerVersionMetadata,
+} from '@crosmos/observability';
 
 /**
  * RPC surface of the ingestion worker (apps/ingestion `IngestionWorker`),
@@ -14,7 +18,7 @@ export interface IngestionRpc {
 
 export interface Env {
   // Bindings
-  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
   HYPERDRIVE: Hyperdrive;
   API_KEY_CACHE: KVNamespace;
   INGESTION_QUEUE: Queue;
@@ -36,7 +40,7 @@ export interface Env {
   // deployed environment since 2026-08-11; still optional because `bun test`
   // and direct library use have no binding, where `createMetrics` degrades to a
   // silent no-op. See docs/metrics-runbook.md.
-  ANALYTICS?: AnalyticsEngineDataset;
+  ANALYTICS?: AnalyticsDataset;
   // Durable-Object rate limiter (class RateLimiterDO). Strongly consistent and,
   // unlike KV, its counters cost zero put ops — so it backs every limiter that
   // runs on the hot path: per-IP (ip.ts), per-org plan/mgmt (do.ts), the global

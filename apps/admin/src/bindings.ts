@@ -1,4 +1,7 @@
-import type { AnalyticsDataset } from '@crosmos/observability';
+import type {
+  AnalyticsDataset,
+  WorkerVersionMetadata,
+} from '@crosmos/observability';
 import type { DeploymentEnvironment } from '@crosmos/runtime';
 
 export interface Env {
@@ -11,7 +14,7 @@ export interface Env {
   ACCESS_AUD: string;
   ADMIN_ALLOWED_EMAILS: string;
   ADMIN_RATE_LIMIT_PER_MINUTE?: string;
-  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
 
 export type AdminEnv = {
