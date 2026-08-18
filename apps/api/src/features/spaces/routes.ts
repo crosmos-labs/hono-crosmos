@@ -1,6 +1,5 @@
 import {
   CreateSpaceSchema,
-  QuotaExceededBodySchema,
   SpaceListResponseSchema,
   SpaceSchema,
   SpaceUsageQuerySchema,
@@ -12,9 +11,10 @@ import { createApiApp } from '../../lib/openapi';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import { getDb } from '../../db';
+import { errorEnvelope } from '../../lib/errors';
 import { getJobStore } from '../../integrations/job-store';
 import { invalidateSpace } from '../../lib/gate-cache';
-import { PaginationQuerySchema } from '../../lib/zod-common';
+import { ErrorResponseSchema, PaginationQuerySchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
@@ -31,7 +31,7 @@ import {
 
 export const spaceRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.string() }).openapi('SpaceErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 /** Current calendar month [first day, last day] as `YYYY-MM-DD` (UTC). */
 function defaultUsagePeriod(): { start: string; end: string } {
@@ -103,7 +103,7 @@ spaceRoutes.openapi(
       },
       429: {
         description: 'Quota exceeded',
-        content: { 'application/json': { schema: QuotaExceededBodySchema } },
+        content: { 'application/json': { schema: ErrorBody } },
       },
       ...errorResponses,
     },
@@ -130,20 +130,11 @@ spaceRoutes.openapi(
       limit,
     });
     if (space === SPACE_QUOTA_EXCEEDED) {
-      // Structured quota body (schema-backed `QuotaExceededBodySchema`), kept
-      // consistent with the sibling source/conversation quota responses.
-      // `used === limit` since the cap is enforced at the boundary.
-      return c.json(
-        {
-          detail: {
-            error: 'quota_exceeded' as const,
-            key: 'max_memory_spaces',
-            limit,
-            used: limit,
-          },
-        },
-        429,
-      );
+      return c.json(errorEnvelope('Memory-space quota exceeded', {
+        code: 'quota_exceeded',
+        requestId: c.var.requestId,
+        fields: { key: 'max_memory_spaces', limit, used: limit },
+      }), 429);
     }
     return c.json(await toResponse(c, space), 201);
   },

@@ -501,7 +501,12 @@ This does not prove a current tenant leak; it proves the convention is not enfor
 
 - A new unscoped query against memories/sources/entities/edges/jobs fails CI or requires an explicit reviewed bypass.
 
-### [ ] API-1 — Standardize error schemas and exception ownership
+### [x] API-1 — Standardize error schemas and exception ownership
+
+Completed 2026-08-19. Normal API routes now reference one OpenAPI error schema
+and emit the `detail`/`code`/`request_id`/`fields` envelope through shared
+builders and the global mapper. Expected visibility/domain failures use
+`AppError`; OAuth protocol routes retain their protocol-specific responses.
 
 **Finding**
 

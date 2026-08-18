@@ -137,32 +137,6 @@ export const SourceScopedQuerySchema = z
   .transform((query) => ({ ...query, space_id: query.space_uuid ?? query.space_id! }))
   .openapi('SourceScopedQuery');
 
-/**
- * Structured error bodies used by ingestion routes. Matches the shapes in
- * .codex/pipelines.md — clients can branch on `detail.error`.
- */
-export const RateLimitedBodySchema = z
-  .object({
-    detail: z.object({
-      error: z.literal('rate_limited'),
-      scope: z.enum(['rpm', 'day']),
-      limit: z.number().int(),
-      count: z.number().int(),
-    }),
-  })
-  .openapi('RateLimitedBody');
-
-export const QuotaExceededBodySchema = z
-  .object({
-    detail: z.object({
-      error: z.literal('quota_exceeded'),
-      key: z.string(),
-      limit: z.number().int(),
-      used: z.number().int(),
-    }),
-  })
-  .openapi('QuotaExceededBody');
-
 export const UpdateSourceVisibilityRequestSchema = z
   .object({
     visibility: VisibilitySchema,

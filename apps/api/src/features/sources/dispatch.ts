@@ -4,6 +4,7 @@ import type { IngestionJobMessage } from '@crosmos/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { QueueService } from '../../integrations/queue';
+import { errorResponse } from '../../lib/errors';
 import { RETRY_AFTER_SECONDS } from './constants';
 
 /**
@@ -40,11 +41,10 @@ export interface DispatchResult {
  */
 export function pendingCapError(): HTTPException {
   return new HTTPException(429, {
-    res: new Response(
-      JSON.stringify({
-        detail: 'Too many pending jobs. Wait for existing jobs to complete.',
-      }),
-      { status: 429, headers: { 'Content-Type': 'application/json' } },
+    res: errorResponse(
+      429,
+      'Too many pending jobs. Wait for existing jobs to complete.',
+      { code: 'pending_job_limit' },
     ),
   });
 }
@@ -163,16 +163,12 @@ export async function assertDispatchedOrRollback(
       status_code: 503,
     });
     throw new HTTPException(503, {
-      res: new Response(
-        JSON.stringify({
-          detail: 'Ingestion service unavailable. Retry shortly.',
-        }),
+      res: errorResponse(
+        503,
+        'Ingestion service unavailable. Retry shortly.',
         {
-          status: 503,
-          headers: {
-            'Content-Type': 'application/json',
-            'Retry-After': String(RETRY_AFTER_SECONDS),
-          },
+          code: 'ingestion_unavailable',
+          headers: { 'Retry-After': String(RETRY_AFTER_SECONDS) },
         },
       ),
     });

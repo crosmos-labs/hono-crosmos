@@ -17,7 +17,7 @@ import {
 } from './schemas';
 import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
-import { PaginationQuerySchema } from '../../lib/zod-common';
+import { ErrorResponseSchema, PaginationQuerySchema } from '../../lib/zod-common';
 import { HTTPException } from 'hono/http-exception';
 import { createLogger } from '@crosmos/observability';
 import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
@@ -30,7 +30,7 @@ import {
   RateLimitError,
 } from '../../integrations/rate-limit';
 import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
-import { apiError, AppError } from '../../lib/errors';
+import { apiError, AppError, errorEnvelope } from '../../lib/errors';
 import { invalidateMembership } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
@@ -51,15 +51,8 @@ import {
 
 export const orgRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.string() }).openapi('OrgErrorBody');
-const SlugConflictBody = z
-  .object({
-    detail: z.object({
-      error: z.literal('slug_taken'),
-      message: z.string(),
-    }),
-  })
-  .openapi('OrgSlugConflictBody');
+const ErrorBody = ErrorResponseSchema;
+const SlugConflictBody = ErrorResponseSchema;
 
 const errorResponses = {
   401: {
@@ -904,10 +897,10 @@ orgRoutes.openapi(
       return c.json(orgToShallow(updated), 200);
     } catch (err) {
       if (err instanceof SlugCollisionError) {
-        return c.json(
-          { detail: { error: 'slug_taken' as const, message: err.message } },
-          409,
-        );
+        return c.json(errorEnvelope(err.message, {
+          code: 'slug_taken',
+          requestId: c.var.requestId,
+        }), 409);
       }
       throw err;
     }

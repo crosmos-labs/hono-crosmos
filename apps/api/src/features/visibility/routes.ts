@@ -4,7 +4,8 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
-import { PaginationQuerySchema } from '../../lib/zod-common';
+import { AppError } from '../../lib/errors';
+import { ErrorResponseSchema, PaginationQuerySchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requireRole } from '../auth/principal';
 import { getMembership } from '../orgs/memberships';
@@ -47,7 +48,7 @@ import {
 
 export const visibilityRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.unknown() }).openapi('VisibilityErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 const errorResponses = {
   400: { description: 'Bad request', content: { 'application/json': { schema: ErrorBody } } },
@@ -57,7 +58,7 @@ const errorResponses = {
   409: { description: 'Conflict', content: { 'application/json': { schema: ErrorBody } } },
 };
 
-function mapVisibilityError(err: VisibilityError): HTTPException {
+function mapVisibilityError(err: VisibilityError): AppError {
   const statusByCode: Record<VisibilityError['code'], number> = {
     not_found: 404,
     slug_taken: 409,
@@ -68,12 +69,11 @@ function mapVisibilityError(err: VisibilityError): HTTPException {
     user_not_in_org: 400,
     member_not_found: 404,
   };
-  return new HTTPException(statusByCode[err.code] as 400 | 404 | 409, {
-    res: new Response(
-      JSON.stringify({ detail: { error: err.code, message: err.message } }),
-      { status: statusByCode[err.code], headers: { 'Content-Type': 'application/json' } },
-    ),
-  });
+  return new AppError(
+    statusByCode[err.code] as 400 | 404 | 409,
+    err.code,
+    err.message,
+  );
 }
 
 async function scopedOrgId(

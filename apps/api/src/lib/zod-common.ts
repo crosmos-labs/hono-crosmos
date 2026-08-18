@@ -12,7 +12,7 @@ export const ErrorResponseSchema = z
     detail: z.string(),
     code: z.string().optional(),
     request_id: z.string().optional(),
-    fields: z.unknown().optional(),
+    fields: z.record(z.unknown()).optional(),
   })
   .openapi('ErrorResponse');
 

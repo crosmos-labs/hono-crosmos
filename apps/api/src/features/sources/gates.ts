@@ -12,6 +12,7 @@ import {
 import type { JobStore } from '../../integrations/job-store';
 import type { QueueService } from '../../integrations/queue';
 import type { OperationalLimits } from '../../lib/limits';
+import { errorResponse } from '../../lib/errors';
 import { getSpaceByUuid } from '../spaces/service';
 import { RETRY_AFTER_SECONDS } from './constants';
 
@@ -19,14 +20,6 @@ import { RETRY_AFTER_SECONDS } from './constants';
  * Producer-side pre-flight gates applied to both `POST /sources` and
  * `POST /conversations`. Order matches Python and .codex/pipelines.md so error
  * precedence stays predictable for clients.
- *
- * Throws `HTTPException` with the structured error body conventions from
- * the docs:
- *   - `{detail: {error: 'rate_limited', scope, limit, count}}` + Retry-After
- *   - 503 + Retry-After when global queue depth is at the cap
- *   - `{detail: '...'}` plain string for per-user pending cap
- *   - 404 for cross-tenant space access
- *   - `{detail: {error: 'quota_exceeded', key, limit, used}}` for monthly cap
  *
  * Returns the resolved `MemorySpace` so the caller doesn't repeat the
  * lookup.
@@ -63,15 +56,18 @@ export async function preflight(input: {
   } catch (err) {
     if (err instanceof RateLimitError) {
       throw new HTTPException(429, {
-        res: jsonError(
+        res: errorResponse(
+          429,
+          'Rate limit exceeded',
           {
-            error: 'rate_limited',
+            code: 'rate_limited',
+            fields: {
             scope: err.scope,
             limit: err.limit,
             count: err.count,
+            },
+            headers: { 'Retry-After': String(err.retryAfterSeconds) },
           },
-          429,
-          { 'Retry-After': String(err.retryAfterSeconds) },
         ),
       });
     }
@@ -86,8 +82,9 @@ export async function preflight(input: {
   const inFlight = await input.queue.inFlightJobCount();
   if (inFlight >= input.limits.maxQueueDepth) {
     throw new HTTPException(503, {
-      res: jsonError('Ingestion queue is full. Retry later.', 503, {
-        'Retry-After': String(RETRY_AFTER_SECONDS),
+      res: errorResponse(503, 'Ingestion queue is full. Retry later.', {
+        code: 'ingestion_capacity',
+        headers: { 'Retry-After': String(RETRY_AFTER_SECONDS) },
       }),
     });
   }
@@ -96,9 +93,10 @@ export async function preflight(input: {
   const activeJobs = await input.jobStore.countActive(input.userId);
   if (activeJobs >= input.limits.maxPendingJobsPerUser) {
     throw new HTTPException(429, {
-      res: jsonError(
-        `Too many pending jobs (${activeJobs}). Wait for existing jobs to complete.`,
+      res: errorResponse(
         429,
+        `Too many pending jobs (${activeJobs}). Wait for existing jobs to complete.`,
+        { code: 'pending_job_limit' },
       ),
     });
   }
@@ -107,7 +105,9 @@ export async function preflight(input: {
   const space = await getSpaceByUuid(input.db, input.spaceUuid);
   if (!space || space.orgId !== input.orgId) {
     throw new HTTPException(404, {
-      res: jsonError(`Space ${input.spaceUuid} not found`, 404),
+      res: errorResponse(404, `Space ${input.spaceUuid} not found`, {
+        code: 'not_found',
+      }),
     });
   }
 
@@ -123,14 +123,17 @@ export async function preflight(input: {
   } catch (err) {
     if (err instanceof QuotaExceededError) {
       throw new HTTPException(429, {
-        res: jsonError(
+        res: errorResponse(
+          429,
+          err.message,
           {
-            error: 'quota_exceeded',
+            code: 'quota_exceeded',
+            fields: {
             key: err.key,
             limit: err.limit,
             used: err.used,
+            },
           },
-          429,
         ),
       });
     }
@@ -138,15 +141,4 @@ export async function preflight(input: {
   }
 
   return space;
-}
-
-function jsonError(
-  detail: unknown,
-  status: number,
-  headers: Record<string, string> = {},
-): Response {
-  return new Response(JSON.stringify({ detail }), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...headers },
-  });
 }

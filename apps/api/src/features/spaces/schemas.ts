@@ -48,14 +48,3 @@ export const SpaceUsageResponseSchema = z
     search_queries: z.number().int().nonnegative(),
   })
   .openapi('SpaceUsageResponse');
-
-export const QuotaExceededBodySchema = z
-  .object({
-    detail: z.object({
-      error: z.literal('quota_exceeded'),
-      key: z.string(),
-      limit: z.number().int(),
-      used: z.number().int(),
-    }),
-  })
-  .openapi('QuotaExceededBody');

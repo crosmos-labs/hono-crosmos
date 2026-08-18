@@ -21,7 +21,7 @@ import {
 } from './schemas';
 import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
-import { PaginationQuerySchema } from '../../lib/zod-common';
+import { ErrorResponseSchema, PaginationQuerySchema } from '../../lib/zod-common';
 import { createLogger } from '@crosmos/observability';
 import { HTTPException } from 'hono/http-exception';
 import { getDb } from '../../db';
@@ -51,9 +51,7 @@ import { getUserById, updateUserName } from './users';
 
 export const authRoutes = createApiApp();
 
-const ErrorBody = z
-  .object({ detail: z.string() })
-  .openapi('ErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 const errorResponses = {
   401: {

@@ -1,5 +1,6 @@
-import { createRoute, z } from '@hono/zod-openapi';
+import { createRoute } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
+import { ErrorResponseSchema } from '../../lib/zod-common';
 import {
   createLogger,
   createMetrics,
@@ -24,10 +25,6 @@ import {
   rollbackJobsAndSources,
   type DispatchableJob,
 } from '../sources/dispatch';
-import {
-  QuotaExceededBodySchema,
-  RateLimitedBodySchema,
-} from '../sources/schemas';
 import { createSources } from '../sources/service';
 import { estimateTokens } from '../../lib/tokens';
 import {
@@ -38,9 +35,7 @@ import { formatMessages } from './sessions';
 
 export const conversationRoutes = createApiApp();
 
-const ErrorBody = z
-  .object({ detail: z.string() })
-  .openapi('ConversationErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 // POST /api/v1/conversations — multi-turn ingestion
 conversationRoutes.openapi(
@@ -71,11 +66,7 @@ conversationRoutes.openapi(
         description: 'Rate limited / quota / pending cap',
         content: {
           'application/json': {
-            schema: z.union([
-              RateLimitedBodySchema,
-              QuotaExceededBodySchema,
-              ErrorBody,
-            ]),
+            schema: ErrorBody,
           },
         },
       },

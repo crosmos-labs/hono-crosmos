@@ -38,20 +38,6 @@ export const OrganizationSchema = OrganizationSummarySchema.omit({
   your_role: true,
 }).openapi('Organization');
 
-// Mirrors UpdateOrgRequest validators in Python:
-//   - name: trimmed, 1..255
-//   - slug: 1..64, pattern ^[a-z0-9][a-z0-9-]*[a-z0-9]$
-//   - billing_email: validated email or null to clear (we accept null; service
-//     treats undefined as "leave alone")
-export const SlugCollisionErrorSchema = z
-  .object({
-    detail: z.object({
-      error: z.literal('slug_taken'),
-      message: z.string(),
-    }),
-  })
-  .openapi('SlugCollisionError');
-
 export const UpdateOrganizationSchema = z
   .object({
     name: z.string().trim().min(1).max(255).optional(),

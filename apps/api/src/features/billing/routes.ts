@@ -37,9 +37,7 @@ import { handlePolarWebhook, WebhookHttpError } from './webhooks';
 export const billingRoutes = createApiApp();
 export const billingWebhookRoutes = createApiApp();
 
-const BillingErrorSchema = z
-  .object({ detail: z.string() })
-  .openapi('BillingError');
+const BillingErrorSchema = ErrorResponseSchema;
 
 const BILLING_LIMITS = {
   checkout: 5,

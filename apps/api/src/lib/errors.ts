@@ -24,7 +24,7 @@ export interface ErrorEnvelope {
   detail: string;
   code?: string;
   request_id?: string;
-  fields?: unknown;
+  fields?: Record<string, unknown>;
 }
 
 /**
@@ -59,13 +59,30 @@ export function isAppError(err: unknown): err is AppError {
 
 export function errorEnvelope(
   detail: string,
-  opts: { code?: string; requestId?: string; fields?: unknown } = {},
+  opts: { code?: string; requestId?: string; fields?: Record<string, unknown> } = {},
 ): ErrorEnvelope {
   const body: ErrorEnvelope = { detail };
   if (opts.code !== undefined) body.code = opts.code;
   if (opts.requestId !== undefined) body.request_id = opts.requestId;
   if (opts.fields !== undefined) body.fields = opts.fields;
   return body;
+}
+
+/** Build a canonical error response for HTTP helpers that do not own a Hono context. */
+export function errorResponse(
+  status: number,
+  detail: string,
+  opts: {
+    code?: string;
+    requestId?: string;
+    fields?: Record<string, unknown>;
+    headers?: Record<string, string>;
+  } = {},
+): Response {
+  return new Response(JSON.stringify(errorEnvelope(detail, opts)), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
+  });
 }
 
 /**
@@ -78,7 +95,7 @@ export function apiError(
   detail: string,
   opts: {
     code?: string;
-    fields?: unknown;
+    fields?: Record<string, unknown>;
     headers?: Record<string, string>;
   } = {},
 ): Response {

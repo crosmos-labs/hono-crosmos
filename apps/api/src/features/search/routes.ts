@@ -1,5 +1,6 @@
-import { createRoute, z } from '@hono/zod-openapi';
+import { createRoute } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
+import { ErrorResponseSchema } from '../../lib/zod-common';
 import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
 import {
@@ -13,6 +14,7 @@ import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { getApiConfig } from '../../config';
 import { getDb } from '../../db';
+import { errorResponse } from '../../lib/errors';
 import {
   enforcePlanRateLimit,
   getRateLimiter,
@@ -53,7 +55,7 @@ import type { CandidateMemory, RetrievalResult } from './types';
 
 export const searchRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.unknown() }).openapi('SearchErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 class TimeoutError extends Error {}
 
@@ -75,10 +77,20 @@ function jsonError(
   status: number,
   headers: Record<string, string> = {},
 ): Response {
-  return new Response(JSON.stringify({ detail }), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...headers },
-  });
+  if (typeof detail === 'string') {
+    return errorResponse(status, detail, { headers });
+  }
+  const fields = detail && typeof detail === 'object'
+    ? detail as Record<string, unknown>
+    : { value: detail };
+  const code = typeof fields.error === 'string' ? fields.error : undefined;
+  const message = typeof fields.detail === 'string'
+    ? fields.detail
+    : typeof fields.message === 'string'
+      ? fields.message
+      : code ?? 'Request failed';
+  const requestId = typeof fields.request_id === 'string' ? fields.request_id : undefined;
+  return errorResponse(status, message, { code, requestId, fields, headers });
 }
 
 /**

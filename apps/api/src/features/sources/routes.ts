@@ -19,7 +19,7 @@ import { getRateLimiter } from '../../integrations/rate-limit';
 import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
 import { waitUntilLogged } from '../../lib/runtime';
 import type { TenantScope } from '../../lib/scope';
-import { UuidSchema } from '../../lib/zod-common';
+import { ErrorResponseSchema, UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { preflight } from './gates';
@@ -37,8 +37,6 @@ import {
   IngestAcceptedResponseSchema,
   IngestSourcesRequestSchema,
   ListSourcesQuerySchema,
-  QuotaExceededBodySchema,
-  RateLimitedBodySchema,
   SourceListResponseSchema,
   SourceResponseSchema,
   SourceScopedQuerySchema,
@@ -57,7 +55,7 @@ import { resolveReadVisibility } from '../visibility/service';
 
 export const sourceRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.string() }).openapi('SourceErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 const errorResponses = {
   400: {
@@ -129,7 +127,7 @@ sourceRoutes.openapi(
         description: 'Rate limited / quota / pending cap',
         content: {
           'application/json': {
-            schema: z.union([RateLimitedBodySchema, QuotaExceededBodySchema, ErrorBody]),
+            schema: ErrorBody,
           },
         },
       },

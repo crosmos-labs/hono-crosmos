@@ -3,14 +3,14 @@ import { createApiApp } from '../../lib/openapi';
 import { HTTPException } from 'hono/http-exception';
 import { getDb } from '../../db';
 import { getJobStore } from '../../integrations/job-store';
-import { UuidSchema } from '../../lib/zod-common';
+import { ErrorResponseSchema, UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { JobResponseSchema } from './schemas';
 
 export const jobRoutes = createApiApp();
 
-const ErrorBody = z.object({ detail: z.string() }).openapi('JobErrorBody');
+const ErrorBody = ErrorResponseSchema;
 
 // GET /api/v1/jobs/{job_id} — poll status. Ownership enforced (404 cross-user).
 jobRoutes.openapi(
