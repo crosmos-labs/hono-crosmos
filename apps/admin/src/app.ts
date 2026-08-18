@@ -33,6 +33,12 @@ import { Hono } from 'hono';
 import type { AdminEnv } from './bindings';
 import { requireAdmin } from './auth';
 import { nonNegativeInt, positiveInt, requestDb } from './http';
+import {
+  requestSourceRequeue,
+  restoreSpace,
+  revokePlanGrant,
+  upsertPlanGrant,
+} from './operations';
 import { grantBody } from './schemas';
 
 export { AdminRateLimiterDO } from './rate-limiter';
@@ -295,22 +301,12 @@ app.put('/admin/orgs/:uuid/grant', async (c) => {
   const expiry = new Date(parsed.data.expires_at);
   if (expiry <= new Date()) return c.json({ detail: 'expires_at must be in the future' }, 400);
   const database = requestDb(c);
-  const result = await database.transaction(async (tx) => {
-    const [before] = await tx.select().from(organizations)
-      .where(eq(organizations.uuid, c.req.param('uuid'))).limit(1).for('update');
-    if (!before) return null;
-    const [after] = await tx.update(organizations).set({
-      grantedPlan: parsed.data.plan,
-      grantedPlanExpiresAt: expiry,
-      updatedAt: new Date(),
-    }).where(eq(organizations.id, before.id)).returning();
-    await tx.insert(adminAuditLog).values({
-      actorEmail: c.var.actorEmail, action: 'plan_grant.upsert', targetType: 'organization',
-      targetId: before.uuid, before: { granted_plan: before.grantedPlan, expires_at: before.grantedPlanExpiresAt },
-      after: { granted_plan: after!.grantedPlan, expires_at: after!.grantedPlanExpiresAt },
-      requestId: c.var.requestId,
-    });
-    return after;
+  const result = await upsertPlanGrant(database, {
+    organizationUuid: c.req.param('uuid'),
+    plan: parsed.data.plan,
+    expiresAt: expiry,
+    actorEmail: c.var.actorEmail,
+    requestId: c.var.requestId,
   });
   if (!result) return c.json({ detail: 'Organization not found' }, 404);
   await invalidateEntitlementCache(c.env.API_KEY_CACHE, result.id);
@@ -319,19 +315,10 @@ app.put('/admin/orgs/:uuid/grant', async (c) => {
 
 app.delete('/admin/orgs/:uuid/grant', async (c) => {
   const database = requestDb(c);
-  const result = await database.transaction(async (tx) => {
-    const [before] = await tx.select().from(organizations)
-      .where(eq(organizations.uuid, c.req.param('uuid'))).limit(1).for('update');
-    if (!before) return null;
-    const [after] = await tx.update(organizations).set({
-      grantedPlan: null, grantedPlanExpiresAt: null, updatedAt: new Date(),
-    }).where(eq(organizations.id, before.id)).returning();
-    await tx.insert(adminAuditLog).values({
-      actorEmail: c.var.actorEmail, action: 'plan_grant.revoke', targetType: 'organization',
-      targetId: before.uuid, before: { granted_plan: before.grantedPlan, expires_at: before.grantedPlanExpiresAt },
-      after: { granted_plan: null, expires_at: null }, requestId: c.var.requestId,
-    });
-    return after;
+  const result = await revokePlanGrant(database, {
+    organizationUuid: c.req.param('uuid'),
+    actorEmail: c.var.actorEmail,
+    requestId: c.var.requestId,
   });
   if (!result) return c.json({ detail: 'Organization not found' }, 404);
   await invalidateEntitlementCache(c.env.API_KEY_CACHE, result.id);
@@ -358,46 +345,10 @@ app.post('/admin/api-keys/:uuid/invalidate-cache', async (c) => {
 
 app.post('/admin/sources/:uuid/requeue', async (c) => {
   const database = requestDb(c);
-  const result = await database.transaction(async (tx) => {
-    const [source] = await tx.select().from(sources)
-      .where(eq(sources.uuid, c.req.param('uuid'))).limit(1).for('update');
-    if (!source) return { status: 'not_found' as const };
-    if (source.extractionStatus === 'completed') return { status: 'completed' as const };
-    const attempts = Number((source.meta as Record<string, unknown> | null)?.redrive_attempts ?? 0);
-    if (attempts >= 5) return { status: 'exhausted' as const };
-    const [activeJob] = await tx.select({ id: ingestionJobs.id }).from(ingestionJobs)
-      .where(and(
-        sql`${ingestionJobs.status} IN ('pending', 'processing')`,
-        sql`${ingestionJobs.sourceIds} @> ${JSON.stringify([source.id])}::jsonb`,
-      )).limit(1);
-    if (activeJob) {
-      await tx.insert(adminAuditLog).values({
-        actorEmail: c.var.actorEmail,
-        action: 'source.requeue_noop',
-        targetType: 'source',
-        targetId: source.uuid,
-        before: { extraction_status: source.extractionStatus, active_job_id: activeJob.id },
-        after: { extraction_status: source.extractionStatus, active_job_id: activeJob.id },
-        requestId: c.var.requestId,
-      });
-      return { status: 'queued' as const, activeJobId: activeJob.id };
-    }
-    const eligibleAt = new Date(Date.now() - 3 * 60_000);
-    await tx.update(sources).set({
-      extractionStatus: 'failed',
-      updatedAt: eligibleAt,
-      meta: sql`coalesce(${sources.meta}, '{}'::jsonb) || ${JSON.stringify({ admin_redrive_requested: true })}::jsonb`,
-    }).where(eq(sources.id, source.id));
-    await tx.insert(adminAuditLog).values({
-      actorEmail: c.var.actorEmail,
-      action: 'source.requeue_requested',
-      targetType: 'source',
-      targetId: source.uuid,
-      before: { extraction_status: source.extractionStatus, redrive_attempts: attempts },
-      after: { extraction_status: 'failed', redrive_attempts: attempts },
-      requestId: c.var.requestId,
-    });
-    return { status: 'queued' as const, activeJobId: null };
+  const result = await requestSourceRequeue(database, {
+    sourceUuid: c.req.param('uuid'),
+    actorEmail: c.var.actorEmail,
+    requestId: c.var.requestId,
   });
   if (result.status === 'not_found') return c.json({ detail: 'Source not found' }, 404);
   if (result.status === 'completed') return c.json({ detail: 'Completed sources cannot be requeued' }, 409);
@@ -407,45 +358,11 @@ app.post('/admin/sources/:uuid/requeue', async (c) => {
 
 app.post('/admin/spaces/:uuid/restore', async (c) => {
   const database = requestDb(c);
-  const now = new Date();
-  const retentionCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60_000);
-  const result = await database.transaction(async (tx) => {
-    const [before] = await tx.select().from(memorySpaces)
-      .where(eq(memorySpaces.uuid, c.req.param('uuid'))).limit(1).for('update');
-    if (!before) return { status: 'not_found' as const };
-    if (before.deletedAt === null) {
-      await tx.insert(adminAuditLog).values({
-        actorEmail: c.var.actorEmail,
-        action: 'space.restore_noop',
-        targetType: 'memory_space',
-        targetId: before.uuid,
-        before: { deleted_at: null },
-        after: { deleted_at: null },
-        requestId: c.var.requestId,
-      });
-      return { status: 'restored' as const, space: before };
-    }
-    if (before.deletedAt <= retentionCutoff) return { status: 'expired' as const };
-    const [nameConflict] = await tx.select({ id: memorySpaces.id }).from(memorySpaces)
-      .where(and(
-        eq(memorySpaces.orgId, before.orgId),
-        eq(memorySpaces.name, before.name),
-        sql`${memorySpaces.deletedAt} IS NULL`,
-        sql`${memorySpaces.id} <> ${before.id}`,
-      )).limit(1);
-    if (nameConflict) return { status: 'name_conflict' as const };
-    const [after] = await tx.update(memorySpaces).set({ deletedAt: null, updatedAt: now })
-      .where(eq(memorySpaces.id, before.id)).returning();
-    await tx.insert(adminAuditLog).values({
-      actorEmail: c.var.actorEmail,
-      action: 'space.restore',
-      targetType: 'memory_space',
-      targetId: before.uuid,
-      before: { deleted_at: before.deletedAt },
-      after: { deleted_at: null },
-      requestId: c.var.requestId,
-    });
-    return { status: 'restored' as const, space: after! };
+  const result = await restoreSpace(database, {
+    spaceUuid: c.req.param('uuid'),
+    now: new Date(),
+    actorEmail: c.var.actorEmail,
+    requestId: c.var.requestId,
   });
   if (result.status === 'not_found') return c.json({ detail: 'Space not found' }, 404);
   if (result.status === 'expired') return c.json({ detail: 'Restore window expired' }, 409);

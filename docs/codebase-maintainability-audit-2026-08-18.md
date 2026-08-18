@@ -465,7 +465,12 @@ The code already has meaningful stages; the stage boundaries should become funct
 - Each extracted stage has one reason to change and a focused test seam.
 - No new framework or generic pipeline engine is introduced.
 
-### [ ] ARCH-5 — Give the admin and ingestion workers a structure consistent with their size
+### [x] ARCH-5 — Give the admin and ingestion workers a structure consistent with their size
+
+Completed 2026-08-19. Admin now has a minimal entrypoint plus app/HTTP/schema
+and audited application-operation modules; its transaction and audit ordering is
+covered by the existing PostgreSQL operation suite. Ingestion is grouped into
+delivery, job lifecycle, source pipeline, providers, and entrypoint areas.
 
 **Finding**
 
