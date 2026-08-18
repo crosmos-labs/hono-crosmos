@@ -212,32 +212,17 @@ function failureFields(err: unknown): {
   return { error_category: 'internal', dependency: 'retrieval' };
 }
 
-export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
-  const { query, scope, deps } = input;
-  // One clock reading for the whole request, so every candidate is scored
-  // against the same instant rather than drifting across the loop.
-  const scoringNow = input.now ?? new Date();
-  const { db, embedder, reranker, vectorStore } = deps;
-  const logger = input.logger;
-  const stages = createStageRecorder({
-    logger,
-    metrics: input.metrics,
-    tracing: input.tracing,
-    event: 'retrieval.stage_completed',
-    metric: 'api_stage',
-  });
+interface RetrievalFeatures {
+  graphEnabled: boolean;
+  ceAllowed: boolean;
+  effectiveMaxDepth: number;
+}
 
-  // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
-  const temporalParseStart = performance.now();
-  const temporalRange = extractTemporalRange(query.text);
-  stages.record('temporal_parse', 'ok', durationMs(temporalParseStart), {}, {
-    inputCount: query.text.length,
-    outputCount: temporalRange === null ? 0 : 1,
-  });
-
-  // Stage 1 — entitlements → feature flags. The route passes pre-fetched
-  // entitlements (single fetch per request); only fetch here if the caller
-  // didn't provide the property at all. Non-fatal on failure (defaults).
+async function resolveRetrievalFeatures(
+  input: RetrieveInput,
+  stages: StageRecorder,
+): Promise<RetrievalFeatures> {
+  const { db } = input.deps;
   let entitlements: Entitlements | null;
   if (input.entitlements !== undefined) {
     entitlements = input.entitlements;
@@ -247,10 +232,10 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       entitlements = await stages.time(
         'entitlements',
         {},
-        () => getEntitlements(db, scope.orgId),
+        () => getEntitlements(db, input.scope.orgId),
       );
     } catch (err) {
-      logger?.warn('retrieval.entitlements_load_failed', {
+      input.logger?.warn('retrieval.entitlements_load_failed', {
         stage: 'entitlements',
         error_category: 'internal',
         dependency: 'database',
@@ -270,10 +255,326 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     entitlements && typeof entitlements.max_graph_depth === 'number'
       ? entitlements.max_graph_depth
       : MAX_DEPTH;
-
   const effectiveMaxDepth = maxGraphDepth > 0 ? Math.min(MAX_DEPTH, maxGraphDepth) : 0;
-  let graphEnabled = graphRetrieval && query.graph;
-  if (effectiveMaxDepth === 0) graphEnabled = false;
+
+  return {
+    graphEnabled: graphRetrieval && input.query.graph && effectiveMaxDepth > 0,
+    ceAllowed,
+    effectiveMaxDepth,
+  };
+}
+
+interface FusionResult {
+  selectorFused: Array<[number, number]>;
+  candidateLookup: Map<number, RankedCandidate>;
+  sourceSignalsMap: Map<number, SourceSignal[]>;
+}
+
+function fuseSignalResults(
+  signalResults: [
+    RankedCandidate[],
+    RankedCandidate[],
+    RankedCandidate[],
+    RankedCandidate[],
+  ],
+  graphEnabled: boolean,
+  stages: StageRecorder,
+): FusionResult {
+  const [semanticResults, keywordResults, graphResults, temporalResults] = signalResults;
+  const fusionStart = performance.now();
+  const rankedLists: Array<[SourceSignal, RankedCandidate[]]> = [
+    [SourceSignal.SEMANTIC, semanticResults],
+    [SourceSignal.KEYWORD, keywordResults],
+    [SourceSignal.GRAPH, graphResults],
+  ];
+  if (temporalResults.length > 0) {
+    rankedLists.push([SourceSignal.TEMPORAL, temporalResults]);
+  }
+
+  const selectorFused = reciprocalRankFusion(rankedLists);
+  stages.record('fusion', 'ok', durationMs(fusionStart), {
+    candidate_count: selectorFused.length,
+    graph_enabled: graphEnabled,
+  }, {
+    inputCount: rankedLists.reduce((sum, [, candidates]) => sum + candidates.length, 0),
+    outputCount: selectorFused.length,
+  });
+
+  const lookupStart = performance.now();
+  const candidateLookup = new Map<number, RankedCandidate>();
+  const sourceSignalsMap = new Map<number, SourceSignal[]>();
+  for (const [signal, candidates] of rankedLists) {
+    for (const candidate of candidates) {
+      const signals = sourceSignalsMap.get(candidate.memoryId);
+      if (signals) signals.push(signal);
+      else sourceSignalsMap.set(candidate.memoryId, [signal]);
+
+      const existing = candidateLookup.get(candidate.memoryId);
+      if (existing === undefined || candidate.score > existing.score) {
+        candidateLookup.set(candidate.memoryId, candidate);
+      }
+    }
+  }
+  stages.record('candidate_lookup', 'ok', durationMs(lookupStart), {
+    candidate_count: candidateLookup.size,
+  }, { inputCount: selectorFused.length, outputCount: candidateLookup.size });
+
+  return { selectorFused, candidateLookup, sourceSignalsMap };
+}
+
+interface RerankResult {
+  baseScores: Map<number, number>;
+  ceEnabled: boolean;
+  rerankFloor: number | null;
+}
+
+async function rerankOrRemap(
+  input: RetrieveInput,
+  selectorFused: Array<[number, number]>,
+  candidateLookup: Map<number, RankedCandidate>,
+  ceAllowed: boolean,
+  stages: StageRecorder,
+): Promise<RerankResult> {
+  const { query, deps, logger } = input;
+  let ceEnabled = deps.reranker !== null && ceAllowed && query.rerank;
+  let rerankFloor: number | null = null;
+
+  if (ceEnabled && expired(input.signal)) {
+    logger?.warn('retrieval.stage_skipped', {
+      stage: 'rerank',
+      reason: 'deadline_expired',
+    });
+    input.metrics?.count('retrieval_deadline', {
+      tags: ['rerank', 'skipped'],
+      index: 'retrieval_deadline',
+    });
+    ceEnabled = false;
+  }
+
+  let baseScores = new Map<number, number>();
+  if (ceEnabled) {
+    const rerankStart = performance.now();
+    const selection: RankedCandidate[] = [];
+    for (const [memoryId] of selectorFused.slice(0, RERANKER_MAX_CANDIDATES)) {
+      const candidate = candidateLookup.get(memoryId);
+      if (candidate) selection.push(candidate);
+    }
+    try {
+      const reranked = await stages.span(
+        'rerank',
+        () => rerankCandidates(deps.reranker!, query.text, selection, input.signal),
+      );
+      baseScores = reranked.scores;
+      if (baseScores.size === 0) ceEnabled = false;
+      if (ceEnabled) rerankFloor = rerankRelevanceFloor(reranked.model);
+      stages.record('rerank', 'ok', durationMs(rerankStart), {
+        model: reranked.model,
+        candidate_count: selection.length,
+        result_count: baseScores.size,
+        ce_enabled: ceEnabled,
+        relevance_floor: rerankFloor,
+      }, { inputCount: selection.length, outputCount: baseScores.size });
+    } catch (err) {
+      stages.record('rerank', 'failed', durationMs(rerankStart), {
+        candidate_count: selection.length,
+        ...failureFields(err),
+      }, { inputCount: selection.length }, err);
+      ceEnabled = false;
+    }
+  }
+  if (!ceEnabled) {
+    const rankRemapStart = performance.now();
+    baseScores = rankRemap(selectorFused);
+    stages.record('rank_remap', 'ok', durationMs(rankRemapStart), {
+      candidate_count: selectorFused.length,
+      result_count: baseScores.size,
+      ce_enabled: false,
+    }, { inputCount: selectorFused.length, outputCount: baseScores.size });
+  }
+
+  return { baseScores, ceEnabled, rerankFloor };
+}
+
+interface ScoreAndSelectInput {
+  input: RetrieveInput;
+  temporalRange: TemporalRange | null;
+  scoringNow: Date;
+  selectorFused: Array<[number, number]>;
+  candidateLookup: Map<number, RankedCandidate>;
+  sourceSignalsMap: Map<number, SourceSignal[]>;
+  baseScores: Map<number, number>;
+  ceEnabled: boolean;
+  rerankFloor: number | null;
+  stages: StageRecorder;
+  scoringStart: number;
+}
+
+async function scoreAndSelectCandidates(args: ScoreAndSelectInput): Promise<CandidateMemory[]> {
+  const {
+    input,
+    temporalRange,
+    scoringNow,
+    selectorFused,
+    candidateLookup,
+    sourceSignalsMap,
+    baseScores,
+    ceEnabled,
+    rerankFloor,
+    stages,
+    scoringStart,
+  } = args;
+  const { query, deps, logger } = input;
+  const recencyAlpha =
+    query.recencyBias !== null
+      ? query.recencyBias
+      : ceEnabled
+        ? RECENCY_ALPHA
+        : RECENCY_ALPHA_FALLBACK;
+
+  let pool: Array<[number, number]> = ceEnabled
+    ? selectorFused.slice(0, RERANKER_MAX_CANDIDATES)
+    : selectorFused;
+
+  if (temporalRange !== null) {
+    const [start, end] = temporalRange;
+    const filtered: Array<[number, number]> = [];
+    for (const [memoryId, fusedScore] of pool) {
+      const ranked = candidateLookup.get(memoryId);
+      if (ranked === undefined) continue;
+      const referenceTime = ranked.eventTime ?? ranked.recordedAt ?? ranked.createdAt;
+      if (referenceTime === null) continue;
+      if (start <= referenceTime && referenceTime <= end) {
+        filtered.push([memoryId, fusedScore]);
+      }
+    }
+    if (filtered.length > 0) pool = filtered;
+  }
+
+  const scored: CandidateMemory[] = [];
+  for (const [memoryId, fusedScore] of pool) {
+    const ranked = candidateLookup.get(memoryId);
+    if (ranked === undefined) continue;
+    const base = baseScores.get(memoryId);
+    if (base === undefined) continue;
+
+    const persistence = computePersistence(
+      ranked.importanceScore,
+      ranked.createdAt,
+      ranked.accessFrequency,
+      ranked.lastAccessedAt,
+      scoringNow,
+    );
+    const recency = computeRecency(
+      ranked.createdAt,
+      ranked.recordedAt,
+      ranked.eventTime,
+      scoringNow,
+      shouldUseRecordedRecency(query.text, ranked.content),
+    );
+    const recencyFactor = recencyAlpha * (recency - RECENCY_CENTER);
+
+    let totalBoost: number;
+    if (temporalRange !== null) {
+      const temporalProximity = temporalProximityScore(
+        ranked.eventTime ?? ranked.recordedAt ?? ranked.createdAt,
+        temporalRange[0],
+        temporalRange[1],
+      );
+      const temporalFactor =
+        TEMPORAL_PROXIMITY_ALPHA * (temporalProximity - TEMPORAL_CENTER);
+      totalBoost = temporalFactor + 0.5 * recencyFactor;
+    } else {
+      totalBoost = recencyFactor;
+    }
+    totalBoost += computeRevisionAdjustment(query.text, ranked.content);
+    totalBoost = clamp(totalBoost, BOOST_MIN, BOOST_MAX);
+    const finalScore = base * (1.0 + totalBoost);
+
+    scored.push({
+      memoryId,
+      uuid: ranked.uuid,
+      content: ranked.content,
+      memoryType: ranked.memoryType,
+      ownerUserId: ranked.ownerUserId,
+      orgId: ranked.orgId,
+      spaceId: ranked.spaceId,
+      importanceScore: ranked.importanceScore,
+      createdAt: ranked.createdAt,
+      recordedAt: ranked.recordedAt,
+      accessFrequency: ranked.accessFrequency,
+      lastAccessedAt: ranked.lastAccessedAt,
+      eventTime: ranked.eventTime,
+      sourceSignals: sourceSignalsMap.get(memoryId) ?? [],
+      sourceChunk: ranked.sourceChunk,
+      sourceId: ranked.sourceId,
+      sourceUuid: ranked.sourceUuid,
+      sessionId: ranked.sessionId,
+      fusedScore,
+      persistenceScore: persistence,
+      finalScore,
+      rerankScore: base,
+      ceRelevance: ceEnabled,
+    });
+  }
+
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+  let selectable = scored;
+  if (rerankFloor !== null && scored.length > 0) {
+    selectable = applyRelevanceFloor(scored, rerankFloor);
+    if (selectable.length !== scored.length) {
+      logger?.info('retrieval.stage_completed', {
+        stage: 'rerank_floor',
+        candidate_count: scored.length,
+        result_count: selectable.length,
+        floor: rerankFloor,
+      });
+    }
+  }
+
+  let top: CandidateMemory[];
+  if (query.diversify) {
+    const embeddingsLookup = await deps.vectorStore.fetchVectors(
+      'memories',
+      selectable.map((candidate) => candidate.memoryId),
+    );
+    top = mmrRerank(selectable, embeddingsLookup, query.topK);
+  } else {
+    top = selectSessionDiverse(selectable, query.topK);
+  }
+  stages.record('score_and_select', 'ok', durationMs(scoringStart), {
+    candidate_count: scored.length,
+    result_count: top.length,
+    top_k: query.topK,
+  }, { inputCount: pool.length, outputCount: top.length });
+  return top;
+}
+
+export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
+  const { query, scope, deps } = input;
+  // One clock reading for the whole request, so every candidate is scored
+  // against the same instant rather than drifting across the loop.
+  const scoringNow = input.now ?? new Date();
+  const { db, embedder, vectorStore } = deps;
+  const logger = input.logger;
+  const stages = createStageRecorder({
+    logger,
+    metrics: input.metrics,
+    tracing: input.tracing,
+    event: 'retrieval.stage_completed',
+    metric: 'api_stage',
+  });
+
+  // Stage 0 — temporal range (drives temporal signal, graph as_of, pool filter, boost).
+  const temporalParseStart = performance.now();
+  const temporalRange = extractTemporalRange(query.text);
+  stages.record('temporal_parse', 'ok', durationMs(temporalParseStart), {}, {
+    inputCount: query.text.length,
+    outputCount: temporalRange === null ? 0 : 1,
+  });
+
+  // Stage 1 — entitlements → feature flags.
+  const { graphEnabled, ceAllowed, effectiveMaxDepth } =
+    await resolveRetrievalFeatures(input, stages);
 
   // Stage 2 — embedding as a shared promise (semantic + graph await it). Prefer
   // the route's pre-started embed (overlaps the DB loads); else embed lazily.
@@ -438,54 +739,12 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
     });
   });
 
-  // Stage 4 — assemble ranked lists (order preserved) + RRF.
-  const fusionStart = performance.now();
-  const rankedLists: Array<[SourceSignal, RankedCandidate[]]> = [
-    [SourceSignal.SEMANTIC, semanticResults],
-    [SourceSignal.KEYWORD, keywordResults],
-    [SourceSignal.GRAPH, graphResults],
-  ];
-  if (temporalResults.length > 0) {
-    rankedLists.push([SourceSignal.TEMPORAL, temporalResults]);
-  }
-
-  let ceEnabled = reranker !== null && ceAllowed && query.rerank;
-  // Relevance floor, resolved AFTER the rerank call from the model that
-  // actually produced the scores — not from `reranker.defaultModel`, which lies
-  // when Voyage degrades to `rerank-2.5-lite` on a 429. Score scales are not
-  // comparable across models (see RERANK_RELEVANCE_FLOORS), so an uncalibrated
-  // model yields `null` here and is never absolute-filtered: its scores still
-  // order results, they just cannot be thresholded.
-  let rerankFloor: number | null = null;
-
-  const selectorFused = reciprocalRankFusion(rankedLists);
-  const fallbackFused = selectorFused;
-  stages.record('fusion', 'ok', durationMs(fusionStart), {
-    candidate_count: selectorFused.length,
-    graph_enabled: graphEnabled,
-  }, {
-    inputCount: rankedLists.reduce((sum, [, candidates]) => sum + candidates.length, 0),
-    outputCount: selectorFused.length,
-  });
-
-  const lookupStart = performance.now();
-  const candidateLookup = new Map<number, RankedCandidate>();
-  const sourceSignalsMap = new Map<number, SourceSignal[]>();
-  for (const [signal, cands] of rankedLists) {
-    for (const candidate of cands) {
-      const sigs = sourceSignalsMap.get(candidate.memoryId);
-      if (sigs) sigs.push(signal);
-      else sourceSignalsMap.set(candidate.memoryId, [signal]);
-
-      const existing = candidateLookup.get(candidate.memoryId);
-      if (existing === undefined || candidate.score > existing.score) {
-        candidateLookup.set(candidate.memoryId, candidate);
-      }
-    }
-  }
-  stages.record('candidate_lookup', 'ok', durationMs(lookupStart), {
-    candidate_count: candidateLookup.size,
-  }, { inputCount: selectorFused.length, outputCount: candidateLookup.size });
+  // Stage 4 — assemble ranked lists (order preserved), fuse and index candidates.
+  const { selectorFused, candidateLookup, sourceSignalsMap } = fuseSignalResults(
+    [semanticResults, keywordResults, graphResults, temporalResults],
+    graphEnabled,
+    stages,
+  );
 
   // Stage 5 — attach candidate PROVENANCE (source id/uuid + session id) for the
   // fused candidates, CONCURRENTLY with the Stage-6 reranker below. The two are
@@ -520,217 +779,32 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   }
 
   // Stage 6 — base scores (CE rerank OR rank-remap fallback).
-  //
-  // Deadline check before the reranker: it is the most expensive remaining
-  // external call, and by this point the signal fan-out has already run. If the
-  // client has been told the request timed out, starting a fresh ZeroEntropy
-  // call would burn provider capacity for a result nobody will read. Falling
-  // through leaves `ceEnabled = false`, which takes the existing rank-remap
-  // fallback path — the same well-tested degradation used when the reranker
-  // errors, not a new one.
-  if (ceEnabled && expired(input.signal)) {
-    logger?.warn('retrieval.stage_skipped', {
-      stage: 'rerank',
-      reason: 'deadline_expired',
-    });
-    // Distinguishes "the reranker is off" from "we ran out of time before it".
-    // A rising rate here means the 6s budget is being consumed upstream.
-    input.metrics?.count('retrieval_deadline', {
-      tags: ['rerank', 'skipped'],
-      index: 'retrieval_deadline',
-    });
-    ceEnabled = false;
-  }
-
-  let baseScores = new Map<number, number>();
-  if (ceEnabled) {
-    const rerankStart = performance.now();
-    const selection: RankedCandidate[] = [];
-    for (const [mid] of selectorFused.slice(0, RERANKER_MAX_CANDIDATES)) {
-      const c = candidateLookup.get(mid);
-      if (c) selection.push(c);
-    }
-    try {
-      const reranked = await stages.span(
-        'rerank',
-        () => rerankCandidates(reranker!, query.text, selection, input.signal),
-      );
-      baseScores = reranked.scores;
-      if (baseScores.size === 0) ceEnabled = false;
-      // Keyed off the scoring model, so a rate-limit degradation to an
-      // uncalibrated model turns the floor off instead of misapplying one.
-      if (ceEnabled) rerankFloor = rerankRelevanceFloor(reranked.model);
-      stages.record('rerank', 'ok', durationMs(rerankStart), {
-        model: reranked.model,
-        candidate_count: selection.length,
-        result_count: baseScores.size,
-        ce_enabled: ceEnabled,
-        relevance_floor: rerankFloor,
-      }, { inputCount: selection.length, outputCount: baseScores.size });
-    } catch (err) {
-      stages.record('rerank', 'failed', durationMs(rerankStart), {
-        candidate_count: selection.length,
-        ...failureFields(err),
-      }, { inputCount: selection.length }, err);
-      ceEnabled = false;
-    }
-  }
-  if (!ceEnabled) {
-    const rankRemapStart = performance.now();
-    baseScores = rankRemap(fallbackFused);
-    stages.record('rank_remap', 'ok', durationMs(rankRemapStart), {
-      candidate_count: fallbackFused.length,
-      result_count: baseScores.size,
-      ce_enabled: false,
-    }, { inputCount: fallbackFused.length, outputCount: baseScores.size });
-  }
+  const { baseScores, ceEnabled, rerankFloor } = await rerankOrRemap(
+    input,
+    selectorFused,
+    candidateLookup,
+    ceAllowed,
+    stages,
+  );
 
   // Join the concurrent Stage-5 source-text attach before Stage 8 reads
   // sourceChunk/sourceId off the candidates. (Never rejects — see Stage 5.)
   await attachPromise;
 
-  // Stage 7 — recency alpha + pool + optional temporal filter.
-  const scoringStart = performance.now();
-  const recencyAlpha =
-    query.recencyBias !== null
-      ? query.recencyBias
-      : ceEnabled
-        ? RECENCY_ALPHA
-        : RECENCY_ALPHA_FALLBACK;
-
-  let pool: Array<[number, number]> = ceEnabled
-    ? selectorFused.slice(0, RERANKER_MAX_CANDIDATES)
-    : fallbackFused;
-
-  if (temporalRange !== null) {
-    const [start, end] = temporalRange;
-    const filtered: Array<[number, number]> = [];
-    for (const [mid, fscore] of pool) {
-      const ranked = candidateLookup.get(mid);
-      if (ranked === undefined) continue;
-      const ref = ranked.eventTime ?? ranked.recordedAt ?? ranked.createdAt;
-      if (ref === null) continue;
-      if (start <= ref && ref <= end) filtered.push([mid, fscore]);
-    }
-    if (filtered.length > 0) pool = filtered;
-  }
-
-  // Stage 8 — final score per candidate.
-  const scored: CandidateMemory[] = [];
-  for (const [memoryId, fusedScore] of pool) {
-    const ranked = candidateLookup.get(memoryId);
-    if (ranked === undefined) continue;
-    const base = baseScores.get(memoryId);
-    if (base === undefined) continue;
-
-    const persistence = computePersistence(
-      ranked.importanceScore,
-      ranked.createdAt,
-      ranked.accessFrequency,
-      ranked.lastAccessedAt,
-      scoringNow,
-    );
-    const recency = computeRecency(
-      ranked.createdAt,
-      ranked.recordedAt,
-      ranked.eventTime,
-      scoringNow,
-      shouldUseRecordedRecency(query.text, ranked.content),
-    );
-    const recencyFactor = recencyAlpha * (recency - RECENCY_CENTER);
-
-    let totalBoost: number;
-    if (temporalRange !== null) {
-      const tp = temporalProximityScore(
-        ranked.eventTime ?? ranked.recordedAt ?? ranked.createdAt,
-        temporalRange[0],
-        temporalRange[1],
-      );
-      const temporalFactor = TEMPORAL_PROXIMITY_ALPHA * (tp - TEMPORAL_CENTER);
-      totalBoost = temporalFactor + 0.5 * recencyFactor;
-    } else {
-      totalBoost = recencyFactor;
-    }
-    totalBoost += computeRevisionAdjustment(query.text, ranked.content);
-    totalBoost = clamp(totalBoost, BOOST_MIN, BOOST_MAX);
-    const finalScore = base * (1.0 + totalBoost);
-
-    scored.push({
-      memoryId,
-      uuid: ranked.uuid,
-      content: ranked.content,
-      memoryType: ranked.memoryType,
-      ownerUserId: ranked.ownerUserId,
-      orgId: ranked.orgId,
-      spaceId: ranked.spaceId,
-      importanceScore: ranked.importanceScore,
-      createdAt: ranked.createdAt,
-      recordedAt: ranked.recordedAt,
-      accessFrequency: ranked.accessFrequency,
-      lastAccessedAt: ranked.lastAccessedAt,
-      eventTime: ranked.eventTime,
-      sourceSignals: sourceSignalsMap.get(memoryId) ?? [],
-      sourceChunk: ranked.sourceChunk,
-      sourceId: ranked.sourceId,
-      sourceUuid: ranked.sourceUuid,
-      sessionId: ranked.sessionId,
-      fusedScore,
-      persistenceScore: persistence,
-      finalScore,
-      rerankScore: base,
-      ceRelevance: ceEnabled,
-    });
-  }
-
-  // Stage 9 — sort, apply the rerank relevance floor, then select top_k (or MMR).
-  scored.sort((a, b) => b.finalScore - a.finalScore);
-
-  // Post-rerank precision gate: when the cross-encoder is active AND its model
-  // has a calibrated threshold, drop weakly relevant candidates so the reader
-  // sees only on-topic memories.
-  //
-  // This gate is ABSOLUTE — if nothing clears the floor the search returns
-  // empty. It previously kept `scored.slice(0, 1)` unconditionally, which made
-  // the floor unobservable in the case it exists for: a space whose memories
-  // are all irrelevant to the query still returned its single best memory, so
-  // an off-topic question got answered with whatever the space happened to
-  // contain. Measured on production 2026-08-19, that fallback leaked a result
-  // for 47/47 off-topic queries no matter how the floor was set. "No relevant
-  // memory" is a valid, useful answer; manufacturing one is not.
-  //
-  // Recall is protected by where the floor sits, not by a minimum result count:
-  // rerank-2.5's 0.40 was chosen so all 44 measured positive queries keep at
-  // least one gold memory, with headroom below the weakest gold observed.
-  let selectable = scored;
-  if (rerankFloor !== null && scored.length > 0) {
-    selectable = applyRelevanceFloor(scored, rerankFloor);
-    if (selectable.length !== scored.length) {
-      logger?.info('retrieval.stage_completed', {
-        stage: 'rerank_floor',
-        candidate_count: scored.length,
-        result_count: selectable.length,
-        floor: rerankFloor,
-      });
-    }
-  }
-
-  let top: CandidateMemory[];
-  if (query.diversify) {
-    // MMR needs raw vectors for the scored pool. Pull them from the vector
-    // store (pg: column read; vectorize: batched getByIds).
-    const embeddingsLookup = await vectorStore.fetchVectors(
-      'memories',
-      selectable.map((c) => c.memoryId),
-    );
-    top = mmrRerank(selectable, embeddingsLookup, query.topK);
-  } else {
-    top = selectSessionDiverse(selectable, query.topK);
-  }
-  stages.record('score_and_select', 'ok', durationMs(scoringStart), {
-    candidate_count: scored.length,
-    result_count: top.length,
-    top_k: query.topK,
-  }, { inputCount: pool.length, outputCount: top.length });
+  // Stages 7–9 — build the scoring pool, score it, then select the response set.
+  const top = await scoreAndSelectCandidates({
+    input,
+    temporalRange,
+    scoringNow,
+    selectorFused,
+    candidateLookup,
+    sourceSignalsMap,
+    baseScores,
+    ceEnabled,
+    rerankFloor,
+    stages,
+    scoringStart: performance.now(),
+  });
 
   // Stage 9.5 — full source text for the SELECTED candidates only, and only if
   // the caller asked for it. Before this split the raw `sources.content` was
