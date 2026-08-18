@@ -406,6 +406,98 @@ export async function purgeSourceArtifacts(
   return memoryIds.length;
 }
 
+interface LinkGraphInput {
+  db: Database;
+  scope: TenantScope;
+  ingested: Array<{ memoryId: number; fact: NormalizedFact }>;
+  embedder: Embedder;
+  vectorStore: VectorStore;
+  logger?: Logger;
+  stages: StageRecorder;
+  recordedAt: Date;
+  ownerUserId: number | null;
+  visibility: 'private' | 'org';
+}
+
+async function linkBatchGraph(input: LinkGraphInput): Promise<{
+  memories: IngestedMemory[];
+  edges: IngestedEdge[];
+  resolved: Awaited<ReturnType<typeof resolveEntities>>;
+}> {
+  if (input.ingested.length === 0) {
+    return { memories: [], edges: [], resolved: [] };
+  }
+
+  const allFacts = input.ingested.map((memory) => memory.fact);
+  const uniqueEntities = collectUniqueEntities(allFacts);
+  const entityResolutionStart = performance.now();
+  const resolved = await input.stages.span(
+    'entity_resolution',
+    () => resolveEntities(
+      input.db,
+      input.scope,
+      uniqueEntities,
+      input.embedder,
+      input.vectorStore,
+      input.logger,
+      input.stages,
+    ),
+  );
+  const nameToId = buildNameToIdMap(resolved);
+  input.stages.record(
+    'entity_resolution',
+    'ok',
+    durationMs(entityResolutionStart),
+    { entity_count: resolved.length },
+    { inputCount: uniqueEntities.length, outputCount: resolved.length },
+  );
+
+  const ingestedMemories = input.ingested.map((memory) => {
+    const ids = new Set<number>();
+    for (const entity of memory.fact.entities) {
+      const id = nameToId.get(casefold(entity.name));
+      if (id !== undefined) ids.add(id);
+    }
+    return { memoryId: memory.memoryId, fact: memory.fact, entityIds: Array.from(ids) };
+  });
+
+  const junctionRows = ingestedMemories.flatMap((memory) =>
+    memory.entityIds.map((entityId) => ({ memoryId: memory.memoryId, entityId })),
+  );
+  if (junctionRows.length > 0) {
+    const junctionStart = performance.now();
+    await input.stages.span(
+      'memory_entity_links',
+      () => input.db.insert(memoryEntities).values(junctionRows).onConflictDoNothing(),
+    );
+    input.stages.record('memory_entity_links', 'ok', durationMs(junctionStart), {
+      entity_count: junctionRows.length,
+    }, { inputCount: junctionRows.length, outputCount: junctionRows.length });
+  }
+
+  const edgeStart = performance.now();
+  const ingestedEdges = await input.stages.span(
+    'edge_creation',
+    () => createEdgesFromFacts(
+      input.db,
+      input.scope,
+      ingestedMemories.map((memory) => ({
+        memoryId: memory.memoryId,
+        fact: memory.fact,
+      })),
+      nameToId,
+      input.recordedAt,
+      input.ownerUserId,
+      input.visibility,
+    ),
+  );
+  input.stages.record('edge_creation', 'ok', durationMs(edgeStart), {
+    edge_count: ingestedEdges.length,
+  }, { inputCount: ingestedMemories.length, outputCount: ingestedEdges.length });
+
+  return { memories: ingestedMemories, edges: ingestedEdges, resolved };
+}
+
 export async function ingestSource(input: IngestSourceInput): Promise<IngestResult> {
   const { db, scope, sourceId, llm, embedder, vectorStore, logger } = input;
   const stages = createStageRecorder({
@@ -878,75 +970,23 @@ export async function ingestSource(input: IngestSourceInput): Promise<IngestResu
     );
   }
 
-  // Stage 8 — entity resolution + memory_entities + edges for THIS batch's facts.
-  // Running it per-batch (not once across the whole source) is safe: entity
-  // resolution is idempotent by (space, lower(name)) so an entity seen in an
-  // earlier batch resolves to the same row, and edges dedup within-run against
-  // the monotonic graph. Skipped when the batch yielded no memories.
-  let ingestedMemories: IngestedMemory[] = [];
-  let ingestedEdges: IngestedEdge[] = [];
-  let resolved: Awaited<ReturnType<typeof resolveEntities>> = [];
-  if (allIngested.length > 0) {
-    const allFacts = allIngested.map((im) => im.fact);
-    const uniqueEntities = collectUniqueEntities(allFacts);
-    const entityResolutionStart = performance.now();
-    resolved = await stages.span(
-      'entity_resolution',
-      () => resolveEntities(
-        db,
-        scope,
-        uniqueEntities,
-        embedder,
-        vectorStore,
-        logger,
-        stages,
-      ),
-    );
-    const nameToId = buildNameToIdMap(resolved);
-    stages.record('entity_resolution', 'ok', durationMs(entityResolutionStart), {
-      entity_count: resolved.length,
-    }, { inputCount: uniqueEntities.length, outputCount: resolved.length });
-
-    ingestedMemories = allIngested.map((im) => {
-      const ids = new Set<number>();
-      for (const e of im.fact.entities) {
-        const id = nameToId.get(casefold(e.name));
-        if (id !== undefined) ids.add(id);
-      }
-      return { memoryId: im.memoryId, fact: im.fact, entityIds: Array.from(ids) };
-    });
-
-    const junctionRows = ingestedMemories.flatMap((im) =>
-      im.entityIds.map((entityId) => ({ memoryId: im.memoryId, entityId })),
-    );
-    if (junctionRows.length > 0) {
-      const junctionStart = performance.now();
-      await stages.span(
-        'memory_entity_links',
-        () => db.insert(memoryEntities).values(junctionRows).onConflictDoNothing(),
-      );
-      stages.record('memory_entity_links', 'ok', durationMs(junctionStart), {
-        entity_count: junctionRows.length,
-      }, { inputCount: junctionRows.length, outputCount: junctionRows.length });
-    }
-
-    const edgeStart = performance.now();
-    ingestedEdges = await stages.span(
-      'edge_creation',
-      () => createEdgesFromFacts(
-        db,
-        scope,
-        ingestedMemories.map((im) => ({ memoryId: im.memoryId, fact: im.fact })),
-        nameToId,
-        recordedAt,
-        ownerUserId,
-        visibility,
-      ),
-    );
-    stages.record('edge_creation', 'ok', durationMs(edgeStart), {
-      edge_count: ingestedEdges.length,
-    }, { inputCount: ingestedMemories.length, outputCount: ingestedEdges.length });
-  }
+  // Stage 8 — resolve and link this batch's graph artifacts.
+  const {
+    memories: ingestedMemories,
+    edges: ingestedEdges,
+    resolved,
+  } = await linkBatchGraph({
+    db,
+    scope,
+    ingested: allIngested,
+    embedder,
+    vectorStore,
+    logger,
+    stages,
+    recordedAt,
+    ownerUserId,
+    visibility,
+  });
 
   // Advance the durable checkpoint (issue #9). This batch's chunks and their
   // Stage-8 artifacts are committed, so record how far we've reached: a future

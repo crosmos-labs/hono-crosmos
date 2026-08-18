@@ -189,6 +189,67 @@ function emitOutcomeMetric(
   });
 }
 
+function summarizeCompletedJob(
+  msg: IngestionJobMessage,
+  results: IngestResult[],
+  failedSourceIds: number[],
+  sourceErrors: Record<string, string>,
+): {
+  finalStatus: IngestionJobStatus;
+  resultBody: IngestionJobResult;
+  sourceCount: number;
+  failedSourceCount: number;
+  memoryCount: number;
+  entityCount: number;
+  edgeCount: number;
+  inputTokens: number;
+} {
+  const sourceCount = msg.source_ids.length;
+  const failedSourceCount = failedSourceIds.length;
+  let finalStatus: IngestionJobStatus;
+  let rolledUpError: string | undefined;
+  if (failedSourceCount === 0) {
+    finalStatus = 'completed';
+  } else if (failedSourceCount === sourceCount) {
+    finalStatus = 'failed';
+    rolledUpError = 'All sources failed during ingestion';
+  } else {
+    finalStatus = 'partial';
+    rolledUpError = `${failedSourceCount}/${sourceCount} sources failed`;
+  }
+
+  const memoryCount = results.reduce((count, result) => count + result.memories.length, 0);
+  const edgeCount = results.reduce((count, result) => count + result.edges.length, 0);
+  const entityIds = new Set<number>();
+  for (const result of results) {
+    for (const id of result.newEntityIds) entityIds.add(id);
+    for (const id of result.resolvedEntityIds) entityIds.add(id);
+  }
+  const entityCount = entityIds.size;
+  const inputTokens = results.reduce((count, result) => count + result.tokenCount, 0);
+  const resultBody: IngestionJobResult = {
+    source_ids: msg.source_ids,
+    failed_source_ids: failedSourceIds,
+    memory_count: memoryCount,
+    entity_count: entityCount,
+    edge_count: edgeCount,
+    tokens_used: inputTokens,
+  };
+  if (Object.keys(sourceErrors).length > 0) resultBody.source_errors = sourceErrors;
+  if (rolledUpError) resultBody.error_message = rolledUpError;
+
+  return {
+    finalStatus,
+    resultBody,
+    sourceCount,
+    failedSourceCount,
+    memoryCount,
+    entityCount,
+    edgeCount,
+    inputTokens,
+  };
+}
+
 export async function processIngestion(
   msg: IngestionJobMessage,
   deps: ProcessIngestionDeps,
@@ -693,39 +754,18 @@ async function processIngestionRun(
     return { outcome: 'requeue_incomplete', chunksProcessed };
   }
 
-  // Roll up job status — mirrors Python's `process_ingestion` terminal block.
-  const all = msg.source_ids.length;
-  const failed = failedSourceIds.length;
-  let finalStatus: IngestionJobStatus;
-  let rolledUpError: string | undefined;
-  if (failed === 0) {
-    finalStatus = 'completed';
-  } else if (failed === all) {
-    finalStatus = 'failed';
-    rolledUpError = 'All sources failed during ingestion';
-  } else {
-    finalStatus = 'partial';
-    rolledUpError = `${failed}/${all} sources failed`;
-  }
-
-  const memoryCount = results.reduce((n, r) => n + r.memories.length, 0);
-  const edgeCount = results.reduce((n, r) => n + r.edges.length, 0);
-  // Python counts UNIQUE entity ids across all sources via set union.
-  const entityIds = new Set<number>();
-  for (const r of results) {
-    for (const id of r.newEntityIds) entityIds.add(id);
-    for (const id of r.resolvedEntityIds) entityIds.add(id);
-  }
-  const entityCount = entityIds.size;
-  // Provider cost (LLM + embedder throughput) — reported to the outcome metric
-  // and job log for COGS observability, but NOT the quota.
+  const {
+    finalStatus,
+    resultBody,
+    sourceCount,
+    failedSourceCount,
+    memoryCount,
+    entityCount,
+    edgeCount,
+    inputTokens,
+  } = summarizeCompletedJob(msg, results, failedSourceIds, sourceErrors);
   const throughputTokens = llm.totalTokens + embedder.totalTokens;
-  // Quota basis: input tokens of the sources that completed. This is what the
-  // user submitted, not what the pipeline burned internally.
-  const inputTokens = results.reduce((n, r) => n + r.tokenCount, 0);
 
-  // Best-effort token recording — failure does not fail the job (Python
-  // wraps this in try/except too).
   if (results.length > 0 || newlyFailedSourceIds.length > 0) {
     await recordIngestionUsageBestEffort({
       db,
@@ -740,20 +780,6 @@ async function processIngestionRun(
     });
   }
 
-  const resultBody: IngestionJobResult = {
-    // Python reports the original source_ids (not just completed) so callers
-    // can reconstruct the input batch from the result payload.
-    source_ids: msg.source_ids,
-    failed_source_ids: failedSourceIds,
-    memory_count: memoryCount,
-    entity_count: entityCount,
-    edge_count: edgeCount,
-    // User-facing usage == the quota basis (submitted input tokens).
-    tokens_used: inputTokens,
-  };
-  if (Object.keys(sourceErrors).length > 0) resultBody.source_errors = sourceErrors;
-  if (rolledUpError) resultBody.error_message = rolledUpError;
-
   await stages.time(
     'ingestion_terminal_status_write',
     { dependency: 'database' },
@@ -762,8 +788,8 @@ async function processIngestionRun(
   logger.info('ingestion.job_completed', {
     duration_ms: durationMs(jobStart),
     final_status: finalStatus,
-    source_count: all,
-    failed_source_count: failed,
+    source_count: sourceCount,
+    failed_source_count: failedSourceCount,
     memory_count: memoryCount,
     entity_count: entityCount,
     edge_count: edgeCount,
@@ -773,9 +799,9 @@ async function processIngestionRun(
   emitOutcomeMetric(deps, {
     finalStatus,
     durationMs: durationMs(jobStart),
-    failedSourceCount: failed,
+    failedSourceCount,
     tokenCount: throughputTokens,
-    errorCategory: failed > 0 ? rolledUpErrorCategory : undefined,
+    errorCategory: failedSourceCount > 0 ? rolledUpErrorCategory : undefined,
   });
   return { outcome: 'processed', chunksProcessed };
 }

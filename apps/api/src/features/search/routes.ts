@@ -1,7 +1,6 @@
 import { createRoute } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { ErrorResponseSchema } from '../../lib/zod-common';
-import { users } from '@crosmos/db';
 import { EmbeddingRequestError, RerankerRequestError } from '@crosmos/ai';
 import {
   createLogger,
@@ -10,7 +9,6 @@ import {
   durationMs,
   type TraceProvider,
 } from '@crosmos/observability';
-import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { getApiConfig } from '../../config';
 import { getDb } from '../../db';
@@ -33,7 +31,7 @@ import { getCachedEntitlements, getCachedSpaceByUuid } from '../../lib/gate-cach
 import { getBackgroundTasks } from '../../lib/runtime';
 import { recordSearchQueries } from '../usage/service';
 import { resolveReadVisibility } from '../visibility/service';
-import { attachSourceContent, touchMemories } from './candidates';
+import { touchMemories } from './candidates';
 import { getConcurrencyLimiter } from './concurrency';
 import {
   CANDIDATE_POOL,
@@ -51,7 +49,7 @@ import { classifyDependencyError } from '../../lib/dependency-errors';
 import { SearchRequestSchema, SearchResponseSchema } from './schemas';
 import { awaitSearchAdmission } from './admission';
 import { retrieve } from './service';
-import type { CandidateMemory, RetrievalResult } from './types';
+import { hydrateSearchResponse } from './response';
 
 export const searchRoutes = createApiApp();
 
@@ -130,51 +128,6 @@ function withTimeout<T>(
       },
     );
   });
-}
-
-interface SearchCandidateOut {
-  memory_id: string;
-  content: string;
-  memory_type: string;
-  score: number;
-  source?: string | null;
-  created_at: string;
-  event_time: string | null;
-  owner_name: string | null;
-}
-
-function buildResponse(
-  ownerById: Map<number, string>,
-  queryText: string,
-  result: RetrievalResult,
-  includeSource: boolean,
-): {
-  query: string;
-  candidates: SearchCandidateOut[];
-} {
-  const raw = result.candidates;
-  if (raw.length === 0) {
-    return { query: queryText, candidates: [] };
-  }
-
-  const candidates: SearchCandidateOut[] = raw.map((c: CandidateMemory) => {
-    const out: SearchCandidateOut = {
-      // Each result candidate carries its own uuid (hydrated with the row). Fall
-      // back to the raw int (as Python does) if it is somehow missing.
-      memory_id: c.uuid ?? String(c.memoryId),
-      content: c.content,
-      memory_type: c.memoryType,
-      score: c.finalScore,
-      created_at: c.createdAt.toISOString(),
-      event_time: c.eventTime ? c.eventTime.toISOString() : null,
-      owner_name: c.ownerUserId != null ? ownerById.get(c.ownerUserId) ?? null : null,
-    };
-    // include_source=true → key present (value may be null); false → omit key.
-    if (includeSource) out.source = c.sourceChunk ?? null;
-    return out;
-  });
-
-  return { query: queryText, candidates };
 }
 
 // POST /api/v1/search — hybrid retrieval, run inline.
@@ -564,59 +517,14 @@ searchRoutes.openapi(
         deadline,
       );
 
-      // Resolve owner display names for the result candidates only (≤topK). One
-      // indexed users-by-id query; the result set is tiny, so this is off the
-      // signal path and adds a single small round-trip to the response build.
-      const ownerIdSet = [
-        ...new Set(
-          result.candidates
-            .map((c) => c.ownerUserId)
-            .filter((id): id is number => id != null),
-        ),
-      ];
-      // Both reads depend only on the fixed top-K and are independent. Source
-      // content remains fail-soft; owner names retain their prior fail-closed
-      // behavior. When include_source=false no source query is started.
-      const ownerRowsPromise = stages.time(
-        'owner_name_load',
-        {},
-        () => ownerIdSet.length > 0
-          ? db
-              .select({ id: users.id, name: users.name })
-              .from(users)
-              .where(inArray(users.id, ownerIdSet))
-          : Promise.resolve([]),
-        (rows) => ({ inputCount: ownerIdSet.length, outputCount: rows.length }),
-      );
-      const sourceContentPromise = body.include_source && result.candidates.length > 0
-        ? stages.time(
-            'source_content_load',
-            {},
-            () => attachSourceContent(db, scope, result.candidates),
-            () => ({
-              inputCount: result.candidates.length,
-              outputCount: result.candidates.length,
-            }),
-          ).catch(() => undefined)
-        : Promise.resolve();
-      const [ownerRows] = await Promise.all([ownerRowsPromise, sourceContentPromise]);
-      const ownerById = new Map(
-        ownerRows.map((owner) => [owner.id, owner.name]),
-      );
-      const response = await stages.time(
-        'search_response_build',
-        {},
-        async () => buildResponse(
-          ownerById,
-          body.query,
-          result,
-          body.include_source,
-        ),
-        (built) => ({
-          inputCount: result.candidates.length,
-          outputCount: built.candidates.length,
-        }),
-      );
+      const response = await hydrateSearchResponse({
+        db,
+        scope,
+        result,
+        includeSource: body.include_source,
+        queryText: body.query,
+        stages,
+      });
       const tookMs = durationMs(t0);
       logger.info('retrieval.request_completed', {
         space_id: space.id,

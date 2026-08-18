@@ -437,7 +437,13 @@ This creates four recurring responsibilities in one function: auth/HTTP mapping,
 - Transaction boundaries and compensation live in named application functions.
 - OpenAPI response behavior remains byte/shape compatible.
 
-### [ ] ARCH-4 — Decompose the largest orchestration functions without changing behavior
+### [x] ARCH-4 — Decompose the largest orchestration functions without changing behavior
+
+Completed 2026-08-19 through extraction-only stage seams: retrieval feature,
+fusion, rerank, score/select, and response hydration; ingestion Stage 8 graph
+linking; and job terminal rollup. Call order, telemetry names, error/fallback
+paths, ranking constants, and data shapes are unchanged. Exact-score pipeline
+fixtures and continuation/recovery suites remain unchanged and green.
 
 **Finding**
 
