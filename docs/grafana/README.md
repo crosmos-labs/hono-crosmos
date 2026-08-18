@@ -86,3 +86,57 @@ The production rollout versions are API
 `05e3c0d2-a4d4-4a05-97a1-f597fc1b88b3`. A visible trace or log with those
 resource versions proves the result belongs to the production rollout rather
 than the earlier staging verification.
+
+## Trace and log dashboards
+
+Three more dashboards live in the `Crosmos` folder of the stack and are
+snapshotted here. They were created through the Grafana API, so the live copy is
+authoritative; re-export after editing in the UI.
+
+- `crosmos-retrieval-traces.json` (uid `crosmos-retrieval-traces`) — the search
+  path, keyed off the `api_stage.search_total` span.
+- `crosmos-ingestion-traces.json` (uid `crosmos-ingestion-traces`) — the
+  pipeline, keyed off `ingestion.job_total` / `ingestion.source_total`.
+- `crosmos-logs.json` (uid `crosmos-logs`) — Loki volume, HTTP outcomes, and the
+  counters parsed out of the structured JSON lines.
+
+They exist because Cloudflare names every root span after its trigger, so Tempo
+search shows an undifferentiated list of `POST` / `GET` / `queue` / `jsrpc` and
+gives no way to tell a retrieval trace from an ordinary request. Filter on the
+Crosmos stage spans instead of the root: `api.request_total` wraps a request,
+`api_stage.*` and `ingestion_stage.*` are the stages, and every stage span
+carries `crosmos.stage` plus `crosmos.outcome`.
+
+Each trace dashboard pairs a TraceQL search table with a `traces` panel bound to
+a `trace_id` textbox variable, and the table's trace ID column links back to the
+same dashboard with that variable set. Clicking a slow trace therefore renders
+its per-stage waterfall in the page, with the matching Loki lines underneath, so
+no Explore round trip is needed.
+
+Three constraints shaped the panel definitions:
+
+- TraceQL metric queries (`quantile_over_time`, `rate`, `count_over_time`) are
+  rejected beyond a 25-hour range on this tier, so both trace dashboards default
+  to 6h. Trace search tables have no such cap.
+- Empty metric buckets return `0` rather than null, so `lastNotNull` reduces a
+  quiet minute to `0 ms`. Stat tiles and bar gauges reduce with `max` or `mean`
+  over the window instead.
+- Quantiles come from an exponential histogram, so at current traffic they land
+  on bucket boundaries (0.13s, 0.27s, 0.54s, 1.07s, 2.15s, 4.29s, 8.59s). Treat
+  them as ranges; the log-derived `duration_ms` panels give exact values.
+
+Bar gauges ignore their own `sortBy` option, so the ranked stage panels apply
+`renameByRegex` + `reduce` + `sortBy` transformations to get one sorted row per
+stage.
+
+The log latency and error tiles are scoped to `/api/` paths. Unscoped, they are
+dominated by internet scanners probing `/.git/config` and `/wp-includes` paths,
+which all 404: over one six-hour sample that was 69 non-2xx responses unscoped
+versus 9 real ones.
+
+Grafana Cloud Application Observability's service list stays incomplete because
+no span metrics are generated from these traces — `traces_spanmetrics_*`,
+`traces_service_graph_*`, and `traces_target_info` are all absent from the
+Prometheus datasource. Enabling metrics generation for the traces datasource in
+the Cloud portal is what populates that view, the service map, and RED metrics;
+it is not something the stack API can turn on.

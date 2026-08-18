@@ -1,0 +1,1071 @@
+{
+  "uid": "crosmos-retrieval-traces",
+  "title": "Crosmos retrieval traces",
+  "description": "Search/retrieval path only. Filters on the api_stage.search_total span so normal API traffic is excluded. TraceQL metric panels are limited to a 25h window by Grafana Cloud.",
+  "tags": [
+    "crosmos",
+    "traces",
+    "retrieval"
+  ],
+  "timezone": "utc",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "trace_id",
+        "label": "Trace ID",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "slow_ms",
+        "label": "Slow threshold (ms)",
+        "type": "custom",
+        "query": "500,1000,2000,3000,5000",
+        "current": {
+          "text": "2000",
+          "value": "2000"
+        },
+        "options": [
+          {
+            "text": "500",
+            "value": "500",
+            "selected": false
+          },
+          {
+            "text": "1000",
+            "value": "1000",
+            "selected": false
+          },
+          {
+            "text": "2000",
+            "value": "2000",
+            "selected": true
+          },
+          {
+            "text": "3000",
+            "value": "3000",
+            "selected": false
+          },
+          {
+            "text": "5000",
+            "value": "5000",
+            "selected": false
+          }
+        ],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Search health",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Search rate (avg)",
+      "description": "Spans/sec of api_stage.search_total.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | rate()",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 3,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Searches (window)",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | count_over_time()",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p95 search stage",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .95)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "max"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1.5
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Worst 95th percentile of the api_stage.search_total span over the selected window. Empty TraceQL buckets report 0, so these tiles reduce with max rather than last value."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "p99 search stage",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .99)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "max"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 6
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Worst 99th percentile of the api_stage.search_total span over the selected window."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "p95 end-to-end /api/v1/search",
+      "description": "api.request_total span filtered to the search path: everything the client waits for, including auth and middleware.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api.request_total\" && span.url.path = \"/api/v1/search\" } | quantile_over_time(duration, .95)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "max"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Failed searches",
+      "description": "api_stage.search_total spans with crosmos.outcome = failed.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" && span.crosmos.outcome = \"failed\" } | count_over_time()",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Search stage latency percentiles",
+      "description": "quantile_over_time on the api_stage.search_total span duration.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .5, .95, .99)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "auto",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Client-visible request vs search stage (p95)",
+      "description": "The gap between the two lines is auth, middleware, and admission overhead outside the search stage.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api.request_total\" && span.url.path = \"/api/v1/search\" } | quantile_over_time(duration, .95)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .95)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Where the time goes",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "Stage p95, ranked (worst in window)",
+      "description": "Every api_stage.* span on the retrieval path, ranked by its worst p95 bucket in the selected window. This is the per-stage latency budget view: the top bar is where retrieval time actually goes.",
+      "gridPos": {
+        "h": 11,
+        "w": 10,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name =~ \"api_stage.(search_total|retrieval_query_embedding|signal_semantic|signal_keyword|signal_graph|signal_temporal|rerank|search_response_build|search_response_serialize|concurrency_acquire|global_ai_throttle|plan_rate_limit|auth_total|visibility_scope|space_access|entitlements|monthly_quota|memory_ann_batch)\" } | quantile_over_time(duration, .95) by (name)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "valueMode": "text",
+        "sortBy": "Value",
+        "sortOrder": "desc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": {
+            "mode": "continuous-GrYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": ".*api_stage\\.([a-z_]+).*",
+            "renamePattern": "$1"
+          }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "reducers": [
+              "max"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Max",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Stage p95 over time",
+      "gridPos": {
+        "h": 11,
+        "w": 14,
+        "x": 10,
+        "y": 14
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ name =~ \"api_stage.(retrieval_query_embedding|signal_semantic|signal_keyword|signal_graph|signal_temporal|rerank|search_response_build|concurrency_acquire|global_ai_throttle|plan_rate_limit|auth_total)\" } | quantile_over_time(duration, .95) by (name)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": ".*api_stage\\.([a-z_]+).*",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Model provider calls inside search (p95)",
+      "description": "Raw fetch spans to the embedder and reranker from the API worker.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ resource.service.name = \"crosmos-api-production\" && name = \"fetch\" && span.url.path =~ \"/v1/embeddings|/v1/models/rerank\" } | quantile_over_time(duration, .95) by (span.url.path)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Vector store calls inside search (p95)",
+      "description": "Qdrant fetch spans, split by collection endpoint.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "{ resource.service.name = \"crosmos-api-production\" && name = \"fetch\" && span.url.path =~ \"/collections/.*\" } | quantile_over_time(duration, .95) by (span.url.path)",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Pick a trace (click a trace ID to load its waterfall below)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Slow searches (> $slow_ms ms)",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "tableType": "traces",
+          "limit": 20,
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" && duration > ${slow_ms}ms }",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Duration",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Load waterfall below",
+                    "url": "/d/crosmos-retrieval-traces/crosmos-retrieval-traces?${__url_time_range}&var-slow_ms=${slow_ms}&var-trace_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Failed searches",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "tableType": "traces",
+          "limit": 20,
+          "filters": [],
+          "query": "{ name = \"api_stage.search_total\" && span.crosmos.outcome = \"failed\" }",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Load waterfall below",
+                    "url": "/d/crosmos-retrieval-traces/crosmos-retrieval-traces?${__url_time_range}&var-slow_ms=${slow_ms}&var-trace_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Selected trace",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "traces",
+      "title": "Waterfall: $trace_id",
+      "description": "Per-stage waterfall for the trace in the Trace ID variable.",
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "grafanacloud-traces"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "filters": [],
+          "query": "$trace_id",
+          "datasource": {
+            "type": "tempo",
+            "uid": "grafanacloud-traces"
+          }
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 20,
+      "type": "logs",
+      "title": "Logs for $trace_id",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "{service_name=~\"crosmos-(api|ingestion)-production\"} | trace_id=\"$trace_id\"",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Ascending",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "How to read this dashboard",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "panels": [
+        {
+          "id": 22,
+          "type": "text",
+          "title": "TraceQL cheat sheet",
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 72
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "Cloudflare names the root span after the trigger (`POST`, `GET`, `queue`, `jsrpc`, `scheduled`), which is why Tempo search looks like an undifferentiated wall of `POST`. Filter on the Crosmos stage spans instead:\n\n| Want | TraceQL |\n| --- | --- |\n| Retrieval traces only | `{ name = \"api_stage.search_total\" }` |\n| Retrieval, slow ones | `{ name = \"api_stage.search_total\" && duration > 2s }` |\n| Client-visible search latency | `{ name = \"api.request_total\" && span.url.path = \"/api/v1/search\" }` |\n| Ingestion, per job | `{ name = \"ingestion.job_total\" }` |\n| Ingestion, per source | `{ name = \"ingestion.source_total\" }` |\n| Anything that failed | `{ span.crosmos.outcome = \"failed\" }` |\n| One stage | `{ span.crosmos.stage = \"rerank\" }` |\n| Provider HTTP calls | `{ name = \"fetch\" && span.url.path = \"/v1/embeddings\" }` |\n\nSpan naming: `api.request_total` wraps the whole request, `api_stage.*` are the API stages, `ingestion.job_total` / `ingestion.source_total` / `ingestion_stage.*` are the ingestion side. Every stage span also carries `crosmos.stage` and `crosmos.outcome`, plus `crosmos.input_count` / `crosmos.output_count` / `crosmos.transfer_bytes` where they apply.\n\nJump between logs and traces with the trace ID: `{service_name=~\"crosmos-(api|ingestion)-production\"} | trace_id=\"<id>\"`.\n\n### Three limits worth knowing\n\n1. TraceQL **metric** panels (`quantile_over_time`, `rate`, `count_over_time`) are capped at a 25-hour window by Grafana Cloud, so this dashboard defaults to 6h and those panels error out if you pick 2 days. Trace search tables have no such cap.\n2. Quantiles come from an exponential histogram, so at current traffic they snap to bucket boundaries (0.13s, 0.27s, 0.54s, 1.07s, 2.15s, 4.29s, 8.59s). Read them as ranges; use the trace tables or the log-derived latency panels on the logs dashboard when you need exact milliseconds.\n3. Empty buckets come back as `0` rather than null, so the stat tiles and the ranked bar gauge reduce with max or mean over the window instead of last value. A quiet minute would otherwise read as 0 ms.\n\nAPI-to-ingestion work is one connected trace when the API calls ingestion over the RPC service binding, so a single trace can show both workers. The queue backstop path arrives as its own `queue`-rooted trace instead; correlate those through `request_id` / job IDs in structured logs."
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "crosmos"
+      ],
+      "title": "Crosmos dashboards",
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ]
+}
