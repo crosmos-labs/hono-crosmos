@@ -2,25 +2,11 @@ name = "crosmos-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
 logpush = true
 
-# ───────────────────────────────────────────────────────────────────────────
-# PRODUCTION STACK (the [ai] + [[vectorize]] bindings below are DORMANT in prod):
-#   vector store = Qdrant   ·   embeddings = OpenAI text-embedding-3-small @1536
-#   reranker = ZeroEntropy  ·   extraction LLM = OpenRouter   ·   DB = Neon/Hyperdrive
-# The real provider switches live in [env.production.vars] further down. The
-# top-level [vars] (workers-ai / vectorize) are only the bare-`wrangler dev`
-# default. Source of truth: docs/deployed-architecture.md. Do NOT call prod
-# "Workers AI" or "Vectorize".
-# ───────────────────────────────────────────────────────────────────────────
-
-# Disable the *.workers.dev default route. The Worker is reachable ONLY via the
-# custom domain (api.crosmos.dev) below, so the public
-# crosmos-api*.crosmos-ai.workers.dev hostname — which bypasses the zone's WAF /
-# Bot Fight Mode / rate-limit rules — is turned off. `workers_dev` is NOT
-# inherited by named environments, so it's repeated under [env.production].
-workers_dev = false
-
+# Top-level resources are local-development defaults. Production is the only
+# supported deployed environment and is always selected explicitly.
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
@@ -39,70 +25,34 @@ enabled = true
 persist = true
 head_sampling_rate = 1
 
-# Smart Placement: run the Worker close to the Hyperdrive origin (NeonDB,
-# ap-southeast-1) instead of near the user. The retrieval path makes several
-# sequential DB round-trips, so co-locating with the DB means far-region users
-# (e.g. US) pay the cross-region distance ONCE (user→Worker) rather than on
-# every query. Tradeoff: a slightly longer user→Worker hop, in exchange for
-# near-local DB access. (Not inherited by named envs — also set under
-# [env.production.placement] below.)
-[placement]
-mode = "smart"
-
 [dev]
 port = 8787
-# Distinct inspector (debugger) port per worker. Wrangler defaults this to 9229
-# for every worker, so running the API + ingestion workers together (e.g.
-# `bun run dev` / `turbo dev`) would collide on 9229 and kill the second one.
 inspector_port = 9229
 
 [triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
 
-# Hyperdrive: NeonDB connection pooling
-# Replace `id` after running: wrangler hyperdrive create crosmos-db --connection-string=...
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "f5a4b0b3c894450f9ad332221a92ff5a"
-# Local-only: wrangler dev connects here. Prod uses the configured upstream (NeonDB).
 localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
-# KV: API key cache + rate limit counters
-# Replace `id` after running: wrangler kv namespace create API_KEY_CACHE
 [[kv_namespaces]]
 binding = "API_KEY_CACHE"
 id = "526c4c65675d478b827a2b0566bba1b6"
 
-# Queue producer: ingestion jobs (consumer lives in apps/ingestion).
-# Dev and prod each have their own queue so the two ingestion workers don't
-# fight over the single-consumer slot Cloudflare Queues enforces.
 [[queues.producers]]
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs-dev"
 
-# Service binding: direct RPC to the ingestion worker (the low-latency fast
-# path that sidesteps queue cold-delivery latency). `entrypoint` targets the
-# exported `IngestionWorker` class. The INGESTION_QUEUE producer above stays as
-# the durable backstop; both coordinate via the atomic job claim.
-# Local dev: run the ingestion worker too (e.g. `wrangler dev` in apps/ingestion)
-# so this binding resolves.
 [[services]]
 binding = "INGESTION_SERVICE"
 service = "crosmos-ingestion"
 entrypoint = "IngestionWorker"
 
-# Workers AI binding (embeddings bge-m3 + reranker bge-reranker-base) — DORMANT
-# in production. Kept as a swappable fallback; prod uses OpenAI + ZeroEntropy
-# (EMBEDDINGS_PROVIDER / RERANKER_PROVIDER below). Only active if those vars are
-# set to "workers-ai".
 [ai]
 binding = "AI"
 
-# Durable Object rate limiter — per-IP limits on pre-org-context auth/OAuth
-# routes (integrations/rate-limit/ip.ts). KV is eventually consistent and can't
-# bound a burst; the experimental `ratelimit` binding didn't enforce its limit
-# under a named env (verified live). A DO per `${bucket}:${ip}` key is strongly
-# consistent, so it actually bounds bursts.
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiterDO"
@@ -111,19 +61,10 @@ class_name = "RateLimiterDO"
 tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
-# Analytics Engine — metrics sink. The dataset is created automatically on first
-# write; there is no provisioning command and (as of 2026-08) no account toggle
-# or beta signup. Querying is separate: it needs an API token with the
-# `Account Analytics Read` permission (SQL API / GraphQL), which writing does not.
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "crosmos_api_dev"
 
-# Vectorize: vector storage for the retrieval read path (only when
-# VECTOR_STORE=vectorize). DORMANT in production — prod sets VECTOR_STORE=qdrant,
-# so these indexes are bound but unused. Create with:
-#   wrangler vectorize create crosmos-memories-dev --dimensions=1024 --metric=cosine
-#   wrangler vectorize create crosmos-entities-dev --dimensions=1024 --metric=cosine
 [[vectorize]]
 binding = "MEMORIES_INDEX"
 index_name = "crosmos-memories-dev"
@@ -136,42 +77,12 @@ index_name = "crosmos-entities-dev"
 ENVIRONMENT = "development"
 OAUTH_SERVER_BASE_URL = "http://localhost:8787"
 APP_BASE_URL = "http://localhost:3000"
-# Retrieval cross-encoder reranker toggle. Anything other than "false" = on.
 RETRIEVAL_RERANKER_ENABLED = "true"
-# Provider selection. THESE ARE THE BARE-`wrangler dev` DEFAULTS, NOT PRODUCTION.
-# Production overrides to openai / zeroentropy / qdrant in [env.production.vars]
-# below; the local benchmark overrides via .dev.vars. (Code fallback if unset is
-# also workers-ai / workers-ai / vectorize.)
 EMBEDDINGS_PROVIDER = "workers-ai"
 RERANKER_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
-# Operational limits (issue #6) — optional overrides for the admission/
-# backpressure knobs. Each falls back to its compile-time default
-# (lib/limits.ts → getOperationalLimits) when unset, so behavior is unchanged
-# unless you set one. Uncomment to tune per-env without a code change:
-#   MAX_PENDING_JOBS_PER_USER = "5000"          # per-user active-job cap
-#   MAX_QUEUE_DEPTH = "5000"                     # global in-flight-job gate
-#   STALE_JOB_MINUTES = "10"                     # orphaned-job window (gates + reaper)
-#   RETRIEVAL_MAX_CONCURRENT_PER_USER = "10"     # per-user concurrent /search
-#   GLOBAL_AI_RPM_CEILING = "3000"               # account-wide AI RPM ceiling
-#   RETRIEVAL_TIMEOUT_SECONDS = "6"              # route deadline; also frees the concurrency slot
-#   RETRIEVAL_SLOT_TTL_SECONDS = "10"            # slot TTL; floored at timeout + 4s grace
-#
-# ROLLBACK NOTE: RETRIEVAL_TIMEOUT_SECONDS was 30 before the 2026-07-25 incident
-# remediation. It is the biggest single lever on the per-user concurrency wall
-# (throughput ceiling = RETRIEVAL_MAX_CONCURRENT_PER_USER / timeout). Set it back
-# to "30" here to restore the old behavior WITHOUT a code revert — the slot TTL
-# follows automatically.
-
-# Fallback-only secrets (set via `wrangler secret put` or .dev.vars):
-#   OPENAI_API_KEY        — only if EMBEDDINGS_PROVIDER=openai (text-embedding-3-small; dim = EMBEDDING_DIMENSIONS, prod 1536)
-#   OPENROUTER_API_KEY    — only if EMBEDDINGS_PROVIDER=openrouter (openai/text-embedding-3-small; dim = EMBEDDING_DIMENSIONS)
-#   ZEROENTROPY_API_KEY   — only if RERANKER_PROVIDER=zeroentropy (zerank-2)
-#   VOYAGE_API_KEY       — only if RERANKER_PROVIDER=voyage (rerank-2.5)
-
 [env.production]
-# No *.workers.dev for prod — only the api.crosmos.dev custom domain route.
 workers_dev = false
 logpush = true
 
@@ -195,27 +106,27 @@ persist = true
 head_sampling_rate = 1
 destinations = ["grafana-traces"]
 
+# Production provider contract. Keep aligned with the ingestion manifest and
+# apps/api/tests/deployment-config.test.ts.
 [env.production.vars]
 ENVIRONMENT = "production"
 OAUTH_SERVER_BASE_URL = "https://api.crosmos.dev"
 APP_BASE_URL = "https://api.crosmos.dev"
-# Invite-accept links point at the console SPA, not the API host.
 INVITE_ACCEPT_URL = "https://console.crosmos.dev/invites/accept"
 RETRIEVAL_RERANKER_ENABLED = "true"
 EMBEDDINGS_PROVIDER = "openai"
-RERANKER_PROVIDER = "voyage"
-VOYAGE_RERANKER_MODEL = "rerank-2.5"
+RERANKER_PROVIDER = "zeroentropy"
 VECTOR_STORE = "qdrant"
 EMBEDDING_DIMENSIONS = "1536"
-# Qdrant cloud cluster (us-east-1). API key is a secret (wrangler secret put
-# QDRANT_API_KEY). Collection names default to crosmos-memories/crosmos-entities.
 QDRANT_URL = "https://413d870d-6737-407d-b9f9-7cd92cf76fe7.us-east-1-1.aws.cloud.qdrant.io"
 
-# Workers AI binding (not inherited from top-level).
+[env.production.placement]
+mode = "targeted"
+region = "aws:us-east-1"
+
 [env.production.ai]
 binding = "AI"
 
-# Durable Object rate limiter (prod). Not inherited from top-level.
 [[env.production.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiterDO"
@@ -224,14 +135,12 @@ class_name = "RateLimiterDO"
 tag = "v1"
 new_sqlite_classes = ["RateLimiterDO"]
 
-# Analytics Engine (prod metrics sink). Not inherited from top-level.
 [[env.production.analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "crosmos_api"
 
-# Vectorize (prod indexes). Create with:
-#   wrangler vectorize create crosmos-memories --dimensions=1024 --metric=cosine
-#   wrangler vectorize create crosmos-entities --dimensions=1024 --metric=cosine
+# Retained rollback bindings. Provider adapters remain selectable, but these
+# indexes are inactive while VECTOR_STORE=qdrant.
 [[env.production.vectorize]]
 binding = "MEMORIES_INDEX"
 index_name = "crosmos-memories-v3"
@@ -243,30 +152,12 @@ index_name = "crosmos-entities-v3"
 [env.production.triggers]
 crons = ["17 3 * * *", "*/15 * * * *"]
 
-# Targeted Placement for production (env config is not inherited from top-level).
-# `mode = "smart"` (automatic) was not reliably relocating the Worker for
-# India-origin traffic in the historical benchmark. That artifact predates the
-# current response-header measurement and is not treated as a current latency
-# baseline. `targeted`
-# pins execution to the CF data center closest to AWS us-east-1, where BOTH
-# Neon (Hyperdrive origin) and the Qdrant cluster live, so the retrieval path's
-# DB/vector hops are region-local and the India user pays the cross-region
-# distance ONCE (user→Worker) instead of on every hop.
-[env.production.placement]
-mode = "targeted"
-region = "aws:us-east-1"
-
 [[env.production.routes]]
 pattern = "api.crosmos.dev"
 custom_domain = true
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-# crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
-# 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
-# us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
-# Query caching is disabled on this external config: auth, visibility, quota,
-# lifecycle, and read-after-write queries all share this binding.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 [[env.production.kv_namespaces]]
@@ -277,119 +168,7 @@ id = "25fed42f4fb242acb470f7578a60b854"
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs"
 
-# Service binding to the ingestion worker (fast-path RPC). Not inherited from
-# the top-level config, so it's repeated here for production. NOTE: named
-# environments suffix the worker name, so the prod ingestion worker is
-# `crosmos-ingestion-production` (not `crosmos-ingestion`).
 [[env.production.services]]
 binding = "INGESTION_SERVICE"
 service = "crosmos-ingestion-production"
-entrypoint = "IngestionWorker"
-
-# ───────────────────────────────────────────────────────────────────────────
-# STAGING — mirrors production (same providers + secret VALUES), but with fully
-# ISOLATED data: its own Neon branch (Hyperdrive), Qdrant collections
-# (crosmos-*-staging), KV namespace, and queues. Reachable at
-# staginghono.crosmos.dev; no edge gate — every route still requires a valid
-# API key / OAuth token (same auth as prod). Deploy: `wrangler deploy --env staging`.
-# Secrets are per-env: run `wrangler secret put <NAME> --env staging` (same
-# values as prod) — see docs runbook.
-# ───────────────────────────────────────────────────────────────────────────
-[env.staging]
-workers_dev = false
-logpush = true
-
-[env.staging.version_metadata]
-binding = "CF_VERSION_METADATA"
-
-[env.staging.observability]
-enabled = true
-head_sampling_rate = 1
-
-[env.staging.observability.logs]
-enabled = true
-head_sampling_rate = 1
-persist = true
-invocation_logs = true
-
-[env.staging.observability.traces]
-enabled = true
-persist = true
-head_sampling_rate = 1
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-OAUTH_SERVER_BASE_URL = "https://staginghono.crosmos.dev"
-APP_BASE_URL = "https://staginghono.crosmos.dev"
-RETRIEVAL_RERANKER_ENABLED = "true"
-EMBEDDINGS_PROVIDER = "openai"
-RERANKER_PROVIDER = "zeroentropy"
-VECTOR_STORE = "qdrant"
-EMBEDDING_DIMENSIONS = "1536"
-# SEPARATE staging Qdrant cluster (its own API key — wrangler secret put
-# QDRANT_API_KEY --env staging). Fully isolated from prod vectors.
-QDRANT_URL = "https://52fd164c-3af1-41e3-9cc8-400137cb542e.us-east-1-1.aws.cloud.qdrant.io"
-QDRANT_MEMORIES_COLLECTION = "crosmos-memories-staging"
-QDRANT_ENTITIES_COLLECTION = "crosmos-entities-staging"
-
-# Workers AI binding (not inherited from top-level). DORMANT (VECTOR_STORE=qdrant).
-[env.staging.ai]
-binding = "AI"
-
-# Durable Object rate limiter (staging gets its own DO namespace via the named
-# env). Not inherited from top-level.
-[[env.staging.durable_objects.bindings]]
-name = "RATE_LIMITER"
-class_name = "RateLimiterDO"
-
-[[env.staging.migrations]]
-tag = "v1"
-new_sqlite_classes = ["RateLimiterDO"]
-
-# Vectorize is DORMANT in staging (VECTOR_STORE=qdrant), so no binding is
-# declared here. It previously bound the `crosmos-memories-dev` /
-# `crosmos-entities-dev` indexes, which no longer exist in the account —
-# wrangler validates Vectorize bindings at deploy time whether or not the code
-# reads them, so every `--env staging` deploy failed with code 10159. Both
-# `getVectorStore` factories already throw a clear error if VECTOR_STORE is ever
-# set back to `vectorize` without these bindings.
-
-[env.staging.triggers]
-crons = ["17 3 * * *", "*/15 * * * *"]
-
-# Same targeted placement as prod: the staging Neon branch and Qdrant collections
-# both live in aws:us-east-1.
-[env.staging.placement]
-mode = "targeted"
-region = "aws:us-east-1"
-
-[[env.staging.routes]]
-pattern = "staginghono.crosmos.dev"
-custom_domain = true
-
-# Hyperdrive → staging NeonDB (crosmos-neon-staging, ep-curly-mouse us-east-1).
-[[env.staging.hyperdrive]]
-binding = "HYPERDRIVE"
-# Query caching is disabled, matching production freshness semantics.
-id = "930052d5e0dc40c8911417c7ef3e8c13"
-
-# KV → staging namespace (created via `wrangler kv namespace create API_KEY_CACHE_STAGING`).
-[[env.staging.kv_namespaces]]
-binding = "API_KEY_CACHE"
-id = "0af915afd8064727b0290dbc2db10d0c"
-
-# Analytics Engine (staging metrics sink). Separate dataset so staging traffic
-# never pollutes the production series a dashboard or alert reads.
-[[env.staging.analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "crosmos_api_staging"
-
-[[env.staging.queues.producers]]
-binding = "INGESTION_QUEUE"
-queue = "ingestion-jobs-staging"
-
-# Service binding to the staging ingestion worker (named env suffixes the name).
-[[env.staging.services]]
-binding = "INGESTION_SERVICE"
-service = "crosmos-ingestion-staging"
 entrypoint = "IngestionWorker"

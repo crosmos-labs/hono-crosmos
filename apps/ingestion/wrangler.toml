@@ -2,22 +2,11 @@ name = "crosmos-ingestion"
 main = "src/index.ts"
 compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
 logpush = true
 
-# ───────────────────────────────────────────────────────────────────────────
-# PRODUCTION STACK (the [ai] + [[vectorize]] bindings below are DORMANT in prod):
-#   vector store = Qdrant   ·   embeddings = OpenAI text-embedding-3-small @1536
-#   extraction LLM = OpenRouter   ·   DB = Neon/Hyperdrive (shared with API)
-# Real provider switches live in [env.production.vars]. Top-level [vars]
-# (workers-ai / vectorize) are only the bare-`wrangler dev` default. Source of
-# truth: docs/deployed-architecture.md. Do NOT call prod "Workers AI"/"Vectorize".
-# ───────────────────────────────────────────────────────────────────────────
-
-# This Worker is invoked ONLY via the service binding (IngestionWorker RPC) and
-# the queue consumer — it has no public HTTP surface, so the *.workers.dev route
-# is disabled. Not inherited by named envs; repeated under [env.production].
-workers_dev = false
-
+# Top-level resources are local-development defaults. Production is the only
+# supported deployed environment and is always selected explicitly.
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
@@ -38,76 +27,38 @@ head_sampling_rate = 1
 
 [dev]
 port = 8788
-# Distinct inspector (debugger) port per worker — see apps/api/wrangler.toml.
-# Wrangler defaults every worker to 9229, so this must differ from the API's
-# 9229 or `bun run dev` (both workers at once) dies with "Address already in
-# use (127.0.0.1:9229)".
 inspector_port = 9230
 
-# Hyperdrive: shared NeonDB connection pooling (same DB as the API worker)
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "f5a4b0b3c894450f9ad332221a92ff5a"
 localConnectionString = "postgresql://crosmos:crosmos@localhost:5433/crosmos"
 
-# Producer binding onto the SAME queue this Worker consumes. Used only to
-# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
-# ran out of per-invocation budget is re-sent as a fresh message so its attempt
-# counter resets. Without this, healthy forward progress on a large source
-# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
-# source. Transient failures and in-flight polling still use the retry budget.
 [[queues.producers]]
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs-dev"
 
-# Queue consumer: one ingestion job per invocation. A job may carry many
-# source_ids, but each job is its own queue message; see .codex/pipelines.md.
 [[queues.consumers]]
 queue = "ingestion-jobs-dev"
 max_batch_size = 1
-# 0s = deliver as soon as a message is available, no batch-fill wait. CF Queues
-# still have a cold-queue delivery-latency floor (tens of seconds when idle) —
-# that's why the API worker ALSO kicks ingestion directly over a service binding
-# (IngestionWorker.ingest). This queue is now the durable BACKSTOP behind that
-# fast path; both paths coordinate via the atomic job claim.
 max_batch_timeout = 0
-# Backstop retries serve two roles: ordinary failure retries AND polling a job
-# that's still healthily in flight on the RPC path (see BACKSTOP_RETRY_DELAY_SECONDS
-# + JOB_LEASE_MS). max_retries * delay must outlast JOB_LEASE_MS (5m) so a
-# silently-dead RPC run is reclaimed before the message DLQs: 15 * 60s = 15m.
 max_retries = 15
-# Pin backstop drain concurrency instead of leaving it to the autoscaler (which
-# can throttle down when it sees the many intentional in_flight re-queues). Lets
-# a burst that fell back to the queue drain in parallel rather than one-at-a-time.
-# Each consumer isolate opens at most `max:2` DB connections (multiplexed through
-# Hyperdrive), so 10 is well within the connection budget. Tune under load.
 max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dev-dlq"
 
-# Dead-letter consumer: makes exhausted jobs VISIBLE (error log + metric) and
-# acks them so they don't accumulate. Recovery is the API cron re-drive sweep.
-# No further DLQ — these are already terminal-failed deliveries.
 [[queues.consumers]]
 queue = "ingestion-jobs-dev-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3
 
-# Workers AI binding (embeddings bge-m3) — DORMANT in production. Kept as a
-# swappable fallback; prod uses OpenAI embeddings (EMBEDDINGS_PROVIDER below).
 [ai]
 binding = "AI"
 
-# Analytics Engine — metrics sink. The dataset is created automatically on first
-# write; there is no provisioning command and (as of 2026-08) no account toggle
-# or beta signup. Querying is separate: it needs an API token with the
-# `Account Analytics Read` permission (SQL API / GraphQL), which writing does not.
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "crosmos_ingestion_dev"
 
-# Vectorize: vector storage (only when VECTOR_STORE=vectorize). DORMANT in
-# production — prod sets VECTOR_STORE=qdrant. Shared with the API worker.
 [[vectorize]]
 binding = "MEMORIES_INDEX"
 index_name = "crosmos-memories-dev"
@@ -118,16 +69,11 @@ index_name = "crosmos-entities-dev"
 
 [vars]
 ENVIRONMENT = "development"
-# Default LLM provider for ingestion. Switch to "openai" to call OpenAI directly.
 LLM_PROVIDER = "openrouter"
-# Provider selection. THESE ARE THE BARE-`wrangler dev` DEFAULTS, NOT PRODUCTION.
-# Production overrides to openai / qdrant in [env.production.vars] below; the
-# local benchmark overrides via .dev.vars. Must match the API worker.
 EMBEDDINGS_PROVIDER = "workers-ai"
 VECTOR_STORE = "vectorize"
 
 [env.production]
-# No *.workers.dev for prod — invoked only via service binding + queue.
 workers_dev = false
 logpush = true
 
@@ -151,38 +97,28 @@ persist = true
 head_sampling_rate = 1
 destinations = ["grafana-traces"]
 
+# Production provider contract. Keep aligned with the API manifest and its
+# executable deployment-config test.
 [env.production.vars]
 ENVIRONMENT = "production"
-# Extraction LLM goes to OpenAI directly (gpt-4.1-mini) — dropped the OpenRouter
-# hop after its credit pool ran dry mid-ingestion (402s failing sources).
-# Reuses the OPENAI_API_KEY secret already required by EMBEDDINGS_PROVIDER.
 LLM_PROVIDER = "openai"
 EMBEDDINGS_PROVIDER = "openai"
 VECTOR_STORE = "qdrant"
 EMBEDDING_DIMENSIONS = "1536"
-# Qdrant cloud cluster (us-east-1). Must match the API worker. API key is a
-# secret (wrangler secret put QDRANT_API_KEY).
 QDRANT_URL = "https://413d870d-6737-407d-b9f9-7cd92cf76fe7.us-east-1-1.aws.cloud.qdrant.io"
 
-# Targeted Placement: pin the ingestion Worker to the CF data center closest to
-# AWS us-east-1, co-locating it with Neon (Hyperdrive origin) and the Qdrant
-# cluster. The ingestion pipeline makes many sequential DB writes + Qdrant
-# upserts per source; without this it ran at the request's entry PoP and paid
-# the cross-region crossing on every hop. Mirrors the API worker's placement.
 [env.production.placement]
 mode = "targeted"
 region = "aws:us-east-1"
 
-# Workers AI binding (not inherited from top-level).
 [env.production.ai]
 binding = "AI"
 
-# Analytics Engine (prod ingestion metrics sink). Not inherited from top-level.
 [[env.production.analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "crosmos_ingestion"
 
-# Vectorize (prod indexes, shared with the API worker).
+# Retained rollback bindings; inactive while VECTOR_STORE=qdrant.
 [[env.production.vectorize]]
 binding = "MEMORIES_INDEX"
 index_name = "crosmos-memories-v3"
@@ -193,19 +129,9 @@ index_name = "crosmos-entities-v3"
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-# crosmos-neon-prod-v2 → fresh NeonDB us-east-1 (ep-blue-block, clean prod start
-# 2026-06-23). Rollback ids: 72fcf1cc21b349e490900148469c12e7 = prior Neon
-# us-east-1; 18f010ae16444ed68852d21ff51333cc = Supabase us-east-2.
-# Query caching is disabled on this shared external config so cancellation,
-# checkpoints, entity resolution, and read-after-write paths remain fresh.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
-# Producer binding onto the SAME queue this Worker consumes. Used only to
-# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
-# ran out of per-invocation budget is re-sent as a fresh message so its attempt
-# counter resets. Without this, healthy forward progress on a large source
-# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
-# source. Transient failures and in-flight polling still use the retry budget.
+# The producer publishes healthy checkpoint continuations to the same queue.
 [[env.production.queues.producers]]
 binding = "INGESTION_QUEUE"
 queue = "ingestion-jobs"
@@ -213,121 +139,13 @@ queue = "ingestion-jobs"
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs"
 max_batch_size = 1
-# 0s = deliver as soon as a message is available, no batch-fill wait. CF Queues
-# still have a cold-queue delivery-latency floor (tens of seconds when idle) —
-# that's why the API worker ALSO kicks ingestion directly over a service binding
-# (IngestionWorker.ingest). This queue is now the durable BACKSTOP behind that
-# fast path; both paths coordinate via the atomic job claim.
 max_batch_timeout = 0
-# See dev consumer above: max_retries * BACKSTOP_RETRY_DELAY_SECONDS must
-# outlast JOB_LEASE_MS so a silently-dead RPC run is reclaimed before DLQ.
 max_retries = 15
-# See dev consumer above: pin drain concurrency so a queue-fallback burst drains
-# in parallel. 10 isolates × max:2 DB conns is within the Hyperdrive budget.
 max_concurrency = 10
 dead_letter_queue = "ingestion-jobs-dlq"
 
-# Dead-letter consumer (prod): visibility + ack. See dev consumer above.
 [[env.production.queues.consumers]]
 queue = "ingestion-jobs-dlq"
-max_batch_size = 10
-max_batch_timeout = 5
-max_retries = 3
-
-# ───────────────────────────────────────────────────────────────────────────
-# STAGING — mirrors production with ISOLATED data (own Neon branch, Qdrant
-# collections, queues). Invoked only via the service binding + queue (no public
-# route). Deployed as `crosmos-ingestion-staging`. Must match the API worker's
-# staging providers/collections. Deploy: `wrangler deploy --env staging`.
-# Secrets per-env: `wrangler secret put <NAME> --env staging`.
-# ───────────────────────────────────────────────────────────────────────────
-[env.staging]
-workers_dev = false
-logpush = true
-
-[env.staging.version_metadata]
-binding = "CF_VERSION_METADATA"
-
-[env.staging.observability]
-enabled = true
-head_sampling_rate = 1
-
-[env.staging.observability.logs]
-enabled = true
-head_sampling_rate = 1
-persist = true
-invocation_logs = true
-
-[env.staging.observability.traces]
-enabled = true
-persist = true
-head_sampling_rate = 1
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-# Match production's direct extraction path. OpenRouter is no longer the
-# production provider and leaving staging on it makes quality/cost comparisons
-# non-representative (and fails outright when that obsolete secret is absent).
-LLM_PROVIDER = "openai"
-EMBEDDINGS_PROVIDER = "openai"
-VECTOR_STORE = "qdrant"
-EMBEDDING_DIMENSIONS = "1536"
-# SEPARATE staging Qdrant cluster (its own API key) — must match the API worker.
-QDRANT_URL = "https://52fd164c-3af1-41e3-9cc8-400137cb542e.us-east-1-1.aws.cloud.qdrant.io"
-QDRANT_MEMORIES_COLLECTION = "crosmos-memories-staging"
-QDRANT_ENTITIES_COLLECTION = "crosmos-entities-staging"
-
-# Same targeted placement as prod (staging Neon branch + Qdrant in us-east-1).
-[env.staging.placement]
-mode = "targeted"
-region = "aws:us-east-1"
-
-# Workers AI binding (not inherited). DORMANT (VECTOR_STORE=qdrant).
-[env.staging.ai]
-binding = "AI"
-
-# Vectorize is DORMANT in staging (VECTOR_STORE=qdrant), so no binding is
-# declared here. It previously bound the `crosmos-memories-dev` /
-# `crosmos-entities-dev` indexes, which no longer exist in the account —
-# wrangler validates Vectorize bindings at deploy time whether or not the code
-# reads them, so every `--env staging` deploy failed with code 10159. Both
-# `getVectorStore` factories already throw a clear error if VECTOR_STORE is ever
-# set back to `vectorize` without these bindings.
-
-# Hyperdrive → staging NeonDB (ep-curly-mouse, same id as the API worker).
-[[env.staging.hyperdrive]]
-binding = "HYPERDRIVE"
-# Query caching is disabled, matching production freshness semantics.
-id = "930052d5e0dc40c8911417c7ef3e8c13"
-
-# Producer binding onto the SAME queue this Worker consumes. Used only to
-# publish CONTINUATIONS: a job that advanced its durable chunk checkpoint but
-# ran out of per-invocation budget is re-sent as a fresh message so its attempt
-# counter resets. Without this, healthy forward progress on a large source
-# spends `max_retries` (a FAILURE budget) and dead-letters a perfectly valid
-# source. Transient failures and in-flight polling still use the retry budget.
-# Analytics Engine (staging metrics sink). Separate dataset so staging traffic
-# never pollutes the production series a dashboard or alert reads.
-[[env.staging.analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "crosmos_ingestion_staging"
-
-[[env.staging.queues.producers]]
-binding = "INGESTION_QUEUE"
-queue = "ingestion-jobs-staging"
-
-[[env.staging.queues.consumers]]
-queue = "ingestion-jobs-staging"
-max_batch_size = 1
-max_batch_timeout = 0
-max_retries = 15
-# See dev consumer above: pin drain concurrency for queue-fallback bursts.
-max_concurrency = 10
-dead_letter_queue = "ingestion-jobs-staging-dlq"
-
-# Dead-letter consumer (staging): visibility + ack.
-[[env.staging.queues.consumers]]
-queue = "ingestion-jobs-staging-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3

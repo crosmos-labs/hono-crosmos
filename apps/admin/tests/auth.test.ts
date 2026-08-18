@@ -17,7 +17,7 @@ const limiter = {
 
 const env = {
   ADMIN_RATE_LIMITER: limiter,
-  ENVIRONMENT: 'test',
+  ENVIRONMENT: 'development',
   ACCESS_TEAM_DOMAIN: 'admin-test.example',
   ACCESS_AUD: 'admin-audience',
   ADMIN_ALLOWED_EMAILS: 'operator@example.com',

@@ -1,4 +1,5 @@
 import type { IngestionJobMessage } from '@crosmos/types';
+import type { DeploymentEnvironment } from '@crosmos/runtime';
 
 export interface Env {
   // Bindings
@@ -30,8 +31,8 @@ export interface Env {
   ANALYTICS?: AnalyticsEngineDataset;
 
   // Vars
-  ENVIRONMENT: 'development' | 'production';
-  LLM_PROVIDER: 'openrouter' | 'openai';
+  ENVIRONMENT: DeploymentEnvironment;
+  LLM_PROVIDER?: 'openrouter' | 'openai';
   // Code-fallback defaults if unset: workers-ai / vectorize. PRODUCTION runs
   // openai / qdrant (see docs/deployed-architecture.md and [env.production.vars]);
   // the Workers AI + Vectorize bindings are DORMANT in prod. Must match the API.
@@ -51,5 +52,4 @@ export interface Env {
   // Secrets (set via `wrangler secret put` or .dev.vars)
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
-  ZEROENTROPY_API_KEY?: string;
 }

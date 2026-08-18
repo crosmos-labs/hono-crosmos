@@ -48,7 +48,7 @@ const env = {
   },
   API_KEY_CACHE: cache,
   ADMIN_RATE_LIMITER: limiter,
-  ENVIRONMENT: 'test',
+  ENVIRONMENT: 'development',
   ACCESS_TEAM_DOMAIN: 'admin-pg-test.example',
   ACCESS_AUD: 'admin-pg-audience',
   ADMIN_ALLOWED_EMAILS: 'operator@example.com',

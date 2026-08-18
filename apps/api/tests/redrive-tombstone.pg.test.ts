@@ -49,7 +49,7 @@ beforeEach(async () => {
  * touching the job store or queue when there are no candidates, which is
  * precisely the path under test.
  */
-const env = { ENVIRONMENT: 'test' } as unknown as Env;
+const env = { ENVIRONMENT: 'development' } as unknown as Env;
 
 /** A source stuck in `processing` long enough to be re-drive eligible. */
 async function seedStuckSource(spaceId: number): Promise<number> {

@@ -1,12 +1,12 @@
 import {
   assertEmbeddingSpace,
-  EXPECTED_EMBEDDING_DIMENSIONS,
   OpenAIEmbedder,
   OpenRouterEmbedder,
   WorkersAiEmbedder,
 } from '@crosmos/ai';
 import type { Embedder } from '@crosmos/ai';
 import type { Env } from '../../bindings';
+import { getIngestionConfig } from '../../config';
 
 export type {
   Embedder,
@@ -29,40 +29,31 @@ export { EmbeddingRequestError } from '@crosmos/ai';
  * vectors have to share one vector space.
  */
 export function getEmbedder(env: Env): Embedder {
-  const provider = env.EMBEDDINGS_PROVIDER ?? 'workers-ai';
-  // Deployment vector space (= Vectorize index dimension). Must match the API
-  // read path. Defaults to 1024 (bge-m3); set EMBEDDING_DIMENSIONS=1536 for
-  // native OpenAI text-embedding-3-small.
-  const dims = env.EMBEDDING_DIMENSIONS
-    ? Number.parseInt(env.EMBEDDING_DIMENSIONS, 10)
-    : EXPECTED_EMBEDDING_DIMENSIONS;
-  if (provider === 'openai') {
-    if (!env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is required when EMBEDDINGS_PROVIDER=openai');
-    }
+  const config = getIngestionConfig(env).embeddings;
+  if (config.provider === 'openai') {
     // assertEmbeddingSpace: must match the API read path's provider + the
     // Vectorize index dimension, or retrieval silently breaks. See @crosmos/ai.
     return assertEmbeddingSpace(
-      new OpenAIEmbedder({ apiKey: env.OPENAI_API_KEY, dimensions: dims }),
-      dims,
+      new OpenAIEmbedder({ apiKey: config.apiKey, dimensions: config.dimensions }),
+      config.dimensions,
     );
   }
-  if (provider === 'openrouter') {
-    if (!env.OPENROUTER_API_KEY) {
-      throw new Error('OPENROUTER_API_KEY is required when EMBEDDINGS_PROVIDER=openrouter');
-    }
+  if (config.provider === 'openrouter') {
     return assertEmbeddingSpace(
       new OpenRouterEmbedder({
-        apiKey: env.OPENROUTER_API_KEY,
-        dimensions: dims,
+        apiKey: config.apiKey,
+        dimensions: config.dimensions,
         appUrl: 'https://crosmos.dev',
         appName: 'Crosmos',
       }),
-      dims,
+      config.dimensions,
     );
   }
   if (!env.AI) {
     throw new Error('AI binding is required for embeddings (EMBEDDINGS_PROVIDER=workers-ai)');
   }
-  return assertEmbeddingSpace(new WorkersAiEmbedder({ ai: env.AI }), dims);
+  return assertEmbeddingSpace(
+    new WorkersAiEmbedder({ ai: env.AI }),
+    config.dimensions,
+  );
 }

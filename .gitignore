@@ -11,8 +11,5 @@ dist/
 bench-results/
 performace bench/
 
-# Drizzle
-packages/db/migrations/meta/
-
 # Local benchmark credentials (never commit — contains live API keys)
 .bench.env

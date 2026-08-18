@@ -2,7 +2,7 @@ import { VoyageReranker, WorkersAiReranker, ZeroEntropyReranker } from '@crosmos
 import type { Reranker } from '@crosmos/ai';
 import { createLogger } from '@crosmos/observability';
 import type { Env } from '../../bindings';
-import { isRerankerEnabled } from '../../features/search/constants';
+import { getApiConfig } from '../../config';
 
 export type { Reranker } from '@crosmos/ai';
 
@@ -22,22 +22,22 @@ export type { Reranker } from '@crosmos/ai';
  * (mirrors Python's `dependencies.py`).
  */
 export function getReranker(env: Env): Reranker | null {
-  if (!isRerankerEnabled(env.RETRIEVAL_RERANKER_ENABLED)) return null;
+  const config = getApiConfig(env).reranker;
+  if (!config.enabled) return null;
 
-  const provider = env.RERANKER_PROVIDER ?? 'workers-ai';
-  if (provider === 'zeroentropy') {
-    if (!env.ZEROENTROPY_API_KEY) {
+  if (config.provider === 'zeroentropy') {
+    if (!config.apiKey) {
       createLogger({
         service: 'api',
         environment: env.ENVIRONMENT,
       }).warn('retrieval.reranker_missing_api_key', { stage: 'reranker_init' });
       return null;
     }
-    return new ZeroEntropyReranker({ apiKey: env.ZEROENTROPY_API_KEY });
+    return new ZeroEntropyReranker({ apiKey: config.apiKey });
   }
 
-  if (provider === 'voyage') {
-    if (!env.VOYAGE_API_KEY) {
+  if (config.provider === 'voyage') {
+    if (!config.apiKey) {
       createLogger({
         service: 'api',
         environment: env.ENVIRONMENT,
@@ -52,8 +52,8 @@ export function getReranker(env: Env): Reranker | null {
       environment: env.ENVIRONMENT,
     });
     return new VoyageReranker({
-      apiKey: env.VOYAGE_API_KEY,
-      model: env.VOYAGE_RERANKER_MODEL,
+      apiKey: config.apiKey,
+      model: config.model,
       rateLimitFallbackModel: 'rerank-2.5-lite',
       onRateLimitFallback: ({ fallbackModel, retryAfterSeconds }) =>
         logger.warn('retrieval.reranker_rate_limit_fallback', {

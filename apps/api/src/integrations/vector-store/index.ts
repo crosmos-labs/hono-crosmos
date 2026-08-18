@@ -2,6 +2,7 @@ import type { Database } from '@crosmos/db';
 import { PgVectorStore, QdrantStore, VectorizeStore } from '@crosmos/vector';
 import type { VectorStore } from '@crosmos/vector';
 import type { Env } from '../../bindings';
+import { getApiConfig } from '../../config';
 
 export type { VectorStore } from '@crosmos/vector';
 
@@ -14,12 +15,17 @@ export type { VectorStore } from '@crosmos/vector';
  *     Kept selectable for reversibility.
  */
 export function getVectorStore(env: Env, db: Database): VectorStore {
-  const backend = env.VECTOR_STORE ?? 'vectorize';
-  if (backend === 'pg') {
+  const config = getApiConfig(env).vectorStore;
+  if (config.provider === 'pg') {
     return new PgVectorStore(db);
   }
-  if (backend === 'qdrant') {
-    return buildQdrantStore(env);
+  if (config.provider === 'qdrant') {
+    return new QdrantStore({
+      url: config.url,
+      apiKey: config.apiKey,
+      memoriesCollection: config.memoriesCollection,
+      entitiesCollection: config.entitiesCollection,
+    });
   }
   if (!env.MEMORIES_INDEX || !env.ENTITIES_INDEX) {
     throw new Error(
@@ -38,13 +44,14 @@ export function getVectorStore(env: Env, db: Database): VectorStore {
  * and can be overridden per env.
  */
 export function buildQdrantStore(env: Env): VectorStore {
-  if (!env.QDRANT_URL || !env.QDRANT_API_KEY) {
-    throw new Error('QDRANT_URL/QDRANT_API_KEY are required for VECTOR_STORE=qdrant');
+  const config = getApiConfig(env).vectorStore;
+  if (config.provider !== 'qdrant') {
+    throw new Error('buildQdrantStore requires VECTOR_STORE=qdrant');
   }
   return new QdrantStore({
-    url: env.QDRANT_URL,
-    apiKey: env.QDRANT_API_KEY,
-    memoriesCollection: env.QDRANT_MEMORIES_COLLECTION ?? 'crosmos-memories',
-    entitiesCollection: env.QDRANT_ENTITIES_COLLECTION ?? 'crosmos-entities',
+    url: config.url,
+    apiKey: config.apiKey,
+    memoriesCollection: config.memoriesCollection,
+    entitiesCollection: config.entitiesCollection,
   });
 }

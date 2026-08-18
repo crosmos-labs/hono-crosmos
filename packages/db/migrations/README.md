@@ -1,22 +1,39 @@
-# Migrations
+# Database migrations
 
-`0000_baseline.sql` is a **squashed baseline** regenerated from the current
-`src/schema/*.ts` on 2026-07-02. It represents the full schema that is **already
-live in prod and staging** — do NOT run it against those databases (it CREATEs
-every table). It exists so `drizzle-kit generate` has a truthful snapshot to diff
-future changes against, and so a fresh/empty DB (local dev, a new env) can be
-bootstrapped in one step.
+`0000_baseline.sql` is the squashed bootstrap schema for a new empty database.
+It describes schema already present in production and must never be applied to
+the existing production database. Pre-baseline history is retained under
+`migrations_archive_pre_baseline/` for audit only and is not executable input.
 
-The pre-baseline history (`0000`–`0005`) is preserved in
-`../migrations_archive_pre_baseline/` for audit. Its `meta/` snapshot chain was
-incomplete (snapshots `0002`–`0004` were never committed), which broke
-`drizzle-kit generate`; the squash fixes that.
+The executable chain is this directory's numbered SQL, `meta/_journal.json`,
+and one committed `meta/*_snapshot.json` per journal entry. The small `0001` and
+`0002` files are intentional single-column migrations, not empty placeholders.
 
-## Workflow (important)
+## Creating a migration
 
-- **Never** `drizzle-kit migrate` against prod. The prod DB is managed by applying
-  hand-written SQL via `psql` (the deploy pipeline does not run migrations). See
-  the staging/prod cutover docs.
-- To make a schema change: edit `src/schema/*.ts`, run `drizzle-kit generate` to
-  produce the next numbered migration + snapshot (commit both), then apply that
-  SQL to prod/staging by hand via `psql` and verify.
+1. Edit `src/schema/*.ts`.
+2. Set a direct `DATABASE_URL` and run `bun run db:generate` from the repository
+   root.
+3. Review the generated SQL for locking, transaction, compatibility, and
+   rollback implications.
+4. Commit the numbered SQL, journal, and generated snapshot together.
+5. Run the migration-chain test and build a fresh local database from the chain.
+
+Snapshots are deliberately tracked. Do not add `migrations/meta/` back to
+`.gitignore`.
+
+## Applying migrations
+
+For a disposable local database only:
+
+```sh
+DATABASE_URL=postgresql://crosmos:crosmos@localhost:5433/crosmos \
+  bun run db:migrate:local
+```
+
+The command refuses non-local hosts. Production changes are deliberate operator
+operations: back up and preflight the target, select the reviewed numbered SQL,
+apply that file explicitly with `psql`, then verify schema and application health.
+Do not point `drizzle-kit migrate` or `db:migrate:local` at production. Some
+reviewed migrations, including `0003`, intentionally require statement-level
+execution rather than a tool-managed transaction.

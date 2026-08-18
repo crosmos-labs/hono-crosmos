@@ -51,9 +51,10 @@ bun --filter @crosmos/ingestion deploy:production
 bun --filter @crosmos/admin deploy:production
 ```
 
-For DB migrations, set a direct `DATABASE_URL` and use:
+For DB changes, generate reviewed SQL with a direct `DATABASE_URL`. Automatic
+application is guarded for local databases only:
 
 ```sh
 bun run db:generate
-bun run db:migrate
+bun run db:migrate:local
 ```

@@ -30,6 +30,7 @@
  */
 import { createLogger, createMetrics, durationMs } from '@crosmos/observability';
 import type { Env } from '../../bindings';
+import { getApiConfig } from '../../config';
 import { createDb } from '@crosmos/db';
 import { getVectorStore } from '../../integrations/vector-store';
 import {
@@ -81,7 +82,7 @@ export async function runSpaceFinalization(env: Env): Promise<FinalizeSpacesResu
     finalized: 0,
     skippedActiveJobs: 0,
     failedVectorPurge: 0,
-    disabled: env.SPACE_FINALIZER_ENABLED !== 'true',
+    disabled: !getApiConfig(env).spaceFinalizerEnabled,
   };
   if (result.disabled) return result;
 

@@ -10,6 +10,7 @@ import {
 import { createLogger } from '@crosmos/observability';
 import { and, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
 import type { Env } from '../../bindings';
+import { getApiConfig } from '../../config';
 
 /**
  * Scheduled retention/cleanup sweep, run from the daily cron alongside billing
@@ -42,23 +43,6 @@ const TERMINAL_INGESTION_STATUSES = [
   'cancelled',
 ] as const;
 
-const REVOKED_TOKEN_RETENTION_DAYS = 30;
-const INGESTION_JOB_RETENTION_DAYS = 90;
-const BILLING_EVENT_RETENTION_DAYS = 180;
-const DAILY_USAGE_RETENTION_DAYS = 400;
-
-/**
- * Read an optional retention-window override from env. These knobs are not
- * declared on the `Env` interface (operational tuning, set via wrangler vars),
- * so we read them through a loose record view and validate defensively.
- */
-function retentionDays(env: Env, key: string, fallback: number): number {
-  const raw = (env as unknown as Record<string, unknown>)[key];
-  if (typeof raw !== 'string' && typeof raw !== 'number') return fallback;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
 function cutoffDate(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 }
@@ -73,6 +57,7 @@ export async function cleanupExpiredRows(
   env: Env,
 ): Promise<CleanupResult> {
   const logger = createLogger({ service: 'api', environment: env.ENVIRONMENT });
+  const retention = getApiConfig(env).retentionDays;
   const result: CleanupResult = {
     authorizationCodes: 0,
     revokedRefreshTokens: 0,
@@ -119,13 +104,7 @@ export async function cleanupExpiredRows(
   //    past the retention window from revocation) they can never be replayed,
   //    so they are safe to drop. Default 30-day window.
   result.revokedRefreshTokens = await sweep('revoked_refresh_tokens', async () => {
-    const cutoff = cutoffDate(
-      retentionDays(
-        env,
-        'REVOKED_TOKEN_RETENTION_DAYS',
-        REVOKED_TOKEN_RETENTION_DAYS,
-      ),
-    );
+    const cutoff = cutoffDate(retention.revokedTokens);
     const rows = await db
       .delete(revokedRefreshTokens)
       .where(
@@ -142,13 +121,7 @@ export async function cleanupExpiredRows(
   //    Active/queued jobs (pending/processing) are always preserved. Default
   //    90 days, overridable via INGESTION_JOB_RETENTION_DAYS.
   result.ingestionJobs = await sweep('ingestion_jobs', async () => {
-    const cutoff = cutoffDate(
-      retentionDays(
-        env,
-        'INGESTION_JOB_RETENTION_DAYS',
-        INGESTION_JOB_RETENTION_DAYS,
-      ),
-    );
+    const cutoff = cutoffDate(retention.ingestionJobs);
     const rows = await db
       .delete(ingestionJobs)
       .where(
@@ -165,13 +138,7 @@ export async function cleanupExpiredRows(
   //    prune past the retention window. Unprocessed events (processed_at NULL)
   //    are retained so reconciliation can still pick them up. Default 180 days.
   result.billingEvents = await sweep('billing_events', async () => {
-    const cutoff = cutoffDate(
-      retentionDays(
-        env,
-        'BILLING_EVENT_RETENTION_DAYS',
-        BILLING_EVENT_RETENTION_DAYS,
-      ),
-    );
+    const cutoff = cutoffDate(retention.billingEvents);
     const rows = await db
       .delete(billingEvents)
       .where(
@@ -187,13 +154,7 @@ export async function cleanupExpiredRows(
   // 5. Daily usage counters: keep ~13 months for billing history, then prune.
   //    `date` is a calendar date column, so compare against the cutoff date.
   result.dailyUsage = await sweep('daily_usage', async () => {
-    const cutoff = cutoffDate(
-      retentionDays(
-        env,
-        'DAILY_USAGE_RETENTION_DAYS',
-        DAILY_USAGE_RETENTION_DAYS,
-      ),
-    );
+    const cutoff = cutoffDate(retention.dailyUsage);
     const cutoffYmd = cutoff.toISOString().slice(0, 10);
     const rows = await db
       .delete(dailyUsage)

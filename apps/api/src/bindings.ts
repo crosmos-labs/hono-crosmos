@@ -1,4 +1,5 @@
 import type { IngestionJobMessage } from '@crosmos/types';
+import type { DeploymentEnvironment } from '@crosmos/runtime';
 
 /**
  * RPC surface of the ingestion worker (apps/ingestion `IngestionWorker`),
@@ -44,7 +45,7 @@ export interface Env {
   RATE_LIMITER?: DurableObjectNamespace;
 
   // Vars
-  ENVIRONMENT: 'development' | 'production';
+  ENVIRONMENT: DeploymentEnvironment;
   OAUTH_SERVER_BASE_URL: string;
   APP_BASE_URL: string;
 
@@ -118,6 +119,11 @@ export interface Env {
   // enough to expire a slot out from under a live request.
   RETRIEVAL_TIMEOUT_SECONDS?: string;
   RETRIEVAL_SLOT_TTL_SECONDS?: string;
+  REVOKED_TOKEN_RETENTION_DAYS?: string;
+  INGESTION_JOB_RETENTION_DAYS?: string;
+  BILLING_EVENT_RETENTION_DAYS?: string;
+  DAILY_USAGE_RETENTION_DAYS?: string;
+  DEBUG_ERRORS?: string;
 }
 
 // Variables Hono sets on the request context (populated by middleware).

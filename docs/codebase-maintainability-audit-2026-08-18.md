@@ -272,7 +272,11 @@ The apps and some packages define `typecheck:test`, but Turbo's root `typecheck`
 - The root quality command typechecks every test file.
 - Removing or changing an interface used only by tests cannot leave CI green with invalid test TypeScript.
 
-### [ ] CFG-1 — Add an executable deployment-config consistency test
+### [x] CFG-1 — Add an executable deployment-config consistency test
+
+Completed 2026-08-19. The TOML-backed contract test asserts the production
+provider/vector space, Qdrant collections, queues, service binding, Hyperdrive,
+placement, and retained rollback indexes across the API and ingestion Workers.
 
 **Finding**
 
@@ -296,7 +300,12 @@ The test should describe current production (`openai`, 1536, `qdrant`, `zeroentr
 - A one-sided provider/dimension change fails before deployment.
 - Voyage can be promoted by one intentional, reviewed config change and associated expectation update.
 
-### [ ] CFG-2 — Parse environment configuration once into typed, validated config
+### [x] CFG-2 — Parse environment configuration once into typed, validated config
+
+Completed 2026-08-19. Shared strict parsers and per-Worker cached config readers
+now produce typed provider selections and validated numeric/boolean settings.
+The deployment-environment type includes staging without pretending a staged
+deployment is currently provisioned.
 
 **Finding**
 
@@ -318,7 +327,12 @@ The API and ingestion `ENVIRONMENT` types allow only `development | production`,
 - Application services no longer parse raw env strings independently.
 - Staging is represented truthfully in TypeScript.
 
-### [ ] CFG-3 — Reduce Wrangler duplication and remove historical narratives from manifests
+### [x] CFG-3 — Reduce Wrangler duplication and remove historical narratives from manifests
+
+Completed 2026-08-19. Manifests now contain local defaults plus the supported
+production environment, concise invariant comments, and explicit rollback
+bindings. Unsupported staging declarations and ambiguous deploy scripts were
+removed; dry-run builds explicitly select the top-level environment.
 
 **Finding**
 
@@ -339,7 +353,11 @@ The Wrangler files contain useful configuration but also incident history, old b
 - Dry-run builds emit no environment-selection warning.
 - No deployment command has an ambiguous target.
 
-### [ ] DB-1 — Repair migration workflow contradictions
+### [x] DB-1 — Repair migration workflow contradictions
+
+Completed 2026-08-19. Drizzle snapshots are no longer ignored, the executable
+chain has an automated journal/SQL/snapshot test, and automatic migration is a
+guarded local-only command. Production uses one documented reviewed-SQL path.
 
 **Finding**
 

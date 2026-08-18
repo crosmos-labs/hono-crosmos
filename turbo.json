@@ -9,10 +9,6 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "deploy": {
-      "dependsOn": ["build"],
-      "cache": false
-    },
     "typecheck": {
       "dependsOn": ["^build"]
     },

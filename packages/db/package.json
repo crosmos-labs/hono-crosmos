@@ -11,8 +11,9 @@
   },
   "scripts": {
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate",
+    "migrate:local": "bun scripts/migrate-local.ts",
     "studio": "drizzle-kit studio",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

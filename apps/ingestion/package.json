@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "build": "wrangler deploy --dry-run --outdir=dist",
-    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir=dist",
     "deploy:production": "wrangler deploy --env production",
-    "deploy:staging": "wrangler deploy --env staging",
     "test": "TEST_DATABASE_URL=${TEST_DATABASE_URL:-postgresql://crosmos:crosmos@localhost:5433/crosmos_test_ingestion} bun test",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "typecheck": "tsc --noEmit",

@@ -12,6 +12,7 @@ import {
 import { inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
+import { getApiConfig } from '../../config';
 import { getDb } from '../../db';
 import {
   enforcePlanRateLimit,
@@ -713,7 +714,7 @@ searchRoutes.openapi(
       // correlated by request_id. `request_id` is returned so a caller can quote
       // it for support without us leaking the message.
       const debugErrors =
-        (c.env as { DEBUG_ERRORS?: string }).DEBUG_ERRORS === 'true';
+        getApiConfig(c.env).debugErrors;
       const detail = debugErrors
         ? {
             error: 'retrieval_failed',

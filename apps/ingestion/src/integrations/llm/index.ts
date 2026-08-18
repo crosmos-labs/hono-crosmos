@@ -1,4 +1,5 @@
 import type { Env } from '../../bindings';
+import { getIngestionConfig } from '../../config';
 import { OpenAILLM } from './openai';
 import { OpenRouterLLM } from './openrouter';
 import type { LLM } from './port';
@@ -15,21 +16,13 @@ export { LLMRequestError } from './openai-compat';
  * meaningless without an LLM (unlike email, which silently no-ops in dev).
  */
 export function getLLM(env: Env): LLM {
-  const provider = env.LLM_PROVIDER ?? 'openrouter';
-
-  if (provider === 'openai') {
-    if (!env.OPENAI_API_KEY) {
-      throw new Error('LLM_PROVIDER=openai but OPENAI_API_KEY is not set');
-    }
-    return new OpenAILLM({ apiKey: env.OPENAI_API_KEY });
+  const config = getIngestionConfig(env).llm;
+  if (config.provider === 'openai') {
+    return new OpenAILLM({ apiKey: config.apiKey });
   }
 
-  // Default: OpenRouter.
-  if (!env.OPENROUTER_API_KEY) {
-    throw new Error('LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set');
-  }
   return new OpenRouterLLM({
-    apiKey: env.OPENROUTER_API_KEY,
+    apiKey: config.apiKey,
     appUrl: 'https://crosmos.dev',
     appName: 'Crosmos',
   });

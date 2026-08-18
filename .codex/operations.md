@@ -32,11 +32,13 @@ never a Hyperdrive binding:
 
 ```sh
 DATABASE_URL=... bun run db:generate
-DATABASE_URL=... bun run db:migrate
+DATABASE_URL=postgresql://crosmos:crosmos@localhost:5433/crosmos \
+  bun run db:migrate:local
 ```
 
-Do not run raw `psql` migration files as an alternative workflow. Generated SQL,
-the migration journal, and schema must move together.
+The guarded migration command is local-only. Production changes require a
+reviewed numbered SQL file applied explicitly through `psql`, followed by schema
+and application verification. Generated SQL, journal, and snapshot move together.
 
 ## Production deployment
 

@@ -4,6 +4,8 @@ compatibility_date = "2024-12-23"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 
+# Top-level resources are local-development defaults. Production is the only
+# supported deployed environment and is always selected explicitly.
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
@@ -64,8 +66,6 @@ custom_domain = true
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-# Query caching is disabled on this shared external config; admin reads and
-# audited mutations require fresh authorization and read-after-write results.
 id = "53d75344f62e4e4da0974c2fdfcc5b0d"
 
 [[env.production.kv_namespaces]]
@@ -88,52 +88,5 @@ new_sqlite_classes = ["AdminRateLimiterDO"]
 ENVIRONMENT = "production"
 ADMIN_RATE_LIMIT_PER_MINUTE = "60"
 
-[env.staging]
-workers_dev = false
-
-[env.staging.version_metadata]
-binding = "CF_VERSION_METADATA"
-
-[env.staging.observability]
-enabled = true
-head_sampling_rate = 1
-
-[env.staging.observability.logs]
-enabled = true
-persist = true
-invocation_logs = true
-head_sampling_rate = 1
-
-[[env.staging.routes]]
-pattern = "admin-staging.crosmos.dev"
-custom_domain = true
-
-[[env.staging.hyperdrive]]
-binding = "HYPERDRIVE"
-# Query caching is disabled, matching production freshness semantics.
-id = "930052d5e0dc40c8911417c7ef3e8c13"
-
-[[env.staging.kv_namespaces]]
-binding = "API_KEY_CACHE"
-id = "0af915afd8064727b0290dbc2db10d0c"
-
-[[env.staging.analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "crosmos_admin_staging"
-
-[[env.staging.durable_objects.bindings]]
-name = "ADMIN_RATE_LIMITER"
-class_name = "AdminRateLimiterDO"
-
-[[env.staging.migrations]]
-tag = "v1"
-new_sqlite_classes = ["AdminRateLimiterDO"]
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-ADMIN_RATE_LIMIT_PER_MINUTE = "60"
-
-# Secrets/vars required per environment:
-# ACCESS_TEAM_DOMAIN (example: team.cloudflareaccess.com)
-# ACCESS_AUD (Access application audience tag)
-# ADMIN_ALLOWED_EMAILS (comma-separated exact addresses)
+# Required production secrets/vars: ACCESS_TEAM_DOMAIN, ACCESS_AUD, and
+# ADMIN_ALLOWED_EMAILS.

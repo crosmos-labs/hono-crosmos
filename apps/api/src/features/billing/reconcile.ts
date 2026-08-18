@@ -1,17 +1,15 @@
 import { createDb, organizations, type Database } from '@crosmos/db';
 import { and, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import type { Env } from '../../bindings';
-
-function gracePeriodDays(env: Env): number {
-  const raw = Number(env.BILLING_GRACE_PERIOD_DAYS ?? '7');
-  return Number.isFinite(raw) && raw >= 0 ? raw : 7;
-}
+import { getApiConfig } from '../../config';
 
 export async function reconcileExpiredSubscriptions(
   db: Database,
   env: Env,
 ): Promise<number> {
-  const cutoff = new Date(Date.now() - gracePeriodDays(env) * 86_400_000);
+  const cutoff = new Date(
+    Date.now() - getApiConfig(env).billingGracePeriodDays * 86_400_000,
+  );
   const rows = await db
     .update(organizations)
     .set({
