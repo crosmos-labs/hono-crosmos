@@ -1,80 +1,85 @@
 # Code Architecture
 
-## Monorepo Layout
+status: current
+owner: engineering
+last_verified: 2026-08-19
+owns: application/package boundaries and mounted HTTP surface
+does_not_own: endpoint payload details, deployment resource values, or roadmap
 
-```
+## Monorepo map
+
+```text
 apps/
-  api/          Hono HTTP Worker
-  ingestion/    Cloudflare Queue consumer Worker
+  api/           Public Hono API, scheduled maintenance, RateLimiterDO
+  ingestion/     Queue + service-binding ingestion Worker
+  admin/         Access-gated operational Hono API, AdminRateLimiterDO
 packages/
-  db/           Drizzle schema, migrations, createDb()
-  ai/           Shared embedding and reranker clients
-  types/        Cross-worker contracts and TenantScope
-.codex/         Compact architecture and operations context
+  db/            Drizzle schema, database factory, repositories/helpers
+  types/         Cross-worker contracts and TenantScope
+  ai/            Embedding and reranker ports/adapters
+  vector/        Vector-store ports, Qdrant and Vectorize adapters
+  runtime/       Worker-neutral deadlines, background work, caches, entitlements
+  observability/ Structured logging, metrics, tracing helpers
+  test-support/  Shared integration-test database and fixtures
 ```
+
+Dependencies flow from apps into packages. Shared packages must not import app
+code. Provider selection belongs at Worker composition roots; domain services
+depend on ports. `@crosmos/db` leaf modules import database types from a leaf
+module, never back through the package barrel.
 
 ## API Worker
 
-Entry point: `apps/api/src/index.ts`.
+`apps/api/src/index.ts` is the composition root. It owns global middleware,
+error mapping, OpenAPI/docs, scheduled maintenance, Worker exports, and these
+mounted route groups:
 
-Mounted route groups:
+| Prefix | Feature ownership |
+|---|---|
+| `/api/v1/auth`, `/api/v1/auth/oauth` | Sessions, API keys, Google OAuth consumer |
+| `/api/v1/orgs` | Organizations, members, invites, entitlements, visibility policy |
+| `/api/v1/spaces` | Spaces, space usage, space analytics |
+| `/api/v1/sources` | Source lifecycle and ingestion dispatch |
+| `/api/v1/conversations` | Conversation source ingestion |
+| `/api/v1/memories` | Memory reads and forgetting |
+| `/api/v1/entities`, `/api/v1/graph` | Knowledge-graph reads |
+| `/api/v1/search` | Admission and inline retrieval |
+| `/api/v1/jobs` | Ingestion job status |
+| `/api/v1/usage`, `/api/v1/analytics` | Customer metering and analytics |
+| `/api/v1/billing`, `/webhooks` | Plans, checkout/subscription operations, Polar webhooks |
+| `/oauth/*`, `/.well-known/*` | OAuth server metadata/flows and security metadata |
+| `/health`, `/openapi.json`, `/docs` | Operations and API description |
 
-- `/health`
-- `/api/v1/auth`
-- `/api/v1/auth/oauth`
-- `/api/v1/orgs`
-- `/api/v1/spaces`
-- `/api/v1/sources`
-- `/api/v1/conversations`
-- `/api/v1/search`
-- `/api/v1/jobs`
-- OAuth server routes at `/oauth/*` and `/.well-known/oauth-authorization-server`
-- `/openapi.json` and `/docs`
-
-Feature structure:
-
-- `features/auth`: JWT sessions, API keys, auth middleware.
-- `features/oauth`: Google OAuth consumer plus OAuth 2.1 server routes for external connectors.
-- `features/orgs`: org service, memberships, entitlements, quota checks.
-- `features/spaces`: memory-space CRUD.
-- `features/sources`: source CRUD and async ingestion enqueue.
-- `features/conversations`: conversation segmentation into source batches.
-- `features/search`: inline hybrid retrieval.
-- `features/jobs`: ingestion job status.
-- `integrations`: KV rate limiting, queue adapter, job store, email, embeddings, reranker.
-- `lib`: scope, crypto, gate cache, shared Zod helpers.
-
-Auth supports JWT bearer tokens and `csk_...` API keys. API keys are hashed and cached in KV; JWTs carry `active_org_id`. `requirePrincipal` resolves the org context used by feature routes.
+Feature directories contain schemas, HTTP route adapters, and application/domain
+services. Route modules translate HTTP to typed service calls; service modules
+must not own Hono response objects or HTTP exceptions. Integrations implement
+provider/runtime ports. `lib` is reserved for genuinely cross-feature API
+infrastructure.
 
 ## Ingestion Worker
 
-Entry point: `apps/ingestion/src/index.ts`.
+`apps/ingestion/src/index.ts` is the composition root for queue, dead-letter,
+and service-binding RPC delivery. `process-ingestion.ts` coordinates a job;
+`ingestion/pipeline.ts` coordinates one source. Extractors own memory/graph
+interpretation, integration modules own providers and storage, and the ontology
+and prompt directories contain extraction policy.
 
-The worker handles Cloudflare Queue batches. Wrangler sets `max_batch_size = 1`, so one queue message is one ingestion job. A job can contain many source IDs.
+Queue and RPC delivery must converge on the same atomic database claim. Queue
+messages are cross-worker contracts from `@crosmos/types`; continuation messages
+represent healthy checkpoint progress and do not consume the failure policy.
 
-Main modules:
+## Admin Worker
 
-- `process-ingestion.ts`: job-level orchestration, idempotency gates, retries, status rollup, usage recording.
-- `ingestion/pipeline.ts`: single-source pipeline.
-- `extractors/*`: memory extraction, graph extraction, normalization, temporal fallback, entity resolution.
-- `ontology/*`: allowed entity and relation types.
-- `prompts/*`: extraction prompts.
-- `integrations/llm`: OpenRouter/OpenAI-compatible LLM adapters.
-- `integrations/embeddings`: embedding adapter used by ingestion.
+`apps/admin/src/index.ts` is the composition root. Authentication requires a
+valid Cloudflare Access JWT and an exact external email allowlist match. The
+worker provides bounded, content-safe operational reads and audited mutations.
+Authentication, rate limiting, request plumbing, route groups, and persistence
+helpers belong in separate modules as the worker grows.
 
-## Shared Packages
+## Data ownership
 
-- `@crosmos/db` exports Drizzle schema and `createDb(connectionString)`.
-- `@crosmos/types` defines `TenantScope`, ingestion queue message shape, and job result/status contracts.
-- `@crosmos/ai` defines shared embedding/reranker ports and HTTP adapters.
-
-## Database Shape
-
-Core tables:
-
-- Identity and auth: `users`, `organizations`, `organization_members`, `api_keys`, OAuth tables.
-- Memory containers: `memory_spaces`, `sources`, `memories`.
-- Knowledge graph: `entities`, `edges`, `memory_entities`, `source_memories`.
-- Operations and metering: `ingestion_jobs`, `daily_usage`.
-
-Drizzle is configured with `casing: 'snake_case'`, so TypeScript fields are camelCase while SQL columns remain snake_case.
+Postgres is authoritative for identities/auth, organizations/memberships,
+spaces, sources, chunks, memories, `chunk_memories`, entities/edges,
+visibility groups/grants, ingestion jobs, entitlements/billing, usage rollups,
+and admin audit records. Qdrant stores rebuildable memory/entity vectors only.
+TypeScript uses camelCase Drizzle fields with `casing: 'snake_case'` for SQL.

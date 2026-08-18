@@ -1,83 +1,64 @@
 # Pipelines
 
-## Source Ingestion
+status: current
+owner: engineering
+last_verified: 2026-08-19
+owns: current ingestion and retrieval execution sequence
+does_not_own: provider credentials, tuning roadmap, or historical incidents
 
-Route: `POST /api/v1/sources`
+## Source and conversation ingestion
 
-1. Authenticate with JWT or API key.
-2. Resolve org/principal context.
-3. Run preflight gates in this order: plan rate limit, queue depth, per-user pending-job cap, space access, monthly token quota.
-4. Insert `sources` rows with `extraction_status = pending`.
-5. Insert an `ingestion_jobs` row.
-6. Enqueue one Cloudflare Queue message with integer `org_id`, `space_id`, `user_id`, and `source_ids`.
-7. Return `202` with `job_id` and source UUIDs.
+`POST /api/v1/sources` and `POST /api/v1/conversations` authenticate, resolve
+the organization, apply plan/queue/pending-job/space/quota gates, persist source
+and job state, enqueue a durable queue message, and request a low-latency service
+binding kick. Conversation ingestion stores one conversation source; role-aware
+windowing and lookback context are produced by the ingestion chunker.
 
-Backpressure constants:
+The queue copy and RPC kick carry the same job identity. `claimJob()` is the
+coordination point: exactly one delivery owns a live processing lease. The queue
+remains the durable recovery path if the RPC call never starts or dies.
 
-- Queue depth cap: `5000`
-- Retry-After when queue is full: `30s`
-- Pending jobs per user: `5000`
-- Sources per request: `1..100`
-- Content length per source: `100000` chars
+## Job and source processing
 
-## Conversation Ingestion
+`processIngestionRun()` owns job claim/heartbeat, source iteration, checkpoint
+continuation, retry classification, job rollup, and usage accounting.
+`ingestSource()` owns one source pipeline:
 
-Route: `POST /api/v1/conversations`
+1. Load the source and create deterministic chunks.
+2. Resume from the durable chunk checkpoint and plan the bounded window.
+3. Build batched existing-memory hints for deduplication.
+4. Extract and normalize atomic memories; resolve temporal context.
+5. Extract graph entities/relations. Graph failure is non-fatal to memory
+   extraction where the contract permits it.
+6. Embed, persist canonical memories/evidence links, and write derived vectors.
+7. Resolve entities and persist memory/entity and edge relationships.
+8. Advance the checkpoint only after the window's durable work succeeds.
 
-Conversation messages are segmented into groups of 4. Each segment becomes one text source. The previous 4 segments are attached as `meta.lookback_context` for pronoun resolution during extraction. The route then uses the same source/job/queue path as `POST /sources`.
+Healthy forward progress that exhausts an invocation budget publishes a fresh
+continuation. Transient failures use the delivery retry budget. Terminal and
+cancelled jobs cannot be reclaimed. The DLQ consumer records exhausted delivery;
+scheduled recovery is responsible for durable redrive.
 
-## Queue Processing
+## Retrieval
 
-Consumer: `apps/ingestion/src/index.ts`
+`POST /api/v1/search` performs this sequence:
 
-- One queue message is one ingestion job.
-- Terminal jobs are no-ops on redelivery.
-- Non-pending sources are skipped to keep redelivery idempotent.
-- Retryable LLM/embedding failures retry per source up to 3 attempts with 5s, 10s, 15s delays.
-- Source failures are captured in the job result; one bad source does not requeue the entire job.
-- Unhandled outer failures are not acked and Cloudflare Queues retries or DLQs.
+1. Authenticate, resolve entitlements once, authorize the space, and check plan
+   and usage admission.
+2. Acquire a per-user logical concurrency lease from `RateLimiterDO`; use the KV
+   limiter only as the configured fallback.
+3. Create one query embedding and run semantic, keyword, graph, and temporal
+   retrieval signals with caller cancellation and a six-second route deadline.
+4. Fuse signal ranks with reciprocal rank fusion and hydrate authoritative,
+   visibility-scoped candidate data from Postgres.
+5. Rerank with ZeroEntropy `zerank-2` when enabled; retained Voyage adapters are
+   inactive until an explicit quality-approved migration.
+6. Apply the existing relevance floor, temporal/recency/persistence scoring, and
+   optional diversity selection without changing their ordering.
+7. Load raw source content only for final selected candidates, map the response,
+   and schedule touches/usage accounting as background work.
+8. Release the concurrency lease in `finally`.
 
-## Single-Source Pipeline
-
-Function: `ingestSource()` in `apps/ingestion/src/ingestion/pipeline.ts`
-
-1. Load source and normalize content.
-2. Build existing-memory dedup hints with a search-mode embedding lookup.
-3. Extract atomic memories with the LLM.
-4. Extract graph entities/relations with the LLM; graph extraction failure is non-fatal.
-5. Normalize and dedupe facts.
-6. Fill missing event times with temporal regex fallback.
-7. Embed memory text in batch.
-8. Insert memories and `source_memories`.
-9. Resolve entities with embedding prefilter plus fuzzy matching.
-10. Insert `memory_entities` and graph `edges`.
-
-Critical ingestion constants live in `apps/ingestion/src/constants.ts`.
-
-## Search / Retrieval
-
-Route: `POST /api/v1/search`
-
-1. Authenticate and resolve principal.
-2. Fetch entitlements once and reuse them for rate-limit, quota, and retrieval feature flags.
-3. Apply per-org plan rate limit.
-4. Resolve and authorize the space. Missing and cross-tenant spaces both return 404.
-5. Check monthly search-query quota.
-6. Acquire per-user search concurrency slot from KV.
-7. Load scoped retrieval candidates.
-8. Run `retrieve()` inline with a 30s timeout.
-9. Return ranked memory candidates and schedule `touchMemories()` plus usage metering with `waitUntil`.
-10. Release the concurrency slot in `finally`.
-
-Retrieval stages:
-
-- Extract temporal range.
-- Embed query once and share it across semantic/graph signals.
-- Run semantic, keyword, graph, and temporal signals in parallel.
-- Fuse signals with reciprocal rank fusion.
-- Attach source text for candidate context.
-- Rerank with ZeroEntropy when enabled and allowed; otherwise rank-remap RRF scores.
-- Apply recency, persistence, and temporal boost.
-- Optionally apply MMR diversity.
-
-Critical retrieval constants live in `apps/api/src/features/search/constants.ts`.
+Qdrant supplies candidate IDs, not authorization decisions. Postgres visibility
+and tenant scope remain mandatory during hydration. Ranking constants and stage
+order are product behavior and must not change during structural refactors.

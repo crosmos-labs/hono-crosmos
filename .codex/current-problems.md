@@ -1,5 +1,11 @@
 # Current Problems
 
+status: current
+owner: engineering
+last_verified: 2026-08-19
+owns: known product/platform constraints that should inform design
+does_not_own: implementation backlog, deployment configuration, or incident history
+
 This file records known architecture constraints. Do not treat these as TODOs to solve during unrelated work; use them as context for future performance and platform decisions.
 
 ## Global User Base

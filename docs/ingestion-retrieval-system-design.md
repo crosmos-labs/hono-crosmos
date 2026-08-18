@@ -1,19 +1,42 @@
 # Ingestion and Retrieval System Design
 
-_Code-backed review of the TypeScript/Hono implementation, 2026-08-10._
+status: historical
+owner: engineering
+review_date: 2026-08-10
+last_status_review: 2026-08-19
+superseded_by: [current pipelines LLD](../.codex/pipelines.md) and
+[current deployed architecture](../.codex/deployed-architecture.md)
+
+_Historical code-backed review of the TypeScript/Hono implementation._
+
+> This document preserves the evidence, alternatives, and rationale captured on
+> 2026-08-10. It is not a current architecture specification or defect list.
+> Use the linked compact LLD for current behavior.
+
+## Resolution status as of 2026-08-19
+
+| 2026-08-10 finding | Current status |
+|---|---|
+| Resumed-batch purge could remove prior evidence | Resolved: purge is checkpoint-scoped and covered by recovery tests |
+| Healthy continuations consumed failure retry budget | Resolved: fresh continuation messages are separate from transient delivery retries |
+| Search timeout did not cancel provider work | Resolved: caller cancellation/deadlines propagate through enabled adapters |
+| Speaker role was lost | Resolved: speaker role is persisted and round-trip tested |
+| Raw source content loaded before final selection | Resolved: provenance is hydrated first and content only for selected results |
+| Graph caps followed unbounded reads | Resolved: bounds are applied in SQL and regression tested |
+| Observability bindings were not active | Resolved: logs, traces, Analytics Engine, and dashboards are configured |
+| ANN filtering can starve visible recall | Unresolved product/retrieval concern; not part of maintainability sanitation |
+| Fact supersession/valid-to lifecycle is absent | Unresolved product/data-model concern; not part of maintainability sanitation |
+
 
 ## Scope and reading notes
 
-This document describes the implementation in this repository, not the older
+This document described the implementation at the review date, not the older
 Python service. It was traced from the API and ingestion entrypoints through the
 queue/RPC coordination, Postgres schema, extraction pipeline, vector adapters,
 and search ranking code.
 
-The Wrangler `production` environment in this repository is the current
-customer-facing Hono API at `api.crosmos.dev`. It is configured for OpenAI
-embeddings, OpenAI extraction, Qdrant vectors, ZeroEntropy reranking, Neon
-Postgres through Hyperdrive, and Cloudflare Workers/Queues. The old Python
-service is historical/reference code, not the current production API.
+Provider and deployment statements below are snapshots from the review. See the
+superseding deployed-architecture document for the maintained production matrix.
 
 ## Executive summary
 

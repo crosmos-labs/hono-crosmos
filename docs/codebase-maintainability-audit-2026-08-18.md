@@ -82,7 +82,10 @@ The raw comment percentage is not itself a target. Port contracts, safety invari
 
 ## Priority 0: immediate repository hygiene
 
-### [ ] SEC-1 — Rotate and remove the tracked benchmark credentials
+### [x] SEC-1 — Rotate and remove the tracked benchmark credentials
+
+Completed before this sanitation pass. The tracked credential file was removed
+in commit `f660508`; credential rotation was confirmed by the repository owner.
 
 **Finding**
 
@@ -108,7 +111,10 @@ Deleting the file in a future commit is insufficient if the credentials remain v
 
 ## Priority 1: make architecture and quality gates trustworthy
 
-### [ ] DOC-1 — Define an explicit source-of-truth hierarchy
+### [x] DOC-1 — Define an explicit source-of-truth hierarchy
+
+Completed 2026-08-19. `.codex/README.md` now defines the authority order and
+every compact current-state document declares its ownership and limits.
 
 **Finding**
 
@@ -133,7 +139,11 @@ Add `owner`, `status`, and `last_verified` metadata to durable architecture docu
 - No two documents both claim to be the current architecture source.
 - A reviewer can identify the production provider matrix without reading source comments.
 
-### [ ] DOC-2 — Rewrite the compact LLD from current code/config
+### [x] DOC-2 — Rewrite the compact LLD from current code/config
+
+Completed 2026-08-19. The compact LLD now covers all three Workers, all seven
+shared packages, every mounted API route group, current bindings, Queue + RPC
+coordination, Qdrant, Durable Objects, observability, and the live pipeline.
 
 **Finding**
 
@@ -164,7 +174,10 @@ The compact `.codex` files are materially stale:
 - Every production binding/provider in all three Wrangler files is represented.
 - The LLD agrees with the production matrix at the top of this audit.
 
-### [ ] DOC-3 — Stop treating the 2026-08-10 system-design review as current
+### [x] DOC-3 — Stop treating the 2026-08-10 system-design review as current
+
+Completed 2026-08-19. The review is explicitly historical, links to the durable
+LLD, and distinguishes resolved findings from the remaining product concerns.
 
 **Finding**
 

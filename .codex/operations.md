@@ -1,80 +1,83 @@
 # Operations
 
-## Common Commands
+status: current
+owner: engineering
+last_verified: 2026-08-19
+owns: supported validation, migration, secret, deployment, and smoke procedures
+does_not_own: provider selection or infrastructure provisioning history
+
+## Local and validation commands
+
+Use Bun. A complete production-equivalent local environment is not checked in;
+top-level Wrangler configuration is a local development default, not a deployed
+development environment. `docker-compose.yml` provides Postgres on port 5433.
 
 ```sh
 bun install
 bun run typecheck
+bun run test
 bun run build
-```
-
-Run one Worker locally when the needed local secrets and services exist:
-
-```sh
 bun --filter @crosmos/api dev
 bun --filter @crosmos/ingestion dev
 ```
 
-Wrangler dev ports:
+API dev uses port 8787; ingestion uses 8788. Tests that require Postgres use the
+test database URLs in package scripts.
 
-- API: `8787`
-- Ingestion: `8788`
+## Database migrations
 
-There is no complete local dev setup checked in today. `docker-compose.yml` provides a local Postgres on port `5433`, and the Wrangler configs point local Hyperdrive to `postgresql://crosmos:crosmos@localhost:5433/crosmos`, but `.dev.vars` and end-to-end local setup are not committed.
-
-## Database Migrations
-
-Drizzle config: `packages/db/drizzle.config.ts`.
-
-`DATABASE_URL` must be a direct Postgres connection string, not a Hyperdrive binding.
+Schema is defined under `packages/db/src/schema`; generated migrations and the
+Drizzle journal live under `packages/db/migrations`. Use a direct Postgres URL,
+never a Hyperdrive binding:
 
 ```sh
 DATABASE_URL=... bun run db:generate
 DATABASE_URL=... bun run db:migrate
 ```
 
-## Production Deploy
+Do not run raw `psql` migration files as an alternative workflow. Generated SQL,
+the migration journal, and schema must move together.
+
+## Production deployment
+
+There is no supported staging deployment today. Validate all workers, then use
+explicit production scripts; bare `deploy` is not an approved production command.
 
 ```sh
 bun run typecheck
+bun run test
+bun run build
 bun --filter @crosmos/api deploy:production
 bun --filter @crosmos/ingestion deploy:production
+bun --filter @crosmos/admin deploy:production
 ```
 
-Deploy both workers when changing the queue payload contract in `packages/types`.
+Deploy API and ingestion together for an ingestion contract change. Structural
+sanitation must not be used to switch an AI provider or ranking configuration.
 
 ## Secrets
 
-API Worker secrets:
+| Worker | Secrets by enabled production path |
+|---|---|
+| API | `JWT_SECRET`, Google OAuth secrets, `RESEND_API_KEY`, `POLAR_WEBHOOK_SECRET`, `OPENAI_API_KEY`, `ZEROENTROPY_API_KEY`, Qdrant and billing/OAuth secrets used by bindings |
+| Ingestion | `OPENAI_API_KEY`, `QDRANT_API_KEY` |
+| Admin | Cloudflare Access team/audience and `ADMIN_ALLOWED_EMAILS` configuration |
 
-- `JWT_SECRET`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `RESEND_API_KEY`
-- `POLAR_WEBHOOK_SECRET`
-- `OPENAI_API_KEY`
-- `ZEROENTROPY_API_KEY`
+Adapter-specific secrets such as `VOYAGE_API_KEY` or `OPENROUTER_API_KEY` are
+needed only when that adapter is explicitly enabled. Set secrets with Wrangler
+for the production environment; never commit `.dev.vars` or benchmark secrets.
 
-Ingestion Worker secrets:
+## Observability and smoke checks
 
-- `OPENROUTER_API_KEY`
-- `OPENAI_API_KEY`
-- `ZEROENTROPY_API_KEY`
+Workers Logs/traces and Analytics Engine are enabled for all three production
+workers, with Grafana destinations configured for API and ingestion. Use each
+package's `tail`/Wrangler tooling and the queries in `docs/metrics-runbook.md`.
 
-Use Wrangler for secret updates, scoped to the correct app and environment.
+Read-only API checks:
 
-## Observability
+- `GET https://api.crosmos.dev/health`
+- `GET https://api.crosmos.dev/openapi.json`
+- authenticated `GET /api/v1/spaces`
+- authenticated search against a known space
 
-- Cloudflare dashboard shows Workers, Queues, usage, and live events for the production Hono Worker serving `api.crosmos.dev`.
-- Use `wrangler tail` from the app package when logs are needed.
-- Cloudflare Workers Logs are enabled in each Worker's `wrangler.toml`; application logs use structured JSON objects through `@crosmos/observability`.
-
-## Smoke Checks
-
-The API exposes:
-
-- `GET /health`
-- `GET /openapi.json`
-- `GET /docs`
-
-Search and ingestion smoke tests require valid auth, a memory space, and configured external AI secrets.
+Never deploy merely to perform a maintainability verification.
