@@ -85,6 +85,7 @@ export class ZeroEntropyReranker implements Reranker {
       );
     }
     const json = (await res.json()) as ZeroEntropyResponse;
+    opts?.onModelResolved?.(opts?.model ?? this.defaultModel);
     return json.results
       .map((r) => ({ index: r.index, score: r.relevance_score }))
       .sort((a, b) => b.score - a.score);

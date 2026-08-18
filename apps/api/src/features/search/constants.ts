@@ -28,29 +28,81 @@ export const GRAPH_EDGE_RECENCY_DAYS = 365.0;
 export const RERANKER_MAX_CANDIDATES = 300;
 
 /**
- * Post-rerank relevance floor (NOT a Python port — an additive precision gate).
+ * Post-rerank relevance floors, PER RERANKER MODEL (NOT a Python port — an
+ * additive precision gate).
  *
- * zerank-2 returns a calibrated [0,1] relevance per candidate. Historically it
- * was used only to ORDER results; the engine always returned `slice(0, topK)`,
- * so when the true answer is 1–2 memories, up to 8 weak distractors still got
- * handed to the reader and induced wrong/"unavailable" answers. This floor drops
- * candidates whose reranker relevance is below it BEFORE the top-K slice, so the
- * answer context is only the memories that are actually on-topic.
+ * A cross-encoder returns a relevance score per candidate. Historically it was
+ * used only to ORDER results; the engine always returned `slice(0, topK)`, so
+ * when the true answer is 1-2 memories, up to 8 weak distractors still got
+ * handed to the reader and induced wrong/"unavailable" answers. This floor
+ * drops candidates scoring below it BEFORE the top-K slice, so the answer
+ * context is only the memories that are actually on-topic.
  *
- * Applied ONLY when the cross-encoder is active (the score is calibrated then);
- * the rank-remap fallback uses a different scale and is left untouched. At least
- * one candidate is always kept, so a genuinely weak query never returns empty —
- * abstention / sparse-gold queries simply return fewer, which is correct.
+ * **The floor is a per-model constant because the score scales are NOT
+ * comparable.** Measured against production on 2026-08-19 with the same
+ * off-topic query/memory pair ("why are there two theems for catpuccin…" vs
+ * "User likes to play Genshin Impact"): zerank-2 scored it 0.030, Voyage
+ * rerank-2.5 scored it 0.190 — a 6x difference on identical input. Applying one
+ * model's threshold to another either does nothing or silently destroys recall.
  *
- * Deliberately CONSERVATIVE so it never demotes a real (if weakly-scored) gold
- * memory — recall must not regress. Raise it after measuring against the
- * benchmark backup if precision headroom remains.
+ * A model absent from this table gets NO floor: scores are still used for
+ * ordering, but absolute filtering is skipped until that model is calibrated.
+ * Failing open is correct here — an uncalibrated threshold can only lose recall.
+ *
+ * ### rerank-2.5 = 0.40 (calibrated 2026-08-19)
+ *
+ * Measured on production over 91 labeled searches across three corpora (37, 19
+ * and 1 memories) — 44 positive queries with known gold memories, 47 off-topic
+ * negatives. Queries used `recency_bias: 0` so the reported score is the raw
+ * model relevance with no boost applied. Separation was wide and stable:
+ *
+ * | band                                    | score range   |
+ * |-----------------------------------------|---------------|
+ * | gold memories, direct questions         | 0.63 – 0.96   |
+ * | gold memories, vague/1-word/misspelled  | 0.49 – 0.75   |
+ * | irrelevant memories, off-topic queries  | 0.18 – 0.49   |
+ *
+ * The floor sweep put the knee at 0.40: every one of the 44 positive queries
+ * retained at least one gold memory (100% recall, including deliberately hard
+ * probes like "oslo", "diet", "resturant reservaton anniversry" and "what
+ * should I know before booking my flight?"), while 97.1% of irrelevant results
+ * were dropped. The weakest gold observed anywhere scored 0.486, so 0.40 leaves
+ * ~0.09 of headroom below it. Recall only starts to break at 0.50, where the
+ * first positive query loses all of its gold.
+ *
+ * Deliberately CONSERVATIVE: the remaining negatives above 0.40 are queries
+ * that genuinely share entities with the corpus ("what allergies does my dog
+ * have?" at 0.488 against a corpus of allergy facts). Being permissive there is
+ * the right call. Re-measure before moving this — `docs/` has the sweep.
+ *
+ * ### zerank-2 = 0.02 (legacy, UNDER-calibrated)
+ *
+ * The original value, chosen conservatively before per-model data existed. The
+ * 2026-08-19 measurement showed it is far too low to do useful work: the
+ * off-topic pair above scored 0.030 and would still pass. Left unchanged
+ * because ZeroEntropy is being wound down and no environment should depend on
+ * retuning it; staging is the only consumer.
  */
-export const RERANK_RELEVANCE_FLOOR = 0.02;
+export const RERANK_RELEVANCE_FLOORS: Readonly<Record<string, number>> = {
+  'zerank-2': 0.02,
+  'rerank-2.5': 0.4,
+};
+
+/**
+ * The calibrated relevance floor for `model`, or `null` when that model has no
+ * measured threshold and must not be absolute-filtered.
+ *
+ * Note this takes the model that ACTUALLY produced the scores, not the
+ * reranker's configured default — Voyage falls back to `rerank-2.5-lite` on a
+ * 429, and lite has no calibration of its own.
+ */
+export function rerankRelevanceFloor(model: string): number | null {
+  return RERANK_RELEVANCE_FLOORS[model] ?? null;
+}
 
 /**
  * Per-session diversity penalty for the final top-K selection (NOT a Python port
- * — an additive recall-preserving gate, sibling to RERANK_RELEVANCE_FLOOR).
+ * — an additive recall-preserving gate, sibling to RERANK_RELEVANCE_FLOORS).
  *
  * The extraction prompt now also stores assistant-provided facts, which roughly
  * doubled memories/session and let one on-query session's cluster monopolise the

@@ -56,6 +56,7 @@ export class WorkersAiReranker implements Reranker {
     }
 
     const results = output?.response ?? [];
+    opts?.onModelResolved?.(opts?.model ?? this.defaultModel);
     return results
       .map((r) => ({ index: r.id, score: r.score }))
       .sort((a, b) => b.score - a.score);

@@ -31,7 +31,7 @@ import {
   RECENCY_ALPHA,
   RECENCY_ALPHA_FALLBACK,
   RECENCY_CENTER,
-  RERANK_RELEVANCE_FLOOR,
+  rerankRelevanceFloor,
   RERANKER_MAX_CANDIDATES,
   SESSION_DIVERSITY_PENALTY,
   SEMANTIC_MIN_SCORE,
@@ -140,6 +140,23 @@ function expired(signal: AbortSignal | undefined): boolean {
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
+}
+
+/**
+ * Drop candidates whose cross-encoder relevance is below `floor`.
+ *
+ * Exported so the calibration can be regression-tested against recorded
+ * production score distributions rather than only asserted on a constant — the
+ * number is only meaningful relative to real gold/noise scores.
+ *
+ * Returns an empty array when nothing clears the floor. That is intentional:
+ * see the call site for why "no relevant memory" must be representable.
+ */
+export function applyRelevanceFloor(
+  scored: CandidateMemory[],
+  floor: number,
+): CandidateMemory[] {
+  return scored.filter((c) => c.rerankScore >= floor);
 }
 
 /**
@@ -433,13 +450,13 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   }
 
   let ceEnabled = reranker !== null && ceAllowed && query.rerank;
-  // The 0.02 precision floor was calibrated against zerank-2 specifically.
-  // Voyage and Workers AI expose provider-native score distributions; applying
-  // a ZeroEntropy threshold to them would silently change recall even when the
-  // reranked ordering is good. Keep their scores for ordering/boosting, but do
-  // not perform absolute-score filtering until a benchmark calibrates a model-
-  // specific threshold.
-  const calibratedRerankFloor = reranker?.defaultModel === 'zerank-2';
+  // Relevance floor, resolved AFTER the rerank call from the model that
+  // actually produced the scores — not from `reranker.defaultModel`, which lies
+  // when Voyage degrades to `rerank-2.5-lite` on a 429. Score scales are not
+  // comparable across models (see RERANK_RELEVANCE_FLOORS), so an uncalibrated
+  // model yields `null` here and is never absolute-filtered: its scores still
+  // order results, they just cannot be thresholded.
+  let rerankFloor: number | null = null;
 
   const selectorFused = reciprocalRankFusion(rankedLists);
   const fallbackFused = selectorFused;
@@ -534,16 +551,21 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
       if (c) selection.push(c);
     }
     try {
-      baseScores = await stages.span(
+      const reranked = await stages.span(
         'rerank',
         () => rerankCandidates(reranker!, query.text, selection, input.signal),
       );
+      baseScores = reranked.scores;
       if (baseScores.size === 0) ceEnabled = false;
+      // Keyed off the scoring model, so a rate-limit degradation to an
+      // uncalibrated model turns the floor off instead of misapplying one.
+      if (ceEnabled) rerankFloor = rerankRelevanceFloor(reranked.model);
       stages.record('rerank', 'ok', durationMs(rerankStart), {
-        model: reranker!.defaultModel,
+        model: reranked.model,
         candidate_count: selection.length,
         result_count: baseScores.size,
         ce_enabled: ceEnabled,
+        relevance_floor: rerankFloor,
       }, { inputCount: selection.length, outputCount: baseScores.size });
     } catch (err) {
       stages.record('rerank', 'failed', durationMs(rerankStart), {
@@ -663,19 +685,31 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   // Stage 9 — sort, apply the rerank relevance floor, then select top_k (or MMR).
   scored.sort((a, b) => b.finalScore - a.finalScore);
 
-  // Post-rerank precision gate: when the cross-encoder is active, drop weakly
-  // relevant candidates so the reader sees only on-topic memories. Always keep
-  // at least the single best candidate — a weak query returns fewer, never zero.
+  // Post-rerank precision gate: when the cross-encoder is active AND its model
+  // has a calibrated threshold, drop weakly relevant candidates so the reader
+  // sees only on-topic memories.
+  //
+  // This gate is ABSOLUTE — if nothing clears the floor the search returns
+  // empty. It previously kept `scored.slice(0, 1)` unconditionally, which made
+  // the floor unobservable in the case it exists for: a space whose memories
+  // are all irrelevant to the query still returned its single best memory, so
+  // an off-topic question got answered with whatever the space happened to
+  // contain. Measured on production 2026-08-19, that fallback leaked a result
+  // for 47/47 off-topic queries no matter how the floor was set. "No relevant
+  // memory" is a valid, useful answer; manufacturing one is not.
+  //
+  // Recall is protected by where the floor sits, not by a minimum result count:
+  // rerank-2.5's 0.40 was chosen so all 44 measured positive queries keep at
+  // least one gold memory, with headroom below the weakest gold observed.
   let selectable = scored;
-  if (ceEnabled && calibratedRerankFloor && scored.length > 0) {
-    const aboveFloor = scored.filter((c) => c.rerankScore >= RERANK_RELEVANCE_FLOOR);
-    selectable = aboveFloor.length > 0 ? aboveFloor : scored.slice(0, 1);
+  if (rerankFloor !== null && scored.length > 0) {
+    selectable = applyRelevanceFloor(scored, rerankFloor);
     if (selectable.length !== scored.length) {
       logger?.info('retrieval.stage_completed', {
         stage: 'rerank_floor',
         candidate_count: scored.length,
         result_count: selectable.length,
-        floor: RERANK_RELEVANCE_FLOOR,
+        floor: rerankFloor,
       });
     }
   }

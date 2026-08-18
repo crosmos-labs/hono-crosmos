@@ -48,6 +48,7 @@ export class VoyageReranker implements Reranker {
     if (documents.length === 0) return [];
 
     const primaryModel = opts?.model ?? this.defaultModel;
+    let scoringModel = primaryModel;
     let res = await this.request(query, documents, primaryModel, opts);
     const fallbackModel = this.config.rateLimitFallbackModel;
     if (
@@ -72,6 +73,7 @@ export class VoyageReranker implements Reranker {
         // retrieval failure.
       }
       res = await this.request(query, documents, fallbackModel, opts);
+      scoringModel = fallbackModel;
     }
 
     if (!res.ok) {
@@ -111,6 +113,9 @@ export class VoyageReranker implements Reranker {
       }
       reranked.push({ index: result.index!, score: result.relevance_score });
     }
+    // Only after the response is known good: the caller uses this to pick an
+    // absolute score threshold, so it must describe scores that exist.
+    opts?.onModelResolved?.(scoringModel);
     return reranked.sort((a, b) => b.score - a.score);
   }
 

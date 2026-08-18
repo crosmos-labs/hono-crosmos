@@ -22,6 +22,16 @@ export interface RerankOptions {
    * `EmbedOptions.signal`.
    */
   signal?: AbortSignal;
+  /**
+   * Invoked with the model id that actually produced the returned scores,
+   * before `rerank` resolves. This is NOT always `defaultModel`: an adapter may
+   * degrade to another model mid-call (Voyage falls back to `rerank-2.5-lite`
+   * on a 429). Callers that interpret scores on an absolute scale — e.g. the
+   * retrieval relevance floor, which is calibrated per model — must key off
+   * this rather than the configured default. Never called when no request is
+   * made (empty `documents`) or when the call fails.
+   */
+  onModelResolved?: (model: string) => void;
 }
 
 export interface Reranker {

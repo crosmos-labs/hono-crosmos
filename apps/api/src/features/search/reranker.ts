@@ -45,19 +45,31 @@ export function formatDoc(
   return parts.join(' ');
 }
 
-/** Score candidates with the cross-encoder → `{memoryId: clamped score}`. */
+/**
+ * Score candidates with the cross-encoder.
+ *
+ * Returns the scores keyed by memory id AND the model that produced them. The
+ * model matters to the caller because the relevance floor is calibrated per
+ * model and an adapter may degrade mid-call (Voyage → `rerank-2.5-lite` on a
+ * 429), so `reranker.defaultModel` is not a reliable description of the scores.
+ * Falls back to `defaultModel` if an adapter does not report one.
+ */
 export async function rerankCandidates(
   reranker: Reranker,
   query: string,
   candidates: RankedCandidate[],
   signal?: AbortSignal,
-): Promise<Map<number, number>> {
+): Promise<{ scores: Map<number, number>; model: string }> {
   const result = new Map<number, number>();
-  if (candidates.length === 0) return result;
+  if (candidates.length === 0) return { scores: result, model: reranker.defaultModel };
 
   const includeRecordedAt = reranker.defaultModel.startsWith('rerank-2.5');
   const documents = candidates.map((candidate) => formatDoc(candidate, includeRecordedAt));
-  const results = await reranker.rerank(query, documents, { signal });
+  let scoringModel = reranker.defaultModel;
+  const results = await reranker.rerank(query, documents, {
+    signal,
+    onModelResolved: (model) => { scoringModel = model; },
+  });
 
   for (const { index, score } of results) {
     const candidate = candidates[index];
@@ -65,5 +77,5 @@ export async function rerankCandidates(
     const clamped = Number.isNaN(score) ? 0.0 : Math.max(0.0, Math.min(1.0, score));
     result.set(candidate.memoryId, clamped);
   }
-  return result;
+  return { scores: result, model: scoringModel };
 }

@@ -1,0 +1,1465 @@
+{
+ "_comment": "Raw Voyage rerank-2.5 relevance scores recorded from production (api.crosmos.dev) on 2026-08-19 to calibrate RERANK_RELEVANCE_FLOORS. Each entry is one /search call with recency_bias=0, so the reported score is the model's relevance with no recency/temporal boost applied -- the same value the floor is compared against. 'gold' are the memories that genuinely answer the query, 'noise' are the rest. Corpora: 37-memory and 19-memory labeled spaces plus a 1-memory space reproducing the reported single-memory false-positive.",
+ "recorded_at": "2026-08-19",
+ "model": "rerank-2.5",
+ "cases": [
+  {
+   "query": "which hotel did I book for the Oslo trip?",
+   "label": "positive",
+   "gold": [
+    0.90625
+   ],
+   "noise": [
+    0.427734,
+    0.269531,
+    0.255859,
+    0.248047,
+    0.245117,
+    0.242188,
+    0.238281,
+    0.236328,
+    0.235352
+   ]
+  },
+  {
+   "query": "who leads Project Meridian Phoenix?",
+   "label": "positive",
+   "gold": [
+    0.933594
+   ],
+   "noise": [
+    0.609375,
+    0.570312,
+    0.503906,
+    0.349609,
+    0.318359,
+    0.3125,
+    0.306641,
+    0.283203,
+    0.261719
+   ]
+  },
+  {
+   "query": "what is the Zenith invoice code?",
+   "label": "positive",
+   "gold": [
+    0.921875
+   ],
+   "noise": [
+    0.306641,
+    0.306641,
+    0.287109,
+    0.277344,
+    0.263672,
+    0.253906,
+    0.248047,
+    0.229492,
+    0.222656
+   ]
+  },
+  {
+   "query": "when is my anniversary?",
+   "label": "positive",
+   "gold": [
+    0.859375
+   ],
+   "noise": [
+    0.65625,
+    0.462891,
+    0.373047,
+    0.371094,
+    0.361328,
+    0.353516,
+    0.345703,
+    0.341797,
+    0.335938
+   ]
+  },
+  {
+   "query": "what do I order at Casa Lucero?",
+   "label": "positive",
+   "gold": [
+    0.804688
+   ],
+   "noise": [
+    0.34375,
+    0.341797,
+    0.275391,
+    0.263672,
+    0.242188,
+    0.235352,
+    0.232422,
+    0.228516,
+    0.225586
+   ]
+  },
+  {
+   "query": "where is Pulsar Archive hosted?",
+   "label": "positive",
+   "gold": [
+    0.941406
+   ],
+   "noise": [
+    0.496094,
+    0.464844,
+    0.306641,
+    0.287109,
+    0.285156,
+    0.285156,
+    0.285156,
+    0.25,
+    0.249023
+   ]
+  },
+  {
+   "query": "do I have a sesame allergy?",
+   "label": "positive",
+   "gold": [
+    0.878906
+   ],
+   "noise": [
+    0.365234,
+    0.328125,
+    0.308594,
+    0.235352,
+    0.210938,
+    0.210938,
+    0.210938,
+    0.202148,
+    0.199219
+   ]
+  },
+  {
+   "query": "what database does Project Cedar Phoenix use?",
+   "label": "positive",
+   "gold": [
+    0.917969,
+    0.898438
+   ],
+   "noise": [
+    0.609375,
+    0.466797,
+    0.466797,
+    0.429688,
+    0.421875,
+    0.414062,
+    0.361328,
+    0.306641
+   ]
+  },
+  {
+   "query": "who owns the Borealis Ledger service?",
+   "label": "positive",
+   "gold": [
+    0.925781
+   ],
+   "noise": [
+    0.707031,
+    0.53125,
+    0.279297,
+    0.275391,
+    0.271484,
+    0.263672,
+    0.263672,
+    0.255859,
+    0.241211
+   ]
+  },
+  {
+   "query": "what seat do I need on flights?",
+   "label": "positive",
+   "gold": [
+    0.785156,
+    0.664062
+   ],
+   "noise": [
+    0.287109,
+    0.225586,
+    0.212891,
+    0.207031,
+    0.206055,
+    0.206055,
+    0.199219,
+    0.199219
+   ]
+  },
+  {
+   "query": "who rotated the encryption key for Pulsar Archive?",
+   "label": "positive",
+   "gold": [
+    0.941406
+   ],
+   "noise": [
+    0.421875,
+    0.339844,
+    0.306641,
+    0.306641,
+    0.283203,
+    0.277344,
+    0.261719,
+    0.249023,
+    0.243164
+   ]
+  },
+  {
+   "query": "which museum am I visiting in Oslo?",
+   "label": "positive",
+   "gold": [
+    0.851562
+   ],
+   "noise": [
+    0.410156,
+    0.255859,
+    0.249023,
+    0.248047,
+    0.242188,
+    0.242188,
+    0.235352,
+    0.230469,
+    0.229492
+   ]
+  },
+  {
+   "query": "who is the supplier contact for Nova Components?",
+   "label": "positive",
+   "gold": [
+    0.957031
+   ],
+   "noise": [
+    0.277344,
+    0.271484,
+    0.269531,
+    0.263672,
+    0.263672,
+    0.263672,
+    0.245117,
+    0.238281,
+    0.21875
+   ]
+  },
+  {
+   "query": "which books did I finish reading?",
+   "label": "positive",
+   "gold": [
+    0.769531,
+    0.730469,
+    0.675781,
+    0.632812
+   ],
+   "noise": [
+    0.255859,
+    0.238281,
+    0.236328,
+    0.236328,
+    0.232422,
+    0.225586
+   ]
+  },
+  {
+   "query": "who am I travelling to Oslo with?",
+   "label": "positive",
+   "gold": [
+    0.867188
+   ],
+   "noise": [
+    0.464844,
+    0.458984,
+    0.316406,
+    0.291016,
+    0.25,
+    0.243164,
+    0.228516,
+    0.228516,
+    0.228516
+   ]
+  },
+  {
+   "query": "what is my diet?",
+   "label": "positive",
+   "gold": [
+    0.632812,
+    0.628906
+   ],
+   "noise": [
+    0.443359,
+    0.386719,
+    0.324219,
+    0.225586,
+    0.200195,
+    0.199219,
+    0.195312,
+    0.194336
+   ]
+  },
+  {
+   "query": "what caused the outage in July?",
+   "label": "positive",
+   "gold": [
+    0.882812
+   ],
+   "noise": [
+    0.640625,
+    0.382812,
+    0.337891,
+    0.294922,
+    0.277344,
+    0.269531,
+    0.267578,
+    0.253906,
+    0.208984
+   ]
+  },
+  {
+   "query": "who took over Project Kestrel Quartz?",
+   "label": "positive",
+   "gold": [
+    0.929688
+   ],
+   "noise": [
+    0.777344,
+    0.519531,
+    0.486328,
+    0.484375,
+    0.462891,
+    0.367188,
+    0.318359,
+    0.318359,
+    0.238281
+   ]
+  },
+  {
+   "query": "what is the train reservation code?",
+   "label": "positive",
+   "gold": [
+    0.898438
+   ],
+   "noise": [
+    0.490234,
+    0.335938,
+    0.291016,
+    0.238281,
+    0.235352,
+    0.232422,
+    0.223633,
+    0.217773,
+    0.200195
+   ]
+  },
+  {
+   "query": "which warehouse does Meridian Copper use?",
+   "label": "positive",
+   "gold": [
+    0.929688
+   ],
+   "noise": [
+    0.400391,
+    0.392578,
+    0.287109,
+    0.25,
+    0.238281,
+    0.232422,
+    0.230469,
+    0.225586,
+    0.210938
+   ]
+  },
+  {
+   "query": "what does the user like to play?",
+   "label": "positive",
+   "gold": [
+    0.863281
+   ],
+   "noise": []
+  },
+  {
+   "query": "what games does the user play in the evening?",
+   "label": "positive",
+   "gold": [
+    0.855469
+   ],
+   "noise": []
+  },
+  {
+   "query": "why are there two theems for catpuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.21582,
+    0.210938,
+    0.204102,
+    0.199219,
+    0.194336,
+    0.19043,
+    0.183594,
+    0.183594,
+    0.182617,
+    0.181641
+   ]
+  },
+  {
+   "query": "why are there two theems for catpuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.206055,
+    0.194336,
+    0.193359,
+    0.19043,
+    0.189453,
+    0.189453,
+    0.1875,
+    0.183594,
+    0.168945,
+    0.163086
+   ]
+  },
+  {
+   "query": "why are there two theems for catpuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.19043
+   ]
+  },
+  {
+   "query": "why are there two themes for catppuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.199219,
+    0.19043,
+    0.188477,
+    0.176758,
+    0.172852,
+    0.172852,
+    0.172852,
+    0.170898,
+    0.161133,
+    0.157227
+   ]
+  },
+  {
+   "query": "why are there two themes for catppuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.202148,
+    0.193359,
+    0.189453,
+    0.182617,
+    0.182617,
+    0.178711,
+    0.174805,
+    0.174805,
+    0.172852,
+    0.161133
+   ]
+  },
+  {
+   "query": "why are there two themes for catppuccin? one in static and one in normal",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.182617
+   ]
+  },
+  {
+   "query": "how do I fix a segmentation fault in my rust program?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.230469,
+    0.230469,
+    0.225586,
+    0.223633,
+    0.223633,
+    0.223633,
+    0.222656,
+    0.21582,
+    0.21582,
+    0.200195
+   ]
+  },
+  {
+   "query": "how do I fix a segmentation fault in my rust program?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.241211,
+    0.230469,
+    0.228516,
+    0.228516,
+    0.223633,
+    0.222656,
+    0.222656,
+    0.222656,
+    0.222656,
+    0.212891
+   ]
+  },
+  {
+   "query": "how do I fix a segmentation fault in my rust program?",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "what is the capital of Mongolia?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.324219,
+    0.306641,
+    0.304688,
+    0.294922,
+    0.283203,
+    0.275391,
+    0.275391,
+    0.275391,
+    0.271484,
+    0.269531
+   ]
+  },
+  {
+   "query": "what is the capital of Mongolia?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.291016,
+    0.289062,
+    0.285156,
+    0.285156,
+    0.285156,
+    0.283203,
+    0.279297,
+    0.279297,
+    0.275391,
+    0.271484
+   ]
+  },
+  {
+   "query": "why is my docker container exiting with code 137?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.314453,
+    0.253906,
+    0.245117,
+    0.238281,
+    0.235352,
+    0.223633,
+    0.21582,
+    0.212891,
+    0.212891,
+    0.208984
+   ]
+  },
+  {
+   "query": "why is my docker container exiting with code 137?",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "how do I center a div with flexbox in css?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.267578,
+    0.263672
+   ]
+  },
+  {
+   "query": "how do I center a div with flexbox in css?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.269531,
+    0.249023
+   ]
+  },
+  {
+   "query": "how do I center a div with flexbox in css?",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "what is the best training plan for a first marathon?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.316406,
+    0.314453,
+    0.255859,
+    0.255859,
+    0.238281,
+    0.229492,
+    0.22168,
+    0.217773,
+    0.210938,
+    0.208984
+   ]
+  },
+  {
+   "query": "what is the best training plan for a first marathon?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.238281,
+    0.235352,
+    0.232422,
+    0.225586
+   ]
+  },
+  {
+   "query": "what is the best training plan for a first marathon?",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "explain the difference between TCP and UDP",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.235352,
+    0.22168
+   ]
+  },
+  {
+   "query": "explain the difference between TCP and UDP",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.249023
+   ]
+  },
+  {
+   "query": "how much does a Tesla Model 3 cost in 2026?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.423174,
+    0.406468,
+    0.399488,
+    0.395054,
+    0.393699,
+    0.38684,
+    0.371747,
+    0.364375,
+    0.362809,
+    0.3589
+   ]
+  },
+  {
+   "query": "how much does a Tesla Model 3 cost in 2026?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.419869,
+    0.412852,
+    0.389443,
+    0.379438,
+    0.373419,
+    0.371222,
+    0.370473,
+    0.368649,
+    0.359836,
+    0.359197
+   ]
+  },
+  {
+   "query": "how much does a Tesla Model 3 cost in 2026?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.377583
+   ]
+  },
+  {
+   "query": "recommend a good neapolitan pizza dough recipe",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.236328,
+    0.22168,
+    0.21875,
+    0.21582,
+    0.195312,
+    0.194336,
+    0.194336,
+    0.189453
+   ]
+  },
+  {
+   "query": "recommend a good neapolitan pizza dough recipe",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.217773,
+    0.193359,
+    0.19043,
+    0.189453
+   ]
+  },
+  {
+   "query": "recommend a good neapolitan pizza dough recipe",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "how do I configure an nginx reverse proxy with tls",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.25,
+    0.243164,
+    0.238281,
+    0.232422,
+    0.222656,
+    0.217773,
+    0.217773,
+    0.211914,
+    0.211914,
+    0.19043
+   ]
+  },
+  {
+   "query": "how do I configure an nginx reverse proxy with tls",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.304688,
+    0.291016,
+    0.283203,
+    0.242188,
+    0.235352,
+    0.222656
+   ]
+  },
+  {
+   "query": "how do I configure an nginx reverse proxy with tls",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "what is the airspeed velocity of an unladen swallow",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.228516,
+    0.228516,
+    0.222656,
+    0.21875,
+    0.217773,
+    0.21582,
+    0.207031,
+    0.207031,
+    0.195312,
+    0.195312
+   ]
+  },
+  {
+   "query": "what is the airspeed velocity of an unladen swallow",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.223633,
+    0.217773,
+    0.212891,
+    0.208984,
+    0.204102,
+    0.194336,
+    0.189453
+   ]
+  },
+  {
+   "query": "what is the airspeed velocity of an unladen swallow",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "write me a haiku about autumn leaves",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.242188,
+    0.242188,
+    0.236328,
+    0.232422,
+    0.229492,
+    0.229492,
+    0.229492,
+    0.229492,
+    0.22168,
+    0.21582
+   ]
+  },
+  {
+   "query": "write me a haiku about autumn leaves",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.241211,
+    0.211914
+   ]
+  },
+  {
+   "query": "how do I rebase a branch in git without conflicts",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.243164,
+    0.243164,
+    0.235352,
+    0.232422,
+    0.229492,
+    0.228516,
+    0.228516,
+    0.225586,
+    0.223633,
+    0.222656
+   ]
+  },
+  {
+   "query": "how do I rebase a branch in git without conflicts",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.249023,
+    0.248047,
+    0.241211,
+    0.236328,
+    0.235352,
+    0.235352,
+    0.232422,
+    0.230469,
+    0.228516,
+    0.212891
+   ]
+  },
+  {
+   "query": "how do I rebase a branch in git without conflicts",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "what are the side effects of ibuprofen",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.292969,
+    0.279297,
+    0.279297,
+    0.269531,
+    0.269531,
+    0.263672,
+    0.243164
+   ]
+  },
+  {
+   "query": "what are the side effects of ibuprofen",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.255859,
+    0.253906,
+    0.236328,
+    0.235352,
+    0.21582
+   ]
+  },
+  {
+   "query": "what are the side effects of ibuprofen",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.236328
+   ]
+  },
+  {
+   "query": "oslo",
+   "label": "positive",
+   "gold": [
+    0.683594,
+    0.660156,
+    0.644531
+   ],
+   "noise": [
+    0.378906,
+    0.333984,
+    0.332031,
+    0.318359,
+    0.318359,
+    0.306641,
+    0.304688
+   ]
+  },
+  {
+   "query": "allergy",
+   "label": "positive",
+   "gold": [
+    0.75,
+    0.660156
+   ],
+   "noise": [
+    0.359375,
+    0.296875,
+    0.241211,
+    0.241211,
+    0.236328,
+    0.229492,
+    0.21875,
+    0.217773
+   ]
+  },
+  {
+   "query": "phoenix",
+   "label": "positive",
+   "gold": [
+    0.5625,
+    0.558594,
+    0.558594,
+    0.550781,
+    0.550781,
+    0.535156,
+    0.535156,
+    0.523438,
+    0.523438
+   ],
+   "noise": [
+    0.314453
+   ]
+  },
+  {
+   "query": "seat",
+   "label": "positive",
+   "gold": [
+    0.644531,
+    0.609375
+   ],
+   "noise": [
+    0.464844,
+    0.349609,
+    0.314453,
+    0.3125,
+    0.283203,
+    0.279297,
+    0.279297,
+    0.277344
+   ]
+  },
+  {
+   "query": "books",
+   "label": "positive",
+   "gold": [
+    0.570312,
+    0.546875,
+    0.539062,
+    0.519531
+   ],
+   "noise": [
+    0.324219,
+    0.316406,
+    0.308594,
+    0.296875,
+    0.292969,
+    0.285156
+   ]
+  },
+  {
+   "query": "diet",
+   "label": "positive",
+   "gold": [
+    0.617188,
+    0.613281
+   ],
+   "noise": [
+    0.507812,
+    0.410156,
+    0.404297,
+    0.294922,
+    0.277344,
+    0.25,
+    0.243164,
+    0.238281
+   ]
+  },
+  {
+   "query": "what should I know before booking my flight?",
+   "label": "positive",
+   "gold": [
+    0.486328,
+    0.439453,
+    0.412109
+   ],
+   "noise": [
+    0.294922,
+    0.267578,
+    0.25,
+    0.245117,
+    0.229492,
+    0.228516,
+    0.223633
+   ]
+  },
+  {
+   "query": "anything I should tell the restaurant?",
+   "label": "positive",
+   "gold": [
+    0.671875,
+    0.455078,
+    0.455078
+   ],
+   "noise": [
+    0.417969,
+    0.404297,
+    0.304688,
+    0.223633,
+    0.217773,
+    0.207031,
+    0.188477
+   ]
+  },
+  {
+   "query": "remind me about the trip",
+   "label": "positive",
+   "gold": [
+    0.652344,
+    0.597656,
+    0.554688
+   ],
+   "noise": [
+    0.435547,
+    0.398438,
+    0.398438,
+    0.371094,
+    0.339844,
+    0.332031,
+    0.316406
+   ]
+  },
+  {
+   "query": "whats the deal with cedar",
+   "label": "positive",
+   "gold": [
+    0.511719,
+    0.46875,
+    0.464844,
+    0.455078,
+    0.419922,
+    0.40625
+   ],
+   "noise": [
+    0.257812,
+    0.255859,
+    0.243164,
+    0.241211
+   ]
+  },
+  {
+   "query": "who's in charge now",
+   "label": "positive",
+   "gold": [
+    0.5625,
+    0.554688,
+    0.539062
+   ],
+   "noise": [
+    0.486328,
+    0.392578,
+    0.386719,
+    0.306641,
+    0.296875,
+    0.285156,
+    0.269531
+   ]
+  },
+  {
+   "query": "did anything change with the launch date",
+   "label": "positive",
+   "gold": [
+    0.710938,
+    0.648438,
+    0.554688
+   ],
+   "noise": [
+    0.539062,
+    0.466797,
+    0.332031,
+    0.332031,
+    0.322266,
+    0.318359,
+    0.306641
+   ]
+  },
+  {
+   "query": "tell me about my reading",
+   "label": "positive",
+   "gold": [
+    0.621094,
+    0.617188,
+    0.578125,
+    0.470703
+   ],
+   "noise": [
+    0.304688,
+    0.277344,
+    0.269531,
+    0.267578,
+    0.263672,
+    0.255859
+   ]
+  },
+  {
+   "query": "resturant reservaton anniversry",
+   "label": "positive",
+   "gold": [
+    0.8125,
+    0.451172
+   ],
+   "noise": [
+    0.324219,
+    0.277344,
+    0.269531,
+    0.269531,
+    0.248047,
+    0.242188,
+    0.236328,
+    0.230469
+   ]
+  },
+  {
+   "query": "db migration",
+   "label": "positive",
+   "gold": [
+    0.628906,
+    0.359375,
+    0.355469
+   ],
+   "noise": [
+    0.357422,
+    0.333984,
+    0.304688,
+    0.291016,
+    0.263672,
+    0.236328,
+    0.21875
+   ]
+  },
+  {
+   "query": "what happened last month",
+   "label": "positive",
+   "gold": [
+    0.581048,
+    0.558871
+   ],
+   "noise": [
+    0.475832,
+    0.443977,
+    0.401686
+   ]
+  },
+  {
+   "query": "kyoto",
+   "label": "positive",
+   "gold": [
+    0.691406,
+    0.474609
+   ],
+   "noise": [
+    0.332031,
+    0.332031,
+    0.328125,
+    0.316406,
+    0.306641,
+    0.269531,
+    0.269531,
+    0.263672
+   ]
+  },
+  {
+   "query": "who do I talk to about kestrel",
+   "label": "positive",
+   "gold": [
+    0.6875,
+    0.601562,
+    0.421875,
+    0.404297,
+    0.396484,
+    0.373047,
+    0.275391
+   ],
+   "noise": [
+    0.294922,
+    0.257812,
+    0.230469
+   ]
+  },
+  {
+   "query": "food restrictions",
+   "label": "positive",
+   "gold": [
+    0.667969,
+    0.617188
+   ],
+   "noise": [
+    0.235352,
+    0.22168,
+    0.212891,
+    0.194336
+   ]
+  },
+  {
+   "query": "genshin",
+   "label": "positive",
+   "gold": [
+    0.652344
+   ],
+   "noise": []
+  },
+  {
+   "query": "gaming habits",
+   "label": "positive",
+   "gold": [
+    0.667969
+   ],
+   "noise": []
+  },
+  {
+   "query": "what does he do to relax",
+   "label": "positive",
+   "gold": [
+    0.566406
+   ],
+   "noise": []
+  },
+  {
+   "query": "what is the capital of Mongolia?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.324219,
+    0.306641,
+    0.304688,
+    0.294922,
+    0.283203,
+    0.275391,
+    0.275391,
+    0.275391,
+    0.271484,
+    0.269531
+   ]
+  },
+  {
+   "query": "why is my docker container exiting with code 137?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.314453,
+    0.253906,
+    0.245117,
+    0.238281,
+    0.235352,
+    0.223633,
+    0.21582,
+    0.212891,
+    0.212891,
+    0.208984
+   ]
+  },
+  {
+   "query": "explain the difference between TCP and UDP",
+   "label": "negative",
+   "gold": [],
+   "noise": []
+  },
+  {
+   "query": "write me a haiku about autumn leaves",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.241211,
+    0.211914
+   ]
+  },
+  {
+   "query": "how much does a Tesla Model 3 cost?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.277344,
+    0.271484,
+    0.263672,
+    0.263672,
+    0.245117
+   ]
+  },
+  {
+   "query": "what is the wifi password for the office?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.294922,
+    0.263672,
+    0.249023,
+    0.229492,
+    0.223633,
+    0.223633,
+    0.21875,
+    0.21875,
+    0.217773,
+    0.212891
+   ]
+  },
+  {
+   "query": "how do I reset my github ssh key",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.225586,
+    0.210938,
+    0.208984,
+    0.207031,
+    0.206055,
+    0.202148,
+    0.200195,
+    0.199219,
+    0.194336,
+    0.193359
+   ]
+  },
+  {
+   "query": "what is the population of Dublin?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.408203,
+    0.306641,
+    0.302734,
+    0.287109,
+    0.279297,
+    0.277344,
+    0.269531,
+    0.267578,
+    0.263672,
+    0.263672
+   ]
+  },
+  {
+   "query": "who is the CEO of Microsoft?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.408203,
+    0.386719,
+    0.378906,
+    0.339844,
+    0.332031,
+    0.328125,
+    0.322266,
+    0.3125,
+    0.310547,
+    0.296875
+   ]
+  },
+  {
+   "query": "what is a good hotel in Barcelona?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.287109,
+    0.263672,
+    0.261719,
+    0.25,
+    0.243164,
+    0.241211,
+    0.241211,
+    0.232422,
+    0.230469,
+    0.230469
+   ]
+  },
+  {
+   "query": "how do I cook mushroom risotto?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.34375,
+    0.320312,
+    0.306641,
+    0.302734,
+    0.294922,
+    0.287109,
+    0.285156,
+    0.277344,
+    0.271484,
+    0.263672
+   ]
+  },
+  {
+   "query": "which certificate authority should I use for TLS?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.357422,
+    0.341797,
+    0.337891,
+    0.328125,
+    0.326172,
+    0.304688,
+    0.300781,
+    0.287109,
+    0.212891,
+    0.18457
+   ]
+  },
+  {
+   "query": "what is the release date of GTA 6?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.410156
+   ]
+  },
+  {
+   "query": "how do I install postgresql on ubuntu?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.419922,
+    0.378906,
+    0.373047,
+    0.296875,
+    0.294922,
+    0.294922,
+    0.291016,
+    0.287109,
+    0.275391,
+    0.263672
+   ]
+  },
+  {
+   "query": "what allergies does my dog have?",
+   "label": "negative",
+   "gold": [],
+   "noise": [
+    0.488281,
+    0.404297,
+    0.257812,
+    0.230469,
+    0.229492,
+    0.21582,
+    0.21582,
+    0.211914,
+    0.206055,
+    0.202148
+   ]
+  }
+ ]
+}
