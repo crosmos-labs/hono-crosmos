@@ -99,6 +99,64 @@ export async function getSourceByUuid(
   return rows[0] ?? null;
 }
 
+export async function getSourceForCaller(
+  db: Database,
+  input: {
+    sourceUuid: string;
+    orgId: number;
+    spaceId?: number;
+    visibleUserIds: readonly number[] | null;
+  },
+): Promise<Source | null> {
+  const conditions = [
+    eq(sources.uuid, input.sourceUuid),
+    eq(sources.orgId, input.orgId),
+  ];
+  if (input.spaceId !== undefined) conditions.push(eq(sources.spaceId, input.spaceId));
+  if (input.visibleUserIds != null) {
+    conditions.push(
+      input.visibleUserIds.length === 0
+        ? sql`false`
+        : or(
+            eq(sources.visibility, 'org'),
+            inArray(sources.ownerUserId, [...input.visibleUserIds]),
+          )!,
+    );
+  }
+  const [source] = await db.select().from(sources).where(and(...conditions)).limit(1);
+  return source ?? null;
+}
+
+export async function getSpaceIdentityByUuid(db: Database, uuid: string) {
+  const [space] = await db
+    .select({ id: memorySpaces.id, orgId: memorySpaces.orgId })
+    .from(memorySpaces)
+    .where(eq(memorySpaces.uuid, uuid))
+    .limit(1);
+  return space ?? null;
+}
+
+export async function getSpaceUuidById(db: Database, id: number): Promise<string | null> {
+  const [space] = await db
+    .select({ uuid: memorySpaces.uuid })
+    .from(memorySpaces)
+    .where(eq(memorySpaces.id, id))
+    .limit(1);
+  return space?.uuid ?? null;
+}
+
+export async function deleteSourcesByIds(
+  db: Database,
+  input: { orgId: number; spaceId: number; sourceIds: number[] },
+): Promise<void> {
+  if (input.sourceIds.length === 0) return;
+  await db.delete(sources).where(and(
+    eq(sources.orgId, input.orgId),
+    eq(sources.spaceId, input.spaceId),
+    inArray(sources.id, input.sourceIds),
+  ));
+}
+
 /**
  * Unscoped lookup. Trusted callers only (the ingestion worker, which has
  * already been handed an `(orgId, spaceId)` via the queue payload set by

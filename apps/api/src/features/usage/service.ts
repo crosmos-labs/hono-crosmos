@@ -1,10 +1,11 @@
 import {
   dailyUsage,
+  memorySpaces,
   recordIngestionUsage,
   recordSearchUsage,
   type Database,
 } from '@crosmos/db';
-import { and, eq, gte, lte, sum } from 'drizzle-orm';
+import { and, count, eq, gte, lte, sum } from 'drizzle-orm';
 import type { TenantScope } from '../../lib/scope';
 
 /**
@@ -35,6 +36,28 @@ export async function getSpaceUsage(
   return {
     tokensIngested: Number(row?.tokens ?? 0),
     searchQueries: Number(row?.queries ?? 0),
+  };
+}
+
+export async function getOrgUsage(
+  db: Database,
+  input: { orgId: number; start: string; end: string },
+): Promise<{ tokens: number; queries: number; spaces: number }> {
+  const [usage] = await db.select({
+    tokens: sum(dailyUsage.tokensIngested),
+    queries: sum(dailyUsage.searchQueries),
+  }).from(dailyUsage).where(and(
+    eq(dailyUsage.orgId, input.orgId),
+    gte(dailyUsage.date, input.start),
+    lte(dailyUsage.date, input.end),
+  ));
+  const [spaceCount] = await db.select({ count: count() })
+    .from(memorySpaces)
+    .where(eq(memorySpaces.orgId, input.orgId));
+  return {
+    tokens: Number(usage?.tokens ?? 0),
+    queries: Number(usage?.queries ?? 0),
+    spaces: spaceCount?.count ?? 0,
   };
 }
 

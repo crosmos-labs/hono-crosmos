@@ -20,8 +20,7 @@ import { createApiApp } from '../../lib/openapi';
 import { ErrorResponseSchema, PaginationQuerySchema } from '../../lib/zod-common';
 import { HTTPException } from 'hono/http-exception';
 import { createLogger } from '@crosmos/observability';
-import { and, count, desc, eq, gt, isNull, or } from 'drizzle-orm';
-import { organizationInvites, organizationMembers, organizations, users } from '@crosmos/db';
+import type { OrganizationInvite, OrganizationMember, User } from '@crosmos/db';
 import { getDb } from '../../db';
 import { getEmailSender } from '../../integrations/email';
 import {
@@ -29,7 +28,7 @@ import {
   getRateLimiter,
   RateLimitError,
 } from '../../integrations/rate-limit';
-import { sha256Hex, tokenUrlSafe } from '../../lib/crypto';
+import { tokenUrlSafe } from '../../lib/crypto';
 import { apiError, AppError, errorEnvelope } from '../../lib/errors';
 import { invalidateMembership } from '../../lib/gate-cache';
 import { waitUntilLogged } from '../../lib/runtime';
@@ -38,6 +37,21 @@ import { requirePrincipal, requireRole } from '../auth/principal';
 import { removeUserFromAllGroups } from '../visibility/service';
 import { activeGrantedPlan, getEntitlements, getMonthlyUsage } from './entitlements';
 import { getMembership } from './memberships';
+import {
+  acceptInviteMembership,
+  countOwners,
+  createOrganizationInvite,
+  deleteInvite,
+  deleteMember,
+  findPendingInvite,
+  inviteStatus,
+  listMembersPage,
+  listOrganizationInvites,
+  loadInviteByToken,
+  loadMember,
+  revokeOrganizationInvite,
+  updateMemberRole,
+} from './operations';
 import {
   countMembers,
   getOrganizationByIdOrThrow,
@@ -107,27 +121,9 @@ function assertActiveOrg(orgId: number, activeOrgId: number | undefined) {
   }
 }
 
-async function countOwners(db: ReturnType<typeof getDb>, orgId: number): Promise<number> {
-  const rows = await db
-    .select({ c: count() })
-    .from(organizationMembers)
-    .where(and(eq(organizationMembers.orgId, orgId), eq(organizationMembers.role, 'owner')));
-  return rows[0]?.c ?? 0;
-}
-
-async function loadMember(db: ReturnType<typeof getDb>, orgId: number, userUuid: string) {
-  const rows = await db
-    .select({ member: organizationMembers, user: users })
-    .from(organizationMembers)
-    .innerJoin(users, eq(users.id, organizationMembers.userId))
-    .where(and(eq(organizationMembers.orgId, orgId), eq(users.uuid, userUuid)))
-    .limit(1);
-  return rows[0] ?? null;
-}
-
 function memberToResponse(row: {
-  member: typeof organizationMembers.$inferSelect;
-  user: typeof users.$inferSelect;
+  member: OrganizationMember;
+  user: User;
 }) {
   return {
     user_id: row.user.uuid,
@@ -168,27 +164,9 @@ function decodeMemberCursor(raw: string): MemberCursor | null {
   }
 }
 
-function inviteStatus(invite: typeof organizationInvites.$inferSelect) {
-  if (invite.acceptedAt) return 'accepted' as const;
-  if (invite.expiresAt.getTime() < Date.now()) return 'expired' as const;
-  return 'pending' as const;
-}
-
-async function loadInviteByToken(db: ReturnType<typeof getDb>, token: string) {
-  const tokenHash = await sha256Hex(token);
-  const rows = await db
-    .select({ invite: organizationInvites, org: organizations, inviter: users })
-    .from(organizationInvites)
-    .innerJoin(organizations, eq(organizations.id, organizationInvites.orgId))
-    .innerJoin(users, eq(users.id, organizationInvites.invitedBy))
-    .where(eq(organizationInvites.tokenHash, tokenHash))
-    .limit(1);
-  return rows[0] ?? null;
-}
-
 function inviteToResponse(row: {
-  invite: typeof organizationInvites.$inferSelect;
-  inviter: typeof users.$inferSelect;
+  invite: OrganizationInvite;
+  inviter: User;
 }) {
   return {
     id: row.invite.uuid,
@@ -306,16 +284,7 @@ orgRoutes.openapi(
       throw new HTTPException(409, { message: 'User is already a member of organization' });
     }
 
-    await db.insert(organizationMembers).values({
-      orgId: row.invite.orgId,
-      userId: c.var.userId!,
-      role: row.invite.role,
-      invitedByUserId: row.invite.invitedBy,
-    });
-    await db
-      .update(organizationInvites)
-      .set({ acceptedAt: new Date() })
-      .where(eq(organizationInvites.id, row.invite.id));
+    await acceptInviteMembership(db, row.invite, c.var.userId!);
 
     return c.json(
       {
@@ -416,24 +385,7 @@ orgRoutes.openapi(
       }
     }
 
-    const keyset = after
-      ? or(
-          gt(organizationMembers.joinedAt, new Date(after.joinedAtMs)),
-          and(
-            eq(organizationMembers.joinedAt, new Date(after.joinedAtMs)),
-            gt(organizationMembers.userId, after.userId),
-          ),
-        )
-      : undefined;
-
-    // Fetch limit+1 to detect whether another page exists.
-    const rows = await db
-      .select({ member: organizationMembers, user: users })
-      .from(organizationMembers)
-      .innerJoin(users, eq(users.id, organizationMembers.userId))
-      .where(and(eq(organizationMembers.orgId, orgId), keyset))
-      .orderBy(organizationMembers.joinedAt, organizationMembers.userId)
-      .limit(limit + 1);
+    const rows = await listMembersPage(db, orgId, after, limit);
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
@@ -508,10 +460,7 @@ orgRoutes.openapi(
       }
     }
 
-    await db
-      .update(organizationMembers)
-      .set({ role, updatedAt: new Date() })
-      .where(eq(organizationMembers.id, target.member.id));
+    await updateMemberRole(db, target.member.id, role);
 
     // Membership role is cached in KV (gate:member) for 60s; invalidate so a
     // demoted admin loses admin powers immediately instead of after the TTL.
@@ -578,9 +527,7 @@ orgRoutes.openapi(
       }
     }
 
-    await db
-      .delete(organizationMembers)
-      .where(eq(organizationMembers.id, target.member.id));
+    await deleteMember(db, target.member.id);
     await removeUserFromAllGroups(db, { orgId, userId: target.user.id });
     // Invalidate the 60s KV membership cache so a removed user loses access
     // immediately instead of retaining it until the TTL expires.
@@ -648,36 +595,22 @@ orgRoutes.openapi(
     }
 
     const normalizedEmail = body.email.trim().toLowerCase();
-    const [existing] = await db
-      .select()
-      .from(organizationInvites)
-      .where(
-        and(
-          eq(organizationInvites.orgId, orgId),
-          eq(organizationInvites.email, normalizedEmail),
-          isNull(organizationInvites.acceptedAt),
-        ),
-      )
-      .limit(1);
+    const existing = await findPendingInvite(db, orgId, normalizedEmail);
     if (existing && inviteStatus(existing) === 'pending') {
       throw new HTTPException(409, { message: 'A pending invite already exists' });
     }
     if (existing && inviteStatus(existing) === 'expired') {
-      await db.delete(organizationInvites).where(eq(organizationInvites.id, existing.id));
+      await deleteInvite(db, existing.id);
     }
 
     const rawToken = tokenUrlSafe(32);
-    const [invite] = await db
-      .insert(organizationInvites)
-      .values({
-        orgId,
-        email: normalizedEmail,
-        role: body.role,
-        tokenHash: await sha256Hex(rawToken),
-        invitedBy: c.var.userId!,
-      })
-      .returning();
-    if (!invite) throw new Error('Failed to create invite');
+    const invite = await createOrganizationInvite(db, {
+      orgId,
+      email: normalizedEmail,
+      role: body.role,
+      rawToken,
+      invitedBy: c.var.userId!,
+    });
 
     // Fire the invite email best-effort, but LOG failures — a silently dropped
     // email previously left the invite committed with no trace of the failure.
@@ -749,14 +682,7 @@ orgRoutes.openapi(
     if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
     assertActiveOrg(orgId, c.var.activeOrgId);
 
-    const rows = await db
-      .select({ invite: organizationInvites, inviter: users })
-      .from(organizationInvites)
-      .innerJoin(users, eq(users.id, organizationInvites.invitedBy))
-      .where(and(eq(organizationInvites.orgId, orgId), isNull(organizationInvites.acceptedAt)))
-      .orderBy(desc(organizationInvites.createdAt))
-      .limit(limit)
-      .offset(offset);
+    const rows = await listOrganizationInvites(db, orgId, limit, offset);
 
     return c.json({ invites: rows.map(inviteToResponse) }, 200);
   },
@@ -788,16 +714,7 @@ orgRoutes.openapi(
     const orgId = await resolveOrgIdFromUuid(db, org_uuid);
     if (orgId == null) throw new HTTPException(404, { message: 'Organization not found' });
     assertActiveOrg(orgId, c.var.activeOrgId);
-    const deleted = await db
-      .delete(organizationInvites)
-      .where(
-        and(
-          eq(organizationInvites.orgId, orgId),
-          eq(organizationInvites.uuid, invite_uuid),
-        ),
-      )
-      .returning({ id: organizationInvites.id });
-    if (deleted.length === 0) {
+    if (!(await revokeOrganizationInvite(db, orgId, invite_uuid))) {
       throw new HTTPException(404, { message: 'Invite not found' });
     }
     return c.body(null, 204);

@@ -1,26 +1,13 @@
-import {
-  edges,
-  entities,
-  memories,
-  memoryEntities,
-  type Entity,
-  type Memory,
-} from '@crosmos/db';
+import type { Entity, Memory } from '@crosmos/db';
 import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
-import { and, asc, count, desc, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getCachedSpaceByUuid } from '../../lib/gate-cache';
-import {
-  scopeEdges,
-  scopeEntities,
-  scopeMemories,
-  type TenantScope,
-} from '../../lib/scope';
+import type { TenantScope } from '../../lib/scope';
 import { ErrorResponseSchema, UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
@@ -31,6 +18,7 @@ import {
   EntityListQuerySchema,
   EntityListResponseSchema,
 } from './schemas';
+import { getEntityDetail, listEntities } from './service';
 
 export const entityRoutes = createApiApp();
 
@@ -82,37 +70,6 @@ async function tenantScope(
   };
 }
 
-/**
- * Active-edge counts (source + target appearances) for a bounded set of entity
- * IDs. Restricting the GROUP BY to the page's entities keeps this off the
- * whole-space edge table — we only count edges incident to the rows we return.
- */
-async function edgeCountMap(
-  db: ReturnType<typeof getDb>,
-  scope: TenantScope,
-  entityIds: number[],
-) {
-  const map = new Map<number, number>();
-  if (entityIds.length === 0) return map;
-  const activeScoped = and(scopeEdges(scope), isNull(edges.forgottenAt));
-  const [sourceRows, targetRows] = await Promise.all([
-    db
-      .select({ entityId: edges.sourceEntityId, c: count() })
-      .from(edges)
-      .where(and(activeScoped, inArray(edges.sourceEntityId, entityIds)))
-      .groupBy(edges.sourceEntityId),
-    db
-      .select({ entityId: edges.targetEntityId, c: count() })
-      .from(edges)
-      .where(and(activeScoped, inArray(edges.targetEntityId, entityIds)))
-      .groupBy(edges.targetEntityId),
-  ]);
-  for (const row of [...sourceRows, ...targetRows]) {
-    map.set(row.entityId, (map.get(row.entityId) ?? 0) + row.c);
-  }
-  return map;
-}
-
 entityRoutes.openapi(
   createRoute({
     method: 'get',
@@ -139,54 +96,7 @@ entityRoutes.openapi(
     const space = await scopedSpace(c, query.space_id);
     const scope = await tenantScope(c, space);
 
-    const filter = and(
-      scopeEntities(scope),
-      query.entity_type ? eq(entities.entityType, query.entity_type) : undefined,
-      query.q ? ilike(entities.name, `%${query.q}%`) : undefined,
-    );
-
-    // `total` via a dedicated COUNT — never materialize the whole space.
-    const [totalRow] = await db
-      .select({ c: count() })
-      .from(entities)
-      .where(filter);
-    const total = totalRow?.c ?? 0;
-
-    const dir = query.order === 'asc' ? asc : desc;
-    // DB-side active-edge count per entity (source + target appearances),
-    // correlated to the scoped/active/visible edge set (same visibility filter
-    // as `scopeEdges`, so the count matches the previous JS behaviour and never
-    // leaks edges the caller can't see). Used both to ORDER BY in SQL for the
-    // edge_count sort and to populate the response without a second whole-table
-    // scan.
-    const visibleEdges = scopeEdges(scope);
-    const edgeCountExpr = sql<number>`(
-      (SELECT count(*) FROM ${edges}
-        WHERE ${edges.sourceEntityId} = ${entities.id}
-          AND ${edges.forgottenAt} IS NULL
-          AND ${visibleEdges})
-      +
-      (SELECT count(*) FROM ${edges}
-        WHERE ${edges.targetEntityId} = ${entities.id}
-          AND ${edges.forgottenAt} IS NULL
-          AND ${visibleEdges})
-    )::int`;
-
-    const orderBy =
-      query.sort_by === 'edge_count'
-        ? [dir(edgeCountExpr), asc(entities.id)]
-        : query.sort_by === 'created_at'
-          ? [dir(entities.createdAt), asc(entities.id)]
-          : [dir(entities.name), asc(entities.id)];
-
-    // Push pagination + ordering into SQL; only the page is loaded into memory.
-    const rows = await db
-      .select({ entity: entities, edgeCount: edgeCountExpr })
-      .from(entities)
-      .where(filter)
-      .orderBy(...orderBy)
-      .limit(query.limit)
-      .offset(query.offset);
+    const { rows, total } = await listEntities(db, scope, query);
 
     return c.json(
       {
@@ -229,34 +139,15 @@ entityRoutes.openapi(
     const db = getDb(c);
     const space = await scopedSpace(c, space_id);
     const scope = await tenantScope(c, space);
-    const [entity] = await db
-      .select()
-      .from(entities)
-      .where(and(scopeEntities(scope), eq(entities.uuid, entity_uuid)))
-      .limit(1);
-    if (!entity) {
+    const detail = await getEntityDetail(db, scope, entity_uuid);
+    if (!detail) {
       throw new HTTPException(404, { message: `Entity ${entity_uuid} not found` });
     }
 
-    const counts = await edgeCountMap(db, scope, [entity.id]);
-    const linkedMemories = await db
-      .select({ memory: memories })
-      .from(memories)
-      .innerJoin(memoryEntities, eq(memoryEntities.memoryId, memories.id))
-      .where(
-        and(
-          eq(memoryEntities.entityId, entity.id),
-          scopeMemories(scope),
-          isNull(memories.forgottenAt),
-        ),
-      )
-      .orderBy(desc(memories.createdAt))
-      .limit(10);
-
     return c.json(
       {
-        ...toResponse(entity, space.uuid, counts.get(entity.id) ?? 0),
-        memories: linkedMemories.map((row) => toMemory(row.memory)),
+        ...toResponse(detail.entity, space.uuid, detail.edgeCount),
+        memories: detail.memories.map(toMemory),
       },
       200,
     );

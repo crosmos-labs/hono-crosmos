@@ -1,4 +1,4 @@
-import { memorySpaces, sources, type Source } from '@crosmos/db';
+import type { Source } from '@crosmos/db';
 import {
   createLogger,
   createMetrics,
@@ -7,7 +7,6 @@ import {
 } from '@crosmos/observability';
 import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
@@ -46,7 +45,11 @@ import {
 import {
   countSourcesByOrg,
   createSources,
+  deleteSourcesByIds,
   deleteSource,
+  getSourceForCaller,
+  getSpaceIdentityByUuid,
+  getSpaceUuidById,
   listSourcesByOrg,
   setSourceVisibility,
   type ContentType,
@@ -300,15 +303,11 @@ sourceRoutes.openapi(
           const assignedIds = new Set(createdJobs.flatMap((j) => j.sources.map((s) => s.id)));
           const orphanedIds = created.filter((s) => !assignedIds.has(s.id)).map((s) => s.id);
           if (orphanedIds.length > 0) {
-            await db
-              .delete(sources)
-              .where(
-                and(
-                  eq(sources.orgId, space.orgId),
-                  eq(sources.spaceId, space.id),
-                  inArray(sources.id, orphanedIds),
-                ),
-              );
+            await deleteSourcesByIds(db, {
+              orgId: space.orgId,
+              spaceId: space.id,
+              sourceIds: orphanedIds,
+            });
           }
 
           if (createdJobs.length === 0) {
@@ -433,11 +432,7 @@ sourceRoutes.openapi(
     // surface as 404 before any data is selected.
     let resolvedSpaceId: number | undefined;
     if (query.space_id) {
-      const [space] = await db
-        .select({ id: memorySpaces.id, orgId: memorySpaces.orgId })
-        .from(memorySpaces)
-        .where(eq(memorySpaces.uuid, query.space_id))
-        .limit(1);
+      const space = await getSpaceIdentityByUuid(db, query.space_id);
       if (!space || space.orgId !== orgId) {
         throw new HTTPException(404, {
           message: `Space ${query.space_id} not found`,
@@ -599,18 +594,14 @@ sourceRoutes.openapi(
       visibleUserIds,
       spaceId,
     );
-    const [spaceRow] = await db
-      .select({ uuid: memorySpaces.uuid })
-      .from(memorySpaces)
-      .where(eq(memorySpaces.id, source.spaceId))
-      .limit(1);
-    if (!spaceRow) {
+    const spaceUuid = await getSpaceUuidById(db, source.spaceId);
+    if (!spaceUuid) {
       // Should be unreachable: FK CASCADE means a source can't outlive its space.
       throw new HTTPException(404, {
         message: `Source ${source_uuid} not found`,
       });
     }
-    return c.json(toResponse(source, spaceRow.uuid), 200);
+    return c.json(toResponse(source, spaceUuid), 200);
   },
 );
 
@@ -690,25 +681,12 @@ async function loadSourceForCaller(
   visibleUserIds: readonly number[] | null,
   spaceId?: number,
 ): Promise<Source> {
-  const conditions = [eq(sources.uuid, sourceUuid), eq(sources.orgId, orgId)];
-  if (spaceId !== undefined) {
-    conditions.push(eq(sources.spaceId, spaceId));
-  }
-  if (visibleUserIds != null) {
-    conditions.push(
-      visibleUserIds.length === 0
-        ? sql`false`
-        : or(
-            eq(sources.visibility, 'org'),
-            inArray(sources.ownerUserId, [...visibleUserIds]),
-          )!,
-    );
-  }
-  const [row] = await db
-    .select()
-    .from(sources)
-    .where(and(...conditions))
-    .limit(1);
+  const row = await getSourceForCaller(db, {
+    sourceUuid,
+    orgId,
+    visibleUserIds,
+    spaceId,
+  });
   if (!row) {
     throw new HTTPException(404, {
       message: `Source ${sourceUuid} not found`,
@@ -739,11 +717,7 @@ async function resolveSpaceIdForCaller(
   c: Context<HonoEnv>,
   spaceUuid: string,
 ): Promise<number> {
-  const [space] = await getDb(c)
-    .select({ id: memorySpaces.id, orgId: memorySpaces.orgId })
-    .from(memorySpaces)
-    .where(eq(memorySpaces.uuid, spaceUuid))
-    .limit(1);
+  const space = await getSpaceIdentityByUuid(getDb(c), spaceUuid);
   if (!space || space.orgId !== c.var.activeOrgId) {
     throw new HTTPException(404, { message: 'Space not found' });
   }

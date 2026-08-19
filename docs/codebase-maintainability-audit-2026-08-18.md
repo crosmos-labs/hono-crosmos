@@ -416,7 +416,12 @@ The API and ingestion implementations of `getEmbedder()` and `getVectorStore()` 
 - Qdrant default collection naming has one implementation.
 - API and ingestion cannot silently choose different fallback semantics.
 
-### [ ] ARCH-3 — Make route modules consistently HTTP-only at their outer layer
+### [x] ARCH-3 — Make route modules consistently HTTP-only at their outer layer
+
+Completed 2026-08-19. Persistence for entities, graph, memories,
+organizations, sources, and usage now sits behind named feature services or
+operations. API route modules contain no direct Drizzle persistence builders;
+an executable boundary test prevents that convention from drifting.
 
 **Finding**
 

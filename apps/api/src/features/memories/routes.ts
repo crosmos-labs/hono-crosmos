@@ -1,12 +1,11 @@
-import { edges, memories, type Memory } from '@crosmos/db';
+import type { Memory } from '@crosmos/db';
 import { createRoute, z } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { getDb } from '../../db';
 import { getCachedSpaceByUuid } from '../../lib/gate-cache';
-import { scopeMemories, type TenantScope } from '../../lib/scope';
+import type { TenantScope } from '../../lib/scope';
 import { ErrorResponseSchema, UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
@@ -17,6 +16,7 @@ import {
   MemoryResponseSchema,
   SpaceScopedQuerySchema,
 } from './schemas';
+import { forgetMemory, getMemory, listMemories } from './service';
 
 export const memoryRoutes = createApiApp();
 
@@ -61,21 +61,6 @@ async function tenantScope(
   };
 }
 
-function orderColumn(sortBy: string) {
-  switch (sortBy) {
-    case 'importance_score':
-      return memories.importanceScore;
-    case 'event_time':
-      return memories.eventTime;
-    case 'last_accessed_at':
-      return memories.lastAccessedAt;
-    case 'access_frequency':
-      return memories.accessFrequency;
-    default:
-      return memories.createdAt;
-  }
-}
-
 memoryRoutes.openapi(
   createRoute({
     method: 'get',
@@ -105,21 +90,7 @@ memoryRoutes.openapi(
     const db = getDb(c);
     const space = await scopedSpace(c, query.space_id);
     const scope = await tenantScope(c, space);
-    const sort = orderColumn(query.sort_by);
-
-    const rows = await db
-      .select()
-      .from(memories)
-      .where(
-        and(
-          scopeMemories(scope),
-          isNull(memories.forgottenAt),
-          query.memory_type ? eq(memories.memoryType, query.memory_type) : undefined,
-        ),
-      )
-      .orderBy(query.order === 'asc' ? asc(sort) : desc(sort))
-      .limit(query.limit)
-      .offset(query.offset);
+    const rows = await listMemories(db, scope, query);
 
     return c.json(
       { memories: rows.map((m) => toResponse(m, space.uuid)), count: rows.length },
@@ -157,17 +128,7 @@ memoryRoutes.openapi(
     const db = getDb(c);
     const space = await scopedSpace(c, space_id);
     const scope = await tenantScope(c, space);
-    const [memory] = await db
-      .select()
-      .from(memories)
-      .where(
-        and(
-          scopeMemories(scope),
-          eq(memories.uuid, memory_uuid),
-          isNull(memories.forgottenAt),
-        ),
-      )
-      .limit(1);
+    const memory = await getMemory(db, scope, memory_uuid);
     if (!memory) {
       throw new HTTPException(404, { message: `Memory ${memory_uuid} not found` });
     }
@@ -201,24 +162,9 @@ memoryRoutes.openapi(
     const db = getDb(c);
     const space = await scopedSpace(c, space_id);
     const scope = await tenantScope(c, space);
-    const [memory] = await db
-      .select({ id: memories.id })
-      .from(memories)
-      .where(and(scopeMemories(scope), eq(memories.uuid, memory_uuid)))
-      .limit(1);
-    if (!memory) {
+    if (!(await forgetMemory(db, scope, memory_uuid))) {
       throw new HTTPException(404, { message: `Memory ${memory_uuid} not found` });
     }
-
-    const now = new Date();
-    await db
-      .update(memories)
-      .set({ forgottenAt: now, updatedAt: now })
-      .where(eq(memories.id, memory.id));
-    await db
-      .update(edges)
-      .set({ forgottenAt: now })
-      .where(eq(edges.memoryId, memory.id));
 
     return c.body(null, 204);
   },
