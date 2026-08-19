@@ -65,9 +65,17 @@ describe('production deployment configuration', () => {
       EMBEDDING_DIMENSIONS: '1536',
       VECTOR_STORE: 'qdrant',
       RETRIEVAL_RERANKER_ENABLED: 'true',
-      RERANKER_PROVIDER: 'zeroentropy',
+      RERANKER_PROVIDER: 'voyage',
     });
-    expect(['zeroentropy', 'voyage']).toContain(apiProd.vars.RERANKER_PROVIDER!);
+    // Pinned to a single value, not a set. This previously accepted either
+    // provider, so production silently ran zerank-2 while the relevance floor
+    // shipped calibrated for rerank-2.5. Only rerank-2.5 has a measured floor
+    // (0.40, from 91 labeled searches); zerank-2's 0.02 is documented in
+    // features/search/constants.ts as under-calibrated and lets off-topic
+    // results through. ZeroEntropy also sunsets 2026-09-04. Changing this value
+    // is a retrieval-quality decision and needs a matching entry in
+    // RERANK_RELEVANCE_FLOORS.
+    expect(apiProd.vars.RERANKER_PROVIDER).toBe('voyage');
     expect(ingestionProd.vars).toMatchObject({
       ENVIRONMENT: 'production',
       LLM_PROVIDER: 'openai',
