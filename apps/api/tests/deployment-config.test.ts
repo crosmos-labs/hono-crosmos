@@ -119,6 +119,15 @@ describe('production deployment configuration', () => {
     expect(binding(apiProd.vectorize, 'ENTITIES_INDEX').index_name).toBe(
       binding(ingestionProd.vectorize, 'ENTITIES_INDEX').index_name,
     );
+    // Placement is load-bearing well beyond the worker that declares it.
+    // Cloudflare applies it to fetch handlers ONLY ("Smart Placement only affects
+    // the execution of fetch event handlers. It does not affect RPC methods or
+    // named entrypoints"), so the ingestion worker's own block does not place its
+    // queue() consumer or scheduled() handler -- those observably execute outside
+    // us-east-1. Ingestion's fast path lands in-region only because a service
+    // binding runs in the CALLER's location, which is this API worker. Unpin the
+    // API worker and ingestion's RPC path silently follows it away from Neon and
+    // Qdrant, where the DB-bound stages measure 3-12x slower.
     expect(apiProd.placement).toEqual({ mode: 'targeted', region: 'aws:us-east-1' });
     expect(ingestionProd.placement).toEqual(apiProd.placement);
   });
