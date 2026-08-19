@@ -26,7 +26,9 @@ export { RateLimitError } from './port';
  */
 export function getRateLimiter(env: Env, defer?: DeferFn): RateLimiter {
   if (env.RATE_LIMITER) {
-    return new DoRateLimiter(env.RATE_LIMITER);
+    // `defer` matters on this path too: when the per-org DO is cold the check is
+    // admitted early and the increment is finished on waitUntil.
+    return new DoRateLimiter(env.RATE_LIMITER, defer, undefined, env.ENVIRONMENT);
   }
   if (env.API_KEY_CACHE) {
     return new KvRateLimiter(env.API_KEY_CACHE, defer);
