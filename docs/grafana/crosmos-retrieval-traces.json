@@ -195,25 +195,25 @@
         "y": 1
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .95)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__range]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
       "options": {
         "reduceOptions": {
           "calcs": [
-            "max"
+            "lastNotNull"
           ],
           "fields": "",
           "values": false
@@ -224,8 +224,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 2,
+          "unit": "ms",
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -235,18 +235,18 @@
               },
               {
                 "color": "yellow",
-                "value": 1.5
+                "value": 1000
               },
               {
                 "color": "red",
-                "value": 3
+                "value": 2000
               }
             ]
           }
         },
         "overrides": []
       },
-      "description": "Worst 95th percentile of the api_stage.search_total span over the selected window. Empty TraceQL buckets report 0, so these tiles reduce with max rather than last value."
+      "description": "Exact 95th percentile of search_total over the selected window, computed from the duration_ms field on retrieval.stage_completed log lines. Loki is used here rather than TraceQL metrics because TraceQL quantiles come from an exponential histogram and snap to powers of two (1.07s, 2.15s, 4.29s, 17.18s)."
     },
     {
       "id": 5,
@@ -259,25 +259,25 @@
         "y": 1
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .99)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.99, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__range]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
       "options": {
         "reduceOptions": {
           "calcs": [
-            "max"
+            "lastNotNull"
           ],
           "fields": "",
           "values": false
@@ -288,8 +288,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 2,
+          "unit": "ms",
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -299,24 +299,24 @@
               },
               {
                 "color": "yellow",
-                "value": 3
+                "value": 2000
               },
               {
                 "color": "red",
-                "value": 6
+                "value": 4000
               }
             ]
           }
         },
         "overrides": []
       },
-      "description": "Worst 99th percentile of the api_stage.search_total span over the selected window."
+      "description": "Exact 99th percentile of search_total over the selected window, from Loki duration_ms."
     },
     {
       "id": 6,
       "type": "stat",
       "title": "p95 end-to-end /api/v1/search",
-      "description": "api.request_total span filtered to the search path: everything the client waits for, including auth and middleware.",
+      "description": "Exact p95 of the whole successful /api/v1/search request as the server measured it, from the http.request access log. This is the number a US client waits for, minus network time.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -324,25 +324,25 @@
         "y": 1
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api.request_total\" && span.url.path = \"/api/v1/search\" } | quantile_over_time(duration, .95)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`http.request` | path=`/api/v1/search` | status_code=200 | __error__=\"\" | unwrap duration_ms [$__range]) by (path)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
       "options": {
         "reduceOptions": {
           "calcs": [
-            "max"
+            "lastNotNull"
           ],
           "fields": "",
           "values": false
@@ -353,8 +353,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 2,
+          "unit": "ms",
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -364,11 +364,11 @@
               },
               {
                 "color": "yellow",
-                "value": 2
+                "value": 1500
               },
               {
                 "color": "red",
-                "value": 4
+                "value": 3000
               }
             ]
           }
@@ -440,7 +440,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Search stage latency percentiles",
-      "description": "quantile_over_time on the api_stage.search_total span duration.",
+      "description": "Exact percentiles of the search_total stage from Loki duration_ms.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -448,19 +448,42 @@
         "y": 5
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .5, .95, .99)",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.5, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__auto]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
-          }
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__auto]) by (stage)",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.99, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__auto]) by (stage)",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "p99"
         }
       ],
       "options": {
@@ -480,7 +503,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
@@ -503,29 +526,31 @@
         "y": 5
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api.request_total\" && span.url.path = \"/api/v1/search\" } | quantile_over_time(duration, .95)",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`http.request` | path=`/api/v1/search` | status_code=200 | __error__=\"\" | unwrap duration_ms [$__auto]) by (path)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
-          }
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "client-visible request p95"
         },
         {
           "refId": "B",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"api_stage.search_total\" } | quantile_over_time(duration, .95)",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=`search_total` | __error__=\"\" | unwrap duration_ms [$__auto]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
-          }
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "search stage p95"
         }
       ],
       "options": {
@@ -545,7 +570,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 5,
@@ -571,8 +596,8 @@
     {
       "id": 11,
       "type": "bargauge",
-      "title": "Stage p95, ranked (worst in window)",
-      "description": "Every api_stage.* span on the retrieval path, ranked by its worst p95 bucket in the selected window. This is the per-stage latency budget view: the top bar is where retrieval time actually goes.",
+      "title": "Stage p95, ranked (exact, whole window)",
+      "description": "Exact p95 per stage over the selected window, from Loki duration_ms. search_total is excluded so the sub-stages are comparable. Top bar is where retrieval time actually goes.",
       "gridPos": {
         "h": 11,
         "w": 10,
@@ -580,18 +605,18 @@
         "y": 14
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name =~ \"api_stage.(search_total|retrieval_query_embedding|signal_semantic|signal_keyword|signal_graph|signal_temporal|rerank|search_response_build|search_response_serialize|concurrency_acquire|global_ai_throttle|plan_rate_limit|auth_total|visibility_scope|space_access|entitlements|monthly_quota|memory_ann_batch)\" } | quantile_over_time(duration, .95) by (name)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage!=`search_total` | __error__=\"\" | unwrap duration_ms [$__range]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
@@ -610,8 +635,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 3,
+          "unit": "ms",
+          "decimals": 0,
           "color": {
             "mode": "continuous-GrYlRd"
           }
@@ -620,27 +645,12 @@
       },
       "transformations": [
         {
-          "id": "renameByRegex",
-          "options": {
-            "regex": ".*api_stage\\.([a-z_]+).*",
-            "renamePattern": "$1"
-          }
-        },
-        {
-          "id": "reduce",
-          "options": {
-            "reducers": [
-              "max"
-            ]
-          }
-        },
-        {
           "id": "sortBy",
           "options": {
             "fields": {},
             "sort": [
               {
-                "field": "Max",
+                "field": "Value #A",
                 "desc": true
               }
             ]
@@ -651,7 +661,7 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "Stage p95 over time",
+      "title": "Stage p95 over time (exact)",
       "gridPos": {
         "h": 11,
         "w": 14,
@@ -659,19 +669,20 @@
         "y": 14
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name =~ \"api_stage.(retrieval_query_embedding|signal_semantic|signal_keyword|signal_graph|signal_temporal|rerank|search_response_build|concurrency_acquire|global_ai_throttle|plan_rate_limit|auth_total)\" } | quantile_over_time(duration, .95) by (name)",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`retrieval.stage_completed` | stage=~`rerank|retrieval_query_embedding|signal_graph|signal_semantic|plan_rate_limit|concurrency_acquire|global_ai_throttle|memory_ann_batch|space_access|entitlements` | __error__=\"\" | unwrap duration_ms [$__auto]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
-          }
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "{{stage}}"
         }
       ],
       "options": {
@@ -691,7 +702,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 0,
@@ -700,15 +711,7 @@
         },
         "overrides": []
       },
-      "transformations": [
-        {
-          "id": "renameByRegex",
-          "options": {
-            "regex": ".*api_stage\\.([a-z_]+).*",
-            "renamePattern": "$1"
-          }
-        }
-      ]
+      "transformations": []
     },
     {
       "id": 13,
@@ -1033,7 +1036,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 80
       },
       "panels": [
         {
@@ -1052,6 +1055,62 @@
           }
         }
       ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "p95 by deploy build",
+      "description": "Exact p95 of successful /api/v1/search, split by Worker version. Use this to tell whether a deploy actually moved latency instead of eyeballing an aggregate that mixes builds.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-api-production\"} | json | event=`http.request` | path=`/api/v1/search` | status_code=200 | __error__=\"\" | unwrap duration_ms [$__auto]) by (faas_version)",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "{{faas_version}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      }
     }
   ],
   "links": [

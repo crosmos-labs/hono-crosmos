@@ -186,8 +186,8 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "p95 job duration",
-      "description": "Worst p95 of ingestion.job_total in the window. One job can cover several sources.",
+      "title": "p95 job duration (bucketed)",
+      "description": "From TraceQL metrics, so this value snaps to an exponential-histogram bucket boundary (powers of two: 1.07s, 2.15s, 4.29s, 8.59s, 17.18s). Treat it as a range, not a measurement. The per-source panels next to it use exact Loki durations.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -250,7 +250,7 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "p95 per-source duration",
+      "title": "p95 per-source duration (exact)",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -258,25 +258,25 @@
         "y": 1
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name = \"ingestion.source_total\" } | quantile_over_time(duration, .95)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-ingestion-production\"} | json | event=`ingestion.source_completed` | __error__=\"\" | unwrap duration_ms [$__range]) by (service)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
       "options": {
         "reduceOptions": {
           "calcs": [
-            "max"
+            "lastNotNull"
           ],
           "fields": "",
           "values": false
@@ -287,8 +287,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 2,
+          "unit": "ms",
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -298,17 +298,18 @@
               },
               {
                 "color": "yellow",
-                "value": 8
+                "value": 8000
               },
               {
                 "color": "red",
-                "value": 20
+                "value": 20000
               }
             ]
           }
         },
         "overrides": []
-      }
+      },
+      "description": "Exact p95 of ingestion.source_completed duration_ms over the window."
     },
     {
       "id": 6,
@@ -554,8 +555,8 @@
     {
       "id": 11,
       "type": "bargauge",
-      "title": "Stage p95, ranked (worst in window)",
-      "description": "Every ingestion_stage.* span ranked by its worst p95 bucket. Top bar is the stage to attack.",
+      "title": "Stage p95, ranked (exact, whole window)",
+      "description": "Exact p95 per pipeline stage over the window. queue_wait is excluded because it measures durable-backstop delivery lag rather than pipeline work, and its scale hides everything else.",
       "gridPos": {
         "h": 12,
         "w": 10,
@@ -563,44 +564,29 @@
         "y": 14
       },
       "datasource": {
-        "type": "tempo",
-        "uid": "grafanacloud-traces"
+        "type": "loki",
+        "uid": "grafanacloud-logs"
       },
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceql",
-          "filters": [],
-          "query": "{ name =~ \"ingestion_stage.*\" } | quantile_over_time(duration, .95) by (name)",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-ingestion-production\"} | json | event=~`ingestion.(stage_completed|orchestration_stage_completed)` | stage!=`queue_wait` | __error__=\"\" | unwrap duration_ms [$__range]) by (stage)",
           "datasource": {
-            "type": "tempo",
-            "uid": "grafanacloud-traces"
+            "type": "loki",
+            "uid": "grafanacloud-logs"
           }
         }
       ],
       "transformations": [
-        {
-          "id": "renameByRegex",
-          "options": {
-            "regex": ".*ingestion_stage\\.([a-z_]+).*",
-            "renamePattern": "$1"
-          }
-        },
-        {
-          "id": "reduce",
-          "options": {
-            "reducers": [
-              "max"
-            ]
-          }
-        },
         {
           "id": "sortBy",
           "options": {
             "fields": {},
             "sort": [
               {
-                "field": "Max",
+                "field": "Value #A",
                 "desc": true
               }
             ]
@@ -622,8 +608,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 3,
+          "unit": "ms",
+          "decimals": 0,
           "color": {
             "mode": "continuous-GrYlRd"
           }
@@ -1135,7 +1121,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 90
       },
       "panels": [
         {
@@ -1154,6 +1140,135 @@
           }
         }
       ]
+    },
+    {
+      "id": 24,
+      "type": "row",
+      "title": "Execution region (placement only applies to fetch handlers)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "panels": []
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Per-source duration p95 by execution region",
+      "description": "The queue() consumer and scheduled() handlers do not honour the placement block, only fetch handlers do. When ingestion executes outside ENAM, every Postgres and Qdrant round trip crosses the country.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {service_name=\"crosmos-ingestion-production\"} | json | event=`ingestion.source_completed` | __error__=\"\" | unwrap duration_ms [$__auto]) by (faas_invoked_region)",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          },
+          "legendFormat": "{{faas_invoked_region}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "spanNulls": true,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "DB-bound stage p50 by region (ENAM vs elsewhere)",
+      "description": "If a stage is several times slower outside ENAM it is paying cross-region round trips to Neon or Qdrant, both of which live in us-east-1. Stages that call OpenAI should look the same in every region.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "quantile_over_time(0.5, {service_name=\"crosmos-ingestion-production\"} | json | event=~`ingestion.(stage_completed|orchestration_stage_completed)` | stage=~`ingestion_job_claim|persist_window|entity_resolution|existing_memory_embedding_batch|entity_upsert|edge_creation|memory_embedding` | __error__=\"\" | unwrap duration_ms [$__range]) by (stage, faas_invoked_region)",
+          "datasource": {
+            "type": "loki",
+            "uid": "grafanacloud-logs"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Value #A",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0
+        },
+        "overrides": []
+      }
     }
   ],
   "links": [
