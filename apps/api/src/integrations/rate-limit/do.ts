@@ -92,10 +92,17 @@ export class DoRateLimiter implements RateLimiter {
     if (windows.length === 0) return;
 
     // Start the round-trip, then bound how long the user waits for it.
+    //
+    // The budget only applies when a `defer` exists. Without one there is
+    // nowhere to finish an abandoned call, and the Worker may be torn down
+    // before it lands, which would silently drop the increment and hand the org
+    // a free request. Correctness wins over latency on those paths.
     const call = this.callDo(keyFor(input.orgId, input.namespace), windows);
     let outcome: LimitWindowResult[] | typeof OVER_BUDGET;
     try {
-      outcome = await withBudget(call, this.budgetMs);
+      outcome = this.defer
+        ? await withBudget(call, this.budgetMs)
+        : await call;
     } catch (err) {
       // Transport failure. Fail OPEN — a limiter blip must never 429 real
       // traffic (matches KvRateLimiter).

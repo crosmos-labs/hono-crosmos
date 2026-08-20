@@ -31,7 +31,7 @@ import {
 import { tokenUrlSafe } from '../../lib/crypto';
 import { apiError, AppError, errorEnvelope } from '../../lib/errors';
 import { invalidateMembership } from '../../lib/gate-cache';
-import { waitUntilLogged } from '../../lib/runtime';
+import { getBackgroundTasks, waitUntilLogged } from '../../lib/runtime';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal, requireRole } from '../auth/principal';
 import { removeUserFromAllGroups } from '../visibility/service';
@@ -574,7 +574,8 @@ orgRoutes.openapi(
     // addresses (Resend cost + reputation). Reuses the org's plan RPM/daily caps.
     // Normally already applied by the default-on catch-all in `requireAuth`;
     // guarded so we don't double-count the org's quota.
-    const limiter = getRateLimiter(c.env);
+    const limiter = getRateLimiter(c.env, (task) =>
+      getBackgroundTasks(c).waitUntil(task));
     try {
       if (!c.var.planRateLimitEnforced) {
         await enforcePlanRateLimit(db, limiter, orgId);

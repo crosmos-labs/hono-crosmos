@@ -16,7 +16,7 @@ import { getJobStore } from '../../integrations/job-store';
 import { getQueueService } from '../../integrations/queue';
 import { getRateLimiter } from '../../integrations/rate-limit';
 import { getVectorStore, type VectorStore } from '../../integrations/vector-store';
-import { waitUntilLogged } from '../../lib/runtime';
+import { getBackgroundTasks, waitUntilLogged } from '../../lib/runtime';
 import type { TenantScope } from '../../lib/scope';
 import { ErrorResponseSchema, UuidSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
@@ -180,7 +180,8 @@ sourceRoutes.openapi(
       },
       async () => {
         const limits = getOperationalLimits(c.env);
-        const limiter = getRateLimiter(c.env);
+        const limiter = getRateLimiter(c.env, (task) =>
+          getBackgroundTasks(c).waitUntil(task));
         const queue = getQueueService(c.env, db);
         const jobStore = getJobStore(db, limits.staleJobMinutes);
 

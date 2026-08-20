@@ -1,3 +1,4 @@
+import { getBackgroundTasks } from '../../lib/runtime';
 import { createRoute } from '@hono/zod-openapi';
 import { createApiApp } from '../../lib/openapi';
 import { ErrorResponseSchema } from '../../lib/zod-common';
@@ -122,7 +123,8 @@ conversationRoutes.openapi(
 
     return stages.time('ingestion_enqueue_total', { source_count: 1 }, async () => {
       const limits = getOperationalLimits(c.env);
-      const limiter = getRateLimiter(c.env);
+      const limiter = getRateLimiter(c.env, (task) =>
+        getBackgroundTasks(c).waitUntil(task));
       const queue = getQueueService(c.env, db);
       const jobStore = getJobStore(db, limits.staleJobMinutes);
 

@@ -82,3 +82,25 @@ describe('DoRateLimiter latency budget', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('DoRateLimiter without a defer', () => {
+  test('waits for the full call rather than dropping the increment', async () => {
+    const calls: StubCall[] = [];
+    const limiter = new DoRateLimiter(
+      namespace({
+        delayMs: 40,
+        calls,
+        results: [{ scope: 'rpm', success: false, count: 99 }],
+      }),
+      undefined, // no defer: nowhere to finish an abandoned call
+      10, // budget far below the delay
+    );
+
+    // Still enforces, because the budget must not apply when the increment
+    // cannot be completed in the background.
+    await expect(
+      limiter.check({ orgId: 7, rpmLimit: 10, dailyLimit: -1 }),
+    ).rejects.toBeInstanceOf(RateLimitError);
+    expect(calls).toHaveLength(1);
+  });
+});
