@@ -1,11 +1,12 @@
-import { createRoute, z } from '@hono/zod-openapi';
+import { createRoute } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HonoEnv } from '../../bindings';
 import { getDb } from '../../db';
-import { getComposioClient } from '../../integrations/connectors/composio';
+import { getCredentialBackends } from '../../integrations/connectors';
 import { assertKeyScopeAllowsSpace } from '../../lib/key-scope';
 import { createApiApp } from '../../lib/openapi';
+import { ErrorResponseSchema } from '../../lib/zod-common';
 import { requireAuth } from '../auth/middleware';
 import { requirePrincipal } from '../auth/principal';
 import { getSpaceByUuid } from '../spaces/service';
@@ -19,10 +20,11 @@ import {
   ListConnectorConnectionsQuerySchema,
 } from './schemas';
 import {
-  createNotionConnection,
-  disconnectConnectorConnection,
+  completeConnectorAuthorization,
+  disconnectConnector,
+  getConnectorConnection,
   listConnectorConnections,
-  refreshConnectorConnection,
+  startNotionAuthorization,
 } from './service';
 
 export const connectorRoutes = createApiApp();
@@ -39,19 +41,18 @@ function connectorPrincipal(c: Context<HonoEnv>): {
   return { orgId: activeOrgId, userId, userUuid };
 }
 
-const ErrorBody = z.object({ detail: z.string() }).openapi('ConnectorErrorBody');
 const errorResponses = {
   400: {
     description: 'Bad request',
-    content: { 'application/json': { schema: ErrorBody } },
+    content: { 'application/json': { schema: ErrorResponseSchema } },
   },
   401: {
     description: 'Unauthorized',
-    content: { 'application/json': { schema: ErrorBody } },
+    content: { 'application/json': { schema: ErrorResponseSchema } },
   },
   404: {
     description: 'Not found',
-    content: { 'application/json': { schema: ErrorBody } },
+    content: { 'application/json': { schema: ErrorResponseSchema } },
   },
 };
 
@@ -75,13 +76,9 @@ connectorRoutes.openapi(
           'application/json': { schema: ConnectNotionResponseSchema },
         },
       },
-      409: {
-        description: 'This space already has a live Notion connection',
-        content: { 'application/json': { schema: ErrorBody } },
-      },
       502: {
         description: 'Connector authorization unavailable',
-        content: { 'application/json': { schema: ErrorBody } },
+        content: { 'application/json': { schema: ErrorResponseSchema } },
       },
       ...errorResponses,
     },
@@ -96,21 +93,17 @@ connectorRoutes.openapi(
     }
     assertKeyScopeAllowsSpace(c, space.id);
 
-    const authConfigId = c.env.COMPOSIO_NOTION_AUTH_CONFIG_ID;
-    const callbackUrl = c.env.CONNECTOR_CALLBACK_URL;
-    if (!authConfigId || !callbackUrl) {
-      throw new Error('Notion connector is not configured');
-    }
-
-    const composio = getComposioClient(c.env);
-    const result = await createNotionConnection(db, composio.connectedAccounts, {
-      orgId: principal.orgId,
-      spaceId: space.id,
-      ownerUserId: principal.userId,
-      composioUserId: principal.userUuid,
-      authConfigId,
-      callbackUrl,
-    });
+    const result = await startNotionAuthorization(
+      db,
+      getCredentialBackends(c.env),
+      {
+        orgId: principal.orgId,
+        spaceId: space.id,
+        ownerUserId: principal.userId,
+        viewerUserId: principal.userId,
+        viewerUserUuid: principal.userUuid,
+      },
+    );
 
     return c.json(
       {
@@ -158,6 +151,7 @@ connectorRoutes.openapi(
 
     const connections = await listConnectorConnections(db, {
       orgId: principal.orgId,
+      viewerUserId: principal.userId,
       spaceId,
       provider: query.provider,
     });
@@ -179,9 +173,43 @@ connectorRoutes.openapi(
         description: 'Connector connection',
         content: { 'application/json': { schema: ConnectorConnectionSchema } },
       },
+      ...errorResponses,
+    },
+  }),
+  async (c) => {
+    const { connection_id: connectionUuid } = c.req.valid('param');
+    const principal = connectorPrincipal(c);
+    const connection = await getConnectorConnection(getDb(c), {
+      orgId: principal.orgId,
+      viewerUserId: principal.userId,
+      connectionUuid,
+      scopedSpaceId: c.var.scopedSpaceId,
+    });
+    return c.json(connection, 200);
+  },
+);
+
+connectorRoutes.openapi(
+  createRoute({
+    method: 'post',
+    path: '/{connection_id}/complete',
+    tags: ['connectors'],
+    summary: 'Complete Connector Authorization',
+    security: [{ bearerAuth: [] }],
+    middleware: [requireAuth, requirePrincipal] as const,
+    request: { params: ConnectorConnectionParamsSchema },
+    responses: {
+      200: {
+        description: 'Connector authorization state reconciled',
+        content: { 'application/json': { schema: ConnectorConnectionSchema } },
+      },
+      409: {
+        description: 'This external account is already connected',
+        content: { 'application/json': { schema: ErrorResponseSchema } },
+      },
       502: {
         description: 'Connector provider unavailable',
-        content: { 'application/json': { schema: ErrorBody } },
+        content: { 'application/json': { schema: ErrorResponseSchema } },
       },
       ...errorResponses,
     },
@@ -189,12 +217,12 @@ connectorRoutes.openapi(
   async (c) => {
     const { connection_id: connectionUuid } = c.req.valid('param');
     const principal = connectorPrincipal(c);
-    const composio = getComposioClient(c.env);
-    const connection = await refreshConnectorConnection(
+    const connection = await completeConnectorAuthorization(
       getDb(c),
-      composio.connectedAccounts,
+      getCredentialBackends(c.env),
       {
         orgId: principal.orgId,
+        viewerUserId: principal.userId,
         connectionUuid,
         scopedSpaceId: c.var.scopedSpaceId,
       },
@@ -221,7 +249,7 @@ connectorRoutes.openapi(
       },
       502: {
         description: 'Connector provider unavailable',
-        content: { 'application/json': { schema: ErrorBody } },
+        content: { 'application/json': { schema: ErrorResponseSchema } },
       },
       ...errorResponses,
     },
@@ -229,12 +257,12 @@ connectorRoutes.openapi(
   async (c) => {
     const { connection_id: connectionUuid } = c.req.valid('param');
     const principal = connectorPrincipal(c);
-    const composio = getComposioClient(c.env);
-    await disconnectConnectorConnection(
+    await disconnectConnector(
       getDb(c),
-      composio.connectedAccounts,
+      getCredentialBackends(c.env),
       {
         orgId: principal.orgId,
+        viewerUserId: principal.userId,
         connectionUuid,
         scopedSpaceId: c.var.scopedSpaceId,
       },

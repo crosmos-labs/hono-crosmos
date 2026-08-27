@@ -215,6 +215,17 @@ app.onError((err, c) => {
   // AppError map to their status + machine code instead of a generic 500 —
   // keeps real 500s meaningful for alerting.
   if (isAppError(err)) {
+    if (err.status >= 500) {
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { request_id: requestId },
+      }).error(
+        'api.handled_error',
+        { code: err.code, status_code: err.status },
+        err.cause ?? err,
+      );
+    }
     return c.json(
       errorEnvelope(err.message, { code: err.code, requestId }),
       err.status,

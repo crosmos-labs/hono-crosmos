@@ -40,8 +40,9 @@ export class AppError extends Error {
     readonly status: ContentfulStatusCode,
     readonly code: string,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'AppError';
   }
 }
