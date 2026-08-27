@@ -262,7 +262,7 @@ scope.
 
 | Finding | Why it matters |
 |---|---|
-| `uq_connector_space_provider_live` on `(space_id, provider)` allows only one live connection per provider per space | A user with a personal and a work Notion workspace cannot connect both. The `(space_id, provider, external_account_id)` partial unique is the correct constraint; this one should go. |
+| `uq_connector_space_provider_live` on `(space_id, provider)` allows only one live connection per provider per space | A user with a personal and a work Notion workspace cannot connect both. The `(space_id, viewer_user_id, provider, external_account_id)` partial unique is the correct constraint; this one should go. |
 | `external_account_id` is never populated | `createNotionConnection` does not set it and `refreshConnectorConnection` does not persist it, so the constraint that should be doing the work can never fire and we cannot tell which workspace a connection points at. |
 | `display_name` is never populated | The console cannot show the user which workspace they connected. |
 | No cursor, scope selection, schedule, or sync state | There is nowhere to put sync state, so sync cannot be built without a migration anyway. |
@@ -516,7 +516,7 @@ sequenceDiagram
   API->>CB: complete(ref)
   CB-->>API: {externalAccountId, displayName}
   API->>DB: UPDATE status=active, external_account_id, display_name, connected_at
-  Note over API,DB: unique (space, provider, external_account_id)<br/>catches "already connected" here, not at begin
+  Note over API,DB: unique (space, viewer, provider, external_account_id)<br/>catches "already connected" here, not at begin
   API-->>U: redirect to console, scope picker
   U->>API: PUT /connectors/{id}/scope {selected}
   API->>DB: UPDATE scope_selection, sync_state=backfill_pending, next_sync_at=now
@@ -528,7 +528,9 @@ Two details worth being deliberate about:
   the user picked until they have picked it, so `begin` cannot tell whether it
   is a duplicate. Insert `pending` with a null `external_account_id`, and let
   the partial unique index reject the duplicate at `complete`, cleaning up the
-  loser. The current code's pre-check at `begin` is checking the wrong thing.
+  loser. The identity key includes `viewer_user_id` because two viewers may
+  connect the same external account without sharing visibility. The current
+  code's pre-check at `begin` is checking the wrong thing.
 - **Scope selection is a separate step after connect,** and until it happens the
   connection syncs nothing. This is what prevents a connect click from turning
   into a 40,000-message backfill.
@@ -883,7 +885,10 @@ Notes on choices that were not obvious:
 - **`viewer_user_id` is separate from `owner_user_id`.** They are the same for
   personal connections. Keeping them distinct is what lets a workspace
   connection, later, have a service principal as viewer and a real admin as
-  owner without overloading one column with two meanings.
+  owner without overloading one column with two meanings. Roll it out with an
+  expand/backfill/contract sequence: add it nullable while new writes populate
+  it, backfill existing rows, then generate a second migration making it
+  `NOT NULL`.
 - **`connector_events` is a table, not just a queue message,** for the durable
   inbox and replay protection described above.
 - **Every connector table carries `org_id`,** and `connector_documents` also
