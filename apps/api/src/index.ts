@@ -39,6 +39,7 @@ import { spaceRoutes } from './features/spaces/routes';
 import { usageRoutes } from './features/usage/routes';
 import { analyticsRoutes, spaceAnalyticsRoutes } from './features/analytics/routes';
 import { visibilityRoutes } from './features/visibility/routes';
+import { connectorRoutes } from './features/connectors/routes';
 
 // Max request body, in bytes. Bounds memory/transfer abuse (the audit flagged
 // ~50MB conversation-ingest bodies being accepted). 10MB is generous for text
@@ -214,6 +215,17 @@ app.onError((err, c) => {
   // AppError map to their status + machine code instead of a generic 500 —
   // keeps real 500s meaningful for alerting.
   if (isAppError(err)) {
+    if (err.status >= 500) {
+      createLogger({
+        service: 'api',
+        environment: c.env.ENVIRONMENT,
+        base: { request_id: requestId },
+      }).error(
+        'api.handled_error',
+        { code: err.code, status_code: err.status },
+        err.cause ?? err,
+      );
+    }
     return c.json(
       errorEnvelope(err.message, { code: err.code, requestId }),
       err.status,
@@ -310,6 +322,7 @@ app.route('/api/v1/jobs', jobRoutes);
 app.route('/api/v1/usage', usageRoutes);
 app.route('/api/v1/analytics', analyticsRoutes);
 app.route('/api/v1/billing', billingRoutes);
+app.route('/api/v1/connectors', connectorRoutes);
 app.route('/webhooks', billingWebhookRoutes);
 app.route('/', oauthServerRoutes);
 app.route('/', oauthServerRedirectApp);
