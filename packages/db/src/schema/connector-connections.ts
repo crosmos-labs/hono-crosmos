@@ -37,6 +37,12 @@ export const connectorConnections = pgTable(
     ownerUserId: integer('owner_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
+    // Nullable only for the expand/backfill rollout. New connections always
+    // set this; after existing rows are backfilled, a generated follow-up
+    // migration will make it NOT NULL.
+    viewerUserId: integer('viewer_user_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
     provider: varchar('provider', { length: 50 }).notNull(),
     authBackend: varchar('auth_backend', { length: 50 }).notNull(),
     authConnectionId: varchar('auth_connection_id', { length: 255 }).notNull(),
@@ -56,16 +62,14 @@ export const connectorConnections = pgTable(
     index('connector_connections_org_id_idx').on(t.orgId),
     index('connector_connections_space_id_idx').on(t.spaceId),
     index('connector_connections_owner_user_id_idx').on(t.ownerUserId),
+    index('connector_connections_viewer_user_id_idx').on(t.viewerUserId),
     index('connector_connections_provider_status_idx').on(t.provider, t.status),
     uniqueIndex('uq_connector_auth_connection').on(
       t.authBackend,
       t.authConnectionId,
     ),
-    uniqueIndex('uq_connector_space_provider_live')
-      .on(t.spaceId, t.provider)
-      .where(sql`${t.status} IN ('pending', 'active')`),
-    uniqueIndex('uq_connector_space_external_account')
-      .on(t.spaceId, t.provider, t.externalAccountId)
+    uniqueIndex('uq_connector_viewer_space_external_account')
+      .on(t.spaceId, t.viewerUserId, t.provider, t.externalAccountId)
       .where(
         sql`${t.externalAccountId} IS NOT NULL AND ${t.status} IN ('pending', 'active')`,
       ),
